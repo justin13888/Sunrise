@@ -132,7 +132,7 @@ since_ms}`: `state` one of `late_hard`, `late_soft`, `stale`, `on_track`, and
 | `contexts` | array of `{id, name, description, tasks, archived}` |
 | `routines` | array of `{id, title, rule, next_ms, paused, streak}` |
 | `blocks [day\|week]` | array of `{id, title, stream, starts_at, ends_at, tasks}` |
-| `devices` | array of `{id, nickname, platform, this_device, revoked, read_bounded, current, admitted_after_revocation, revoked_by_authority}` |
+| `devices` | array of `{id, nickname, platform, this_device, revoked, read_bounded, current, admitted_after_revocation, revoked_by_authority, withdrawable}` |
 | `identity [status]` | `{account, current, rotations, this_device_is_current, holds_recovery_key, can_sponsor}` |
 | `attachments <task>` | array of `{id, filename, mime_type, size_bytes, state}`, `state` one of `here`, `downloading`, `partial`, `fetchable`, `never_uploaded` |
 | `review` | `{window: {start_ms, end_ms}, totals: {completed, deferred, dropped, created, reopened}, streams: [{id, name, completed, deferred, untouched}], slipped: [task]}` |

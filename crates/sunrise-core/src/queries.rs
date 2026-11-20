@@ -830,8 +830,9 @@ pub struct IdentityStatus {
 
 /// One row of [`Query::DeviceList`].
 ///
-/// Five bools, and `struct_excessive_bools` is allowed rather than obeyed.
-/// Four are independent; `revoked_by_authority` refines `revoked`. The lint's remedy is a state machine or two-variant enums, which is
+/// Six bools, and `struct_excessive_bools` is allowed rather than obeyed.
+/// Four are independent; `revoked_by_authority` refines `revoked`, and
+/// `withdrawable` is a fact about this device's own claim on the row. The lint's remedy is a state machine or two-variant enums, which is
 /// the wrong shape here: these are not four positions of one state but four
 /// orthogonal facts, and every pair of them is reachable in both combinations.
 /// `revoked` and `read_bounded` disagreeing is the whole subject of migration
@@ -937,4 +938,15 @@ pub struct DeviceRow {
     /// the certificate in different orders disagree, exactly as they do about
     /// the log line. Nothing derives standing from it.
     pub admitted_after_revocation: bool,
+    /// Whether **this** device holds a live ordinary revocation of this row's
+    /// device, and so can withdraw it with `Command::WithdrawRevocation`
+    /// (ADR-0056 §6).
+    ///
+    /// The only rows on which a client offers "Withdraw revocation". A
+    /// revocation another device made is withdrawn by that device, and this
+    /// is `false` for it even while `revoked` is true. So is a revocation
+    /// this device signed as the account identity (ADR-0058), which the
+    /// command does not withdraw.
+    #[serde(default)]
+    pub withdrawable: bool,
 }

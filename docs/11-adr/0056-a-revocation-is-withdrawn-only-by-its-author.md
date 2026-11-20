@@ -2,8 +2,18 @@
 
 **Status:** accepted
 
-**Built by** [#383](https://github.com/justin13888/Sunrise/issues/383), which
-waits on §7. Nothing in the engine emits a withdrawal yet.
+**Built by** [#383](https://github.com/justin13888/Sunrise/issues/383), now
+that §7's prerequisites have landed: §1–§4, §6 and §7 in the engine
+(`InnerOp::DeviceRevokeWithdraw`, migration 0053, `DOC_SCHEMA_V` 28,
+`STORAGE_V` 53), the seam and the CLI. Three parts are not built yet and are
+tracked on their own: the relay's reinstatement route and the client intent
+that drives it (§5, [#1238](https://github.com/justin13888/Sunrise/issues/1238);
+until then the command cancels only an unsent telling and says when the relay
+may still refuse the device), the identity-signed withdrawal of an authority
+revocation (ADR-0058 §6, [#1239](https://github.com/justin13888/Sunrise/issues/1239)),
+and the Apple device list's "Withdraw revocation" (§6,
+[#1240](https://github.com/justin13888/Sunrise/issues/1240)), which the
+seam's `withdrawable` row flag and the command's report already carry.
 
 **Amends** [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) where it says an
 un-revoke op "is what would settle" the residuals of §"What a user sees" item 4.
@@ -218,7 +228,11 @@ withdrawal reverses the relay's half too:
 
 - **The command reverses the queued telling.** It deletes an undrained
   `relay_revocation_intents` row for the device in the same transaction, and
-  queues a reinstatement intent that the sync driver drains the same way.
+  queues a reinstatement intent that the sync driver drains the same way. The
+  row is one per device and shared by every claim this device makes of it, so
+  it is kept while the relay is still owed the telling: while the register
+  still names the device, or a live claim of this device's own does, such as
+  its identity-signed revocation (ADR-0058).
 - **The relay records who revoked the device.** `DELETE
   /api/v1/devices/by-vault-id/{id}` records the calling device on the row when
   the request is device-signed.

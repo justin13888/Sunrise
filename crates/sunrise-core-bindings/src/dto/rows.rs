@@ -196,6 +196,15 @@ pub struct DeviceListRow {
     /// defaulted, so the seam changes additively.
     #[uniffi(default = false)]
     pub revoked_by_authority: bool,
+    /// **This** device holds a live revocation of this row's device that it
+    /// may withdraw with `CoreCommand::WithdrawRevocation` (ADR-0056 §6).
+    ///
+    /// The only rows on which to offer "Withdraw revocation". A revocation
+    /// another device made is that device's to withdraw, and so is one this
+    /// device signed as the account identity, which the command does not
+    /// withdraw. Last and defaulted, so the seam changes additively.
+    #[uniffi(default = false)]
+    pub withdrawable: bool,
 }
 
 impl From<&DeviceRow> for DeviceListRow {
@@ -209,6 +218,7 @@ impl From<&DeviceRow> for DeviceListRow {
             current,
             admitted_after_revocation,
             revoked_by_authority,
+            withdrawable,
         } = d;
         Self {
             device_id: hex16(device_id),
@@ -220,6 +230,7 @@ impl From<&DeviceRow> for DeviceListRow {
             current: *current,
             admitted_after_revocation: *admitted_after_revocation,
             revoked_by_authority: *revoked_by_authority,
+            withdrawable: *withdrawable,
         }
     }
 }
@@ -362,6 +373,74 @@ pub struct CommandOutcome {
     /// what stands between them and one nothing can unwind.
     #[uniffi(default = [])]
     pub authority_awaits_update: Vec<String>,
+    /// What a `withdrawRevocation` did; `None` for every other command.
+    /// Last and defaulted, so the seam changes additively.
+    #[uniffi(default = None)]
+    pub withdrawal: Option<WithdrawalReport>,
+}
+
+/// Whether a withdrawal reinstated its device, and if not, why not
+/// (ADR-0056 §6). A client must not say "reinstated" over the first three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum WithdrawalOutcomeKind {
+    /// This device holds no live revocation of the device: another device
+    /// made it, or this device made it as the account identity. Nothing was
+    /// emitted. That device withdraws it, or the device is paired again.
+    NotAuthor,
+    /// Another device's revocation is still live, so the device stays
+    /// revoked until that device withdraws too.
+    StillClaimed,
+    /// The revocation rotated the account identity away from the device, so
+    /// it must be paired again.
+    RepairRequired,
+    /// The device is a current member again.
+    Reinstated,
+}
+
+impl From<sunrise_core::WithdrawalOutcome> for WithdrawalOutcomeKind {
+    fn from(o: sunrise_core::WithdrawalOutcome) -> Self {
+        match o {
+            sunrise_core::WithdrawalOutcome::NotAuthor => Self::NotAuthor,
+            sunrise_core::WithdrawalOutcome::StillClaimed => Self::StillClaimed,
+            sunrise_core::WithdrawalOutcome::RepairRequired => Self::RepairRequired,
+            sunrise_core::WithdrawalOutcome::Reinstated => Self::Reinstated,
+        }
+    }
+}
+
+/// What `withdrawRevocation` did. See `sunrise_core::Withdrawal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct WithdrawalReport {
+    /// Whether the device is back, and if not, why not.
+    pub outcome: WithdrawalOutcomeKind,
+    /// Whether this device released the device's read bound, so it is sent
+    /// keys again.
+    pub read_bound_released: bool,
+    /// How many keys this device sent it, including the keys minted while it
+    /// was revoked. A client says so: the device can read what was written
+    /// while it was out.
+    pub keys_resent: u32,
+    /// Whether this device's unsent telling of the relay was cancelled.
+    /// `false` means the relay may already refuse the device, and nothing yet
+    /// tells it otherwise: say the device may need pairing again.
+    pub relay_intent_cancelled: bool,
+}
+
+impl From<&sunrise_core::Withdrawal> for WithdrawalReport {
+    fn from(w: &sunrise_core::Withdrawal) -> Self {
+        let sunrise_core::Withdrawal {
+            outcome,
+            read_bound_released,
+            keys_resent,
+            relay_intent_cancelled,
+        } = w;
+        Self {
+            outcome: (*outcome).into(),
+            read_bound_released: *read_bound_released,
+            keys_resent: *keys_resent,
+            relay_intent_cancelled: *relay_intent_cancelled,
+        }
+    }
 }
 
 impl From<&CommandResult> for CommandOutcome {
@@ -378,6 +457,7 @@ impl From<&CommandResult> for CommandOutcome {
             revocation_unwound,
             revoked_by_authority,
             authority_awaits_update,
+            withdrawal,
             // What the core publishes on its change stream, which the seam
             // relays from there rather than from the result.
             events: _,
@@ -397,6 +477,7 @@ impl From<&CommandResult> for CommandOutcome {
                 .collect(),
             revoked_by_authority: *revoked_by_authority,
             authority_awaits_update: authority_awaits_update.clone(),
+            withdrawal: withdrawal.as_ref().map(WithdrawalReport::from),
         }
     }
 }

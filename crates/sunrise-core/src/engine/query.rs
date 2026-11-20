@@ -404,12 +404,27 @@ impl Engine {
                     b.device_id IS NOT NULL,
                     d.identity_id IS NOT NULL AND d.identity_id = ?1,
                     d.admitted_after_revocation,
-                    coalesce(r.by_authority, 0)
+                    coalesce(r.by_authority, 0),
+                    EXISTS (
+                        SELECT 1 FROM (
+                            SELECT kind, ROW_NUMBER() OVER (
+                                ORDER BY op_hlc_ms DESC, op_hlc_logical DESC,
+                                         kind = 'revoke' DESC
+                            ) AS pos
+                            FROM device_revoke_ops o
+                            WHERE o.sender = ?2 AND o.revoked_device_id = d.device_id
+                              AND o.authority_identity_id IS NULL
+                        )
+                        WHERE pos = 1 AND kind = 'revoke'
+                    )
              FROM devices d
              LEFT JOIN device_revocations r ON r.device_id = d.device_id
              LEFT JOIN device_read_bounds b ON b.device_id = d.device_id",
         )?;
-        let rows = stmt.query_map(params![&head.identity_id[..]], |row| {
+        // `withdrawable` is this device's own ordinary pair on the row's
+        // device, read at its head as the fold reads it (ADR-0056 §2).
+        let me = self.keychain.device_id();
+        let rows = stmt.query_map(params![&head.identity_id[..], &me[..]], |row| {
             let blob: Vec<u8> = row.get(0)?;
             let mut a = [0u8; 16];
             let take = blob.len().min(16);
@@ -423,6 +438,7 @@ impl Engine {
                 current: row.get(5)?,
                 admitted_after_revocation: row.get(6)?,
                 revoked_by_authority: row.get(7)?,
+                withdrawable: row.get(8)?,
             })
         })?;
         let mut out = Vec::new();

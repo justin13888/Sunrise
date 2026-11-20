@@ -240,6 +240,10 @@ mod revocation_gate;
 /// The revocation ledger: tie breaks, compaction and the per-sender cap.
 mod revocation_ledger;
 
+/// Withdrawing a revocation (ADR-0056): the pair heads, the read-bound
+/// release, and the command that emits one.
+mod revocation_withdraw;
+
 /// Identity transitions: the verification rule and the rotation chain.
 mod identity_rotation;
 

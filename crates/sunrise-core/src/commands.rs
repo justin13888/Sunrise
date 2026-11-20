@@ -460,6 +460,24 @@ pub enum Command {
         /// Why, for the device list to show later.
         reason: RevokeReason,
     },
+    /// Withdraw this device's own revocation of a device (ADR-0056).
+    ///
+    /// Only the device that made a revocation withdraws it: the op names the
+    /// target and the authenticated sender is its author, so it can change
+    /// nothing but this device's own claim (§3). It is emitted only into a
+    /// vault that requires `core.revoke_withdraw`, and refused with
+    /// [`crate::EngineError::FeatureUnsupportedByDevices`] while any device
+    /// that is not revoked, or the device being reinstated, does not
+    /// advertise it; there is no override (§7).
+    ///
+    /// In the same transaction it cancels this device's unsent telling of
+    /// the relay, and, where this replica releases the device's read bound,
+    /// seals it every epoch this device holds (§4). [`Withdrawal`] on the
+    /// result says which of these happened and whether the device is back.
+    WithdrawRevocation {
+        /// The device whose revocation by this device is withdrawn.
+        device_id: EntityRef,
+    },
     /// Replace the account identity, keeping every current device.
     ///
     /// The user-requested form of what a revocation does as a side effect
@@ -816,6 +834,71 @@ pub struct TimeZoneChange {
     pub hard_violations: Vec<sunrise_id::EntityRef>,
 }
 
+/// Whether a `WithdrawRevocation` reinstated its device, and if not, why not
+/// (ADR-0056 §4 and §6).
+///
+/// The first three are the cases in which the device is **not** back, and a
+/// caller must not print "reinstated" over any of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WithdrawalOutcome {
+    /// This device holds no live revocation of the device, so there was
+    /// nothing of its own to withdraw, and nothing was emitted. A device
+    /// withdraws only its own claims (ADR-0056 §1); another device's
+    /// revocation is withdrawn by that device, or the device is paired again.
+    NotAuthor,
+    /// The withdrawal was emitted, and another device's revocation of the
+    /// device is still live, so it stays revoked or read-bounded until that
+    /// device withdraws too.
+    StillClaimed,
+    /// The withdrawal was emitted and nothing else claims the device, but
+    /// its certificate names an identity the account has rotated away from,
+    /// so it is not a member and must be paired again (ADR-0056 §4).
+    RepairRequired,
+    /// The device is a current member again on this replica.
+    Reinstated,
+}
+
+impl WithdrawalOutcome {
+    /// The wire spelling, `not_author` and so on.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAuthor => "not_author",
+            Self::StillClaimed => "still_claimed",
+            Self::RepairRequired => "repair_required",
+            Self::Reinstated => "reinstated",
+        }
+    }
+}
+
+/// What `Command::WithdrawRevocation` did (ADR-0056 §4–§6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Withdrawal {
+    /// Whether the device is back, and if not, why not.
+    pub outcome: WithdrawalOutcome,
+    /// Whether this replica released the device's read bound, so it is sent
+    /// keys again. `false` while another claim is live, and while this device
+    /// is itself gated by the fold (ADR-0056 §4 (c)): a reinstatement read
+    /// off the register with this `false` is the unwind state, current and
+    /// sent nothing.
+    pub read_bound_released: bool,
+    /// How many `key_envelope`s this command sealed to the device: every
+    /// epoch this device holds and had not already sent it, including the
+    /// epochs minted while it was revoked. The rotation is not undone; the
+    /// device reads those epochs because it was sent them now.
+    pub keys_resent: u32,
+    /// Whether this replica's queued, unsent telling of the relay was
+    /// cancelled. `false` means it was not: the relay was already told, and it
+    /// refuses the device until it is paired again; the revocation never
+    /// queued one; or the relay is still owed it, because the register still
+    /// names the device or a live claim of this device's own (an
+    /// identity-signed revocation) does, and the row stays queued. The relay
+    /// has no reinstatement yet (ADR-0056 §5 is not built), so a caller says
+    /// the relay may still refuse the device when this is `false`.
+    pub relay_intent_cancelled: bool,
+}
+
 /// Result of a command, returned synchronously to the caller after the
 /// in-process apply step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -941,6 +1024,10 @@ pub struct CommandResult {
     /// being revoked is often the one the user lost.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub authority_awaits_update: Vec<String>,
+    /// The [`Withdrawal`] a `WithdrawRevocation` reports, and `None` for every
+    /// other command. Its outcome says what a caller must say about each case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withdrawal: Option<Withdrawal>,
     /// The change events this write publishes, when the command alone does
     /// not say what it changed: a recurring block's *this and future* scope
     /// can split the series, tombstone the block or only end it. Empty for
@@ -971,8 +1058,16 @@ impl CommandResult {
             revocation_unwound: Vec::new(),
             revoked_by_authority: false,
             authority_awaits_update: Vec::new(),
+            withdrawal: None,
             events: Vec::new(),
         }
+    }
+
+    /// Record what a withdrawal of a revocation did.
+    #[must_use]
+    pub const fn with_withdrawal(mut self, w: Withdrawal) -> Self {
+        self.withdrawal = Some(w);
+        self
     }
 
     /// Name the change events this write publishes, in place of those read

@@ -214,6 +214,28 @@ pub struct DeviceRevokeByIdentityPayload {
     pub identity_sig: [u8; 64],
 }
 
+/// The sender **withdraws its own revocation** of a device (ADR-0056 §2,
+/// `DOC_SCHEMA_V = 28`).
+///
+/// It names only the target: the sender is the authenticated envelope's, so
+/// the op can withdraw nothing but its author's own claim, and that is the
+/// whole of its authority (ADR-0056 §3). The ledger stores it as a row of the
+/// same `(sender, revoked_device_id)` pair as the sender's ordinary
+/// revocations, and the fold reads each pair's greatest-stamped row: a pair
+/// whose head is a withdrawal is inert, and a later revocation makes it live
+/// again. On a tie the revocation wins.
+///
+/// A new op kind rather than a reason or a field on `DeviceRevoke`, because an
+/// older build would read either as a revocation and fold the opposite of what
+/// its author meant (ADR-0056 §Alternatives (d)). It is emitted only into a
+/// vault that requires `core.revoke_withdraw` ([`crate::feature`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRevokeWithdrawPayload {
+    /// The device whose revocation by the sender is withdrawn.
+    #[serde(with = "serde_bytes")]
+    pub revoked_device_id: [u8; 16],
+}
+
 /// One surviving device's re-issued [`DeviceCert`], signed by the **new**
 /// `ID_S_priv`.
 ///
@@ -415,6 +437,9 @@ sunrise_id::describe_value_types! {
             identity_id: [u8; 16];
             identity_sig: [u8; 64];
         }
+        DeviceRevokeWithdrawPayload {
+            revoked_device_id: [u8; 16];
+        }
         RosterEntry {
             cert: Vec<u8>;
         }
@@ -513,6 +538,7 @@ op_payloads! {
     VaultRequires(VaultRequiresPayload),
     DeviceFeatures(DeviceFeaturesPayload),
     DeviceRevokeByIdentity(DeviceRevokeByIdentityPayload),
+    DeviceRevokeWithdraw(DeviceRevokeWithdrawPayload),
 }
 
 #[cfg(test)]
@@ -592,6 +618,13 @@ mod tests {
             },
             &[],
         );
+        assert_wire_names(
+            "DeviceRevokeWithdrawPayload",
+            &DeviceRevokeWithdrawPayload {
+                revoked_device_id: [9u8; 16],
+            },
+            &[],
+        );
         let t = a_transition();
         assert_wire_names("IdentityTransitionPayload", &t, &[]);
         assert_wire_names("RosterEntry", &t.roster[0], &[]);
@@ -644,6 +677,7 @@ mod tests {
             "KeyEnvelopePayload",
             "DeviceRevokePayload",
             "DeviceRevokeByIdentityPayload",
+            "DeviceRevokeWithdrawPayload",
             "IdentityTransitionPayload",
             "RosterEntry",
             "KeyShare",

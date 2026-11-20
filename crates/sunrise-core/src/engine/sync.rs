@@ -992,6 +992,9 @@ impl Engine {
             InnerOp::DeviceRevokeByIdentity(p) => {
                 self.apply_device_revoke(tx, p, sender, hlc, now_ms)
             }
+            InnerOp::DeviceRevokeWithdraw(p) => {
+                self.apply_device_revoke_withdraw(tx, p, sender, hlc, now_ms)
+            }
             // The feature folds (ADR-0045 §7). Neither refuses: a malformed id
             // is skipped and logged, and the rest of the op still counts.
             InnerOp::VaultRequires(p) => {

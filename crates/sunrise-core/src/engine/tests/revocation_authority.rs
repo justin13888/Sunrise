@@ -53,7 +53,7 @@ fn revoke_by_identity_with(
 }
 
 /// [`revoke_by_identity_with`] signed by the genesis identity.
-fn revoke_by_identity(
+pub(super) fn revoke_by_identity(
     receiver: &Engine,
     db: &mut Db,
     sender: &Engine,

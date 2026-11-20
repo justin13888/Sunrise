@@ -54,6 +54,7 @@
 //! held epoch of every stream.
 
 use super::revocation_authority::{RevokeAuthority, IDENTITY};
+use super::revocation_withdraw::{pair_heads, release_withdrawn_read_bounds};
 use super::{Engine, EngineError, META_STREAM};
 use crate::bytes::{hex_bytes, hex_short};
 use crate::commands::CommandResult;
@@ -84,6 +85,10 @@ pub(super) struct RevokeLedgerRow {
     pub(super) authority_identity_id: Option<Vec<u8>>,
     /// Its signature, `None` on an ordinary row.
     pub(super) authority_sig: Option<Vec<u8>>,
+    /// Whether the row is a `device.revoke_withdraw` rather than a
+    /// revocation (migration 0053). A withdrawal is always an ordinary row:
+    /// it names no identity and carries no reason.
+    pub(super) withdraw: bool,
 }
 
 /// What one revocation op claims, as [`Engine::apply_device_revoke`] stores
@@ -984,8 +989,10 @@ impl Engine {
     /// revoker the account meant, and a third-party one is rejected as new
     /// authority. The one inverse ADR-0056
     /// (`docs/11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md`)
-    /// takes is a withdrawal by a revocation's own author, and it is not built
-    /// yet ([#383](https://github.com/justin13888/Sunrise/issues/383)).
+    /// takes is a withdrawal by a revocation's own author
+    /// ([#383](https://github.com/justin13888/Sunrise/issues/383)): the fold
+    /// reads each pair's head, and a pair whose head is a withdrawal is
+    /// inert, as `super::revocation_withdraw` says.
     ///
     /// It is recorded rather than repaired because no ledger-only rule can do
     /// better. After a mutual revocation the two devices are symmetric in the
@@ -1109,20 +1116,30 @@ impl Engine {
     ) -> rusqlite::Result<Vec<SkippedRevoke>> {
         let mut stmt = tx.prepare(
             "SELECT op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
-                    recorded_at_ms, authority_identity_id, authority_sig
+                    recorded_at_ms, authority_identity_id, authority_sig, kind
              FROM device_revoke_ops
              ORDER BY op_hlc_ms ASC, op_hlc_logical ASC, sender ASC,
-                      revoked_device_id ASC, authority_identity_id ASC",
+                      revoked_device_id ASC, authority_identity_id ASC, kind ASC",
         )?;
-        let rows: Vec<RevokeLedgerRow> = stmt
+        let all: Vec<RevokeLedgerRow> = stmt
             .query_map([], ledger_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
+        // **Each pair's head, and nothing else** (ADR-0056 §2). A pair whose
+        // head is a withdrawal reads exactly like a pair its sender never
+        // wrote: it seats no revoker, discounts nobody and is never walked.
+        // So everything below is the fold ADR-0041 describes, over the live
+        // heads, and the withdrawn heads are read only by the read-bound
+        // release at the end.
+        let (rows, withdrawn) = pair_heads(all);
 
         // Which rows are authority rows is decided once, against one head,
         // so every pass below reads the same answer.
         let head = self.current_identity(tx)?;
         let by_authority: Vec<bool> = rows.iter().map(|r| r.is_authority_at(&head)).collect();
+        // Every device a live pair names, gated or not: condition (b) of the
+        // read-bound release below.
+        let live_named: BTreeSet<Vec<u8>> = rows.iter().map(|r| r.revoked.clone()).collect();
 
         // Who has revoked whom, over the **whole ledger** — every revoker and
         // not only the one currently winning the register, and every row and
@@ -1473,6 +1490,7 @@ impl Engine {
                 ])?;
             }
         }
+        release_withdrawn_read_bounds(tx, &withdrawn, &register, &live_named, &revokers)?;
         Ok(skipped)
     }
 
@@ -1634,8 +1652,13 @@ pub(super) fn ledger_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RevokeLedger
         recorded_at_ms: r.get(5)?,
         authority_identity_id: r.get(6)?,
         authority_sig: r.get(7)?,
+        withdraw: r.get::<_, String>(8)? == WITHDRAW_KIND,
     })
 }
+
+/// `device_revoke_ops.kind` for a withdrawal (migration 0053); every other row
+/// is `revoke`.
+pub(super) const WITHDRAW_KIND: &str = "withdraw";
 
 #[cfg(test)]
 pub(super) use super::revocation_ledger::REVOKE_TARGETS_PER_SENDER;

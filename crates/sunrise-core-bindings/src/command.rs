@@ -390,6 +390,14 @@ pub enum CoreCommand {
         /// The place.
         id: EntityRef,
     },
+    /// Withdraw this device's own revocation of a device (ADR-0056). Offer it
+    /// only on a row whose `withdrawable` is true; the outcome's `withdrawal`
+    /// says whether the device is back. See
+    /// [`sunrise_core::Command::WithdrawRevocation`].
+    WithdrawRevocation {
+        /// The device, as the row's `deviceRef`.
+        device_id: EntityRef,
+    },
 }
 
 /// One item of [`CoreCommand::BulkTasks`].
@@ -593,6 +601,7 @@ impl CoreCommand {
                 patch: edit.into(),
             },
             Self::DeletePlace { id } => Command::DeletePlace(id),
+            Self::WithdrawRevocation { device_id } => Command::WithdrawRevocation { device_id },
         })
     }
 }

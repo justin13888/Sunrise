@@ -2192,9 +2192,15 @@ USAGE:
                                  revoke a device and rotate every Stream key, so
                                  it reads nothing written afterwards. Also
                                  rotates the account identity, on the device
-                                 that created the account. It cannot be
-                                 undone: to use the device again, pair it
+                                 that created the account. Only the device
+                                 that revoked it can withdraw the revocation;
+                                 otherwise, to use the device again, pair it
                                  as a new device
+    sunrise device withdraw <id-prefix>
+                                 withdraw this device's own revocation of a
+                                 device, and send it every key this device
+                                 holds. Refused until every device runs a
+                                 build that reads a withdrawal
     sunrise identity status      the account's identity chain: its stable name,
                                  the identity in force, and whether this device
                                  still speaks for it
@@ -2882,7 +2888,7 @@ mark_admitted_after_revocation = "joined after a device was removed"
 # Under the list, on the device that holds the identity key. Three lines.
 identity_key = "This device holds the account identity key. A sealed recovery code is \nits only other copy: without one, losing this vault destroys the key \npermanently and no recovery feature added later can retrieve it."
 identity_key_remedy = "`sunrise bootstrap` seals that second copy"
-revoke_usage = "usage: sunrise device revoke <id-prefix> [--reason <r>]"
+revoke_usage = "usage: sunrise device revoke <id-prefix> [--reason <r>] | sunrise device withdraw <id-prefix>"
 # {verb} is what the user typed after `sunrise device`.
 unknown_subcommand = "unknown device subcommand `{verb}`"
 unknown_reason = "unknown reason `{reason}`; use lost, stolen, retired or compromised"
@@ -2903,6 +2909,22 @@ unrotated_row = "(not a 16-byte stream id; nothing to rotate)"
 unrotated_note = "that device may still read them. This is a corrupt row in the local vault, not something the revocation can retry."
 no_recertify = "that device cannot certify itself back in under a new id"
 irreversible = "this cannot be undone: to use that device again, pair it as a new device"
+# Replaces `irreversible` under an ordinary revocation (ADR-0056). {id} is the
+# device's id.
+withdrawable = "only this device can withdraw this revocation, with `sunrise device withdraw {id}`; if the account identity rotated with it, or the relay has been told, the device must be paired again instead"
+# The report of `sunrise device withdraw`. {id} is the device's id.
+withdraw_not_author = "Nothing withdrawn: this device holds no revocation of {id} it can withdraw. A revocation another device made is withdrawn from that device, and one signed by the account identity cannot be withdrawn; otherwise pair {id} again as a new device."
+# Followed by the ids of the devices to update, one per line.
+withdraw_awaits_update = "NOT withdrawn: these devices run a build that would drop a withdrawal and keep the device revoked for good. Update Sunrise on them, or revoke them first, then run this again:"
+withdraw_title = "Withdrew this device's revocation of {id}."
+withdraw_reinstated = "{id} is a current device again"
+withdraw_still_claimed = "{id} is still revoked: another device revoked it too, and stays its revoker until that device withdraws as well"
+withdraw_repair = "{id} is NOT back: the revocation rotated the account identity away from it, and a withdrawal cannot certify it again. Pair it again as a new device."
+# {count} is how many keys were sealed to the device.
+withdraw_keys = "{count, plural, one {sent it # key this device holds, including any minted while it was revoked: it can read what was written while it was out} other {sent it # keys this device holds, including those minted while it was revoked: it can read what was written while it was out}}"
+withdraw_still_bounded = "this device still gives it no keys: the account does not count this device's word on it, because this device has itself been revoked"
+withdraw_relay_cancelled = "the relay had not been told yet; that telling is cancelled"
+withdraw_relay_told = "if the relay was already told, it still refuses that device, and nothing can tell it otherwise yet: pair it again as a new device if it cannot sync"
 # A bullet under a revocation that went through, saying which kind it was
 # (ADR-0058).
 authority_signed = "signed by the account identity: no op from any device can undo this revocation"

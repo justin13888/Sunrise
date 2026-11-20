@@ -4,9 +4,13 @@
 //! The other half of the device list, that the row is read from a vault and
 //! carries an id `RevokeDevice` takes, is in `seam.rs`
 //! (`every_device_row_carries_the_readmission_signal`).
+//!
+//! The report a withdrawal of a revocation returns, which a device list acts
+//! on, lowers here too.
 
-use sunrise_core::DeviceRow;
-use sunrise_core_bindings::dto::DeviceListRow;
+use sunrise_core::{CommandResult, DeviceRow, Withdrawal, WithdrawalOutcome};
+use sunrise_core_bindings::dto::{CommandOutcome, DeviceListRow, WithdrawalOutcomeKind};
+use sunrise_id::{EntityKind, EntityRef};
 
 /// **`read_bounded: true, revoked: false` crosses the seam as itself.**
 ///
@@ -45,6 +49,7 @@ fn an_unwound_device_row_crosses_the_seam_as_itself() {
         current: true,
         admitted_after_revocation: false,
         revoked_by_authority: false,
+        withdrawable: false,
     };
 
     let lowered = DeviceListRow::from(&row);
@@ -97,6 +102,7 @@ fn a_plainly_revoked_device_row_crosses_the_seam_as_itself() {
         current: false,
         admitted_after_revocation: false,
         revoked_by_authority: false,
+        withdrawable: false,
     };
 
     let lowered = DeviceListRow::from(&row);
@@ -147,6 +153,7 @@ fn a_device_revoked_by_authority_crosses_the_seam_as_one() {
         current: false,
         admitted_after_revocation: false,
         revoked_by_authority: true,
+        withdrawable: false,
     };
 
     let lowered = DeviceListRow::from(&row);
@@ -161,4 +168,88 @@ fn a_device_revoked_by_authority_crosses_the_seam_as_one() {
     assert!(!lowered.current);
     assert!(!lowered.admitted_after_revocation);
     assert_eq!(lowered.device_id, "a3".repeat(16));
+    assert!(!lowered.withdrawable);
+}
+
+/// **A row this device may withdraw its revocation of crosses the seam as
+/// one** (ADR-0056 §6).
+///
+/// The row is `a_plainly_revoked_device_row_crosses_the_seam_as_itself`'s
+/// with `withdrawable` set, so the pair pins the flag to the core's value: a
+/// lowering that returned a constant fails one of the two.
+#[test]
+fn a_withdrawable_device_row_crosses_the_seam_as_one() {
+    let row = DeviceRow {
+        device_id: [0xa4; 16],
+        nickname: "Retired phone".into(),
+        platform: "ios".into(),
+        revoked: true,
+        read_bounded: true,
+        current: false,
+        admitted_after_revocation: false,
+        revoked_by_authority: false,
+        withdrawable: true,
+    };
+
+    let lowered = DeviceListRow::from(&row);
+
+    assert!(
+        lowered.withdrawable,
+        "the client offers \"Withdraw revocation\" only where this is true"
+    );
+    assert!(lowered.revoked);
+    assert!(!lowered.revoked_by_authority);
+}
+
+/// **What a withdrawal did crosses the seam whole**, and every other
+/// command's outcome carries none (ADR-0056 §6). The three flags hold three
+/// different values across the two reports, so a lowering that crossed any
+/// two of them, or mapped one to a constant, fails here.
+#[test]
+fn a_withdrawal_report_crosses_the_seam_whole() {
+    let base = || {
+        CommandResult::new(
+            EntityRef::new(EntityKind::Device, [0x11; 16]),
+            None,
+            [0x22; 16],
+            7,
+        )
+    };
+    assert!(CommandOutcome::from(&base()).withdrawal.is_none());
+
+    let back = CommandOutcome::from(&base().with_withdrawal(Withdrawal {
+        outcome: WithdrawalOutcome::Reinstated,
+        read_bound_released: true,
+        keys_resent: 4,
+        relay_intent_cancelled: false,
+    }))
+    .withdrawal
+    .expect("a withdrawal reports");
+    assert_eq!(back.outcome, WithdrawalOutcomeKind::Reinstated);
+    assert!(back.read_bound_released && !back.relay_intent_cancelled);
+    assert_eq!(back.keys_resent, 4);
+
+    let claimed = CommandOutcome::from(&base().with_withdrawal(Withdrawal {
+        outcome: WithdrawalOutcome::StillClaimed,
+        read_bound_released: false,
+        keys_resent: 0,
+        relay_intent_cancelled: true,
+    }))
+    .withdrawal
+    .expect("a withdrawal reports");
+    assert_eq!(claimed.outcome, WithdrawalOutcomeKind::StillClaimed);
+    assert!(!claimed.read_bound_released && claimed.relay_intent_cancelled);
+
+    for (core, seam) in [
+        (
+            WithdrawalOutcome::NotAuthor,
+            WithdrawalOutcomeKind::NotAuthor,
+        ),
+        (
+            WithdrawalOutcome::RepairRequired,
+            WithdrawalOutcomeKind::RepairRequired,
+        ),
+    ] {
+        assert_eq!(WithdrawalOutcomeKind::from(core), seam);
+    }
 }

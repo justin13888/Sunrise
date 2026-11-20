@@ -137,7 +137,7 @@ impl Engine {
     ) -> rusqlite::Result<Vec<([u8; 16], RevokeReason)>> {
         let mut stmt = conn.prepare(
             "SELECT op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
-                    recorded_at_ms, authority_identity_id, authority_sig
+                    recorded_at_ms, authority_identity_id, authority_sig, kind
              FROM device_revoke_ops
              WHERE authority_identity_id = ?1
              ORDER BY op_hlc_ms ASC, op_hlc_logical ASC, sender ASC,

@@ -796,7 +796,7 @@ const JSON_OBJECTS: &[JsonObject] = &[
         &["devices"],
         "/0",
         "{id, nickname, platform, this_device, revoked, read_bounded, current, \
-             admitted_after_revocation, revoked_by_authority}",
+             admitted_after_revocation, revoked_by_authority, withdrawable}",
         PLAIN,
     ),
     (
