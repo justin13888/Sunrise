@@ -74,6 +74,21 @@ enum UITestHarness {
     /// same reason as ``recoveryFlag``, and ignored without a scratch vault.
     static let relayFlag = "-sunrise-ui-test-relay"
 
+    /// The launch argument a UI test passes to find one **weekly** block in
+    /// its vault the moment it is created (#1209).
+    ///
+    /// Nothing a UI test can click makes a repeating block: the draft sheet
+    /// writes one-off blocks, and the one path that writes a series is the
+    /// `.ics` import (#1215), which on the Mac opens a file panel a test
+    /// cannot drive. So the harness imports ``WeeklyBlockSeed``'s document
+    /// through that same path, `CoreBridge.importIcal`, right after the vault
+    /// opens, and the calendar finds a series exactly as it would after a
+    /// user's import.
+    ///
+    /// Opt **in**, for the same reason as ``recoveryFlag``. Read only by the
+    /// single-vault session, and ignored without a scratch vault.
+    static let weeklyBlockFlag = "-sunrise-ui-test-weekly-block"
+
     /// The `UserDefaults` suite the relay session's settings read, emptied at
     /// launch. Never `.standard`: `AppSettings` moves what it finds there into
     /// its directory and deletes it, and those are the developer's values.
@@ -113,6 +128,45 @@ enum UITestHarness {
         arguments: [String] = ProcessInfo.processInfo.arguments
     ) -> Bool {
         scratchVault(arguments: arguments) != nil && arguments.contains(failCaptureFlag)
+    }
+
+    /// Whether the vault this process opens should hold the weekly block.
+    ///
+    /// `false` without a scratch vault, whatever else was passed, exactly as
+    /// ``usesMultiVault(arguments:)`` is: no launch that can reach a real vault
+    /// can have a block imported into it by a stray argument.
+    static func seedsWeeklyBlock(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) -> Bool {
+        scratchVault(arguments: arguments) != nil && arguments.contains(weeklyBlockFlag)
+    }
+
+    /// How the single-vault session opens its vault: as every launch does,
+    /// then, under ``weeklyBlockFlag``, with ``WeeklyBlockSeed`` imported.
+    ///
+    /// A seed that fails closes the vault and throws, so the session lands on
+    /// its failure screen naming why instead of on a calendar a test would
+    /// search for a block it never got.
+    static func openBridge(
+        arguments: [String]
+    ) -> @Sendable (URL, Data, String, Data?) async throws -> CoreBridge {
+        let seeds = seedsWeeklyBlock(arguments: arguments)
+        return { directory, root, appVersion, bundle in
+            let bridge = try await CoreBridge.open(
+                directory: directory,
+                vaultRoot: root,
+                appVersion: appVersion,
+                pairedBundle: bundle
+            )
+            guard seeds else { return bridge }
+            do {
+                try await WeeklyBlockSeed.seed(into: bridge, now: Date(), calendar: .current)
+            } catch {
+                await bridge.shutdown()
+                throw error
+            }
+            return bridge
+        }
     }
 
     /// Throw ``RefusedByUITestHarness`` when ``failsQuickCapture(arguments:)``.
@@ -186,7 +240,8 @@ enum UITestHarness {
     /// every key in memory, so neither can open the developer's vault or write
     /// to their login Keychain:
     ///
-    /// - **Single vault**, the default: the scratch directory *is* the vault.
+    /// - **Single vault**, the default: the scratch directory *is* the vault,
+    ///   opened through ``openBridge(arguments:)``.
     /// - **Multi-vault**, under ``multiVaultFlag``: a real ``VaultRegistry``
     ///   over ``registrySuite``, emptied here so every launch starts from the
     ///   one first vault a fresh install has, and each vault in it resolved to
@@ -205,7 +260,8 @@ enum UITestHarness {
             return SessionModel(
                 location: VaultLocation(directory: scratch),
                 rootStore: InMemoryVaultRootStore(),
-                appVersion: appVersion
+                appVersion: appVersion,
+                openBridge: openBridge(arguments: arguments)
             )
         }
         UserDefaults.standard.removePersistentDomain(forName: registrySuite)
@@ -395,4 +451,5 @@ enum RelaySeed {
         }
     }
 }
+
 #endif
