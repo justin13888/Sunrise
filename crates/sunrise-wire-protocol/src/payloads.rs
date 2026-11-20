@@ -110,6 +110,13 @@ pub struct AckPayload {
 
 /// `MsgKind::Nack` payload: rejection for a batch the server declined.
 ///
+/// **Reserved, never produced.** Nothing sends a `Nack`: a refused batch
+/// reaches the client as the relay's HTTP problem response, and the driver
+/// ignores a `Nack` frame, so producing one would silence a refusal the client
+/// acts on today. The type stays so the kind's shape is fixed before anything
+/// serves it (`docs/05-sync/wire-protocol.md` §Which kinds are live, decision
+/// Q-C-09).
+///
 /// Fields are ordered for canonical CBOR (key length then bytewise):
 /// `code` (4) < `reason` (6) < `batch_id` (8) < `stream_id` (9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
