@@ -3,21 +3,63 @@
 //! Per `docs/04-storage/blob-store.md`. Each chunk is its own file under
 //! `$VAULT/blobs/<blob_id_hex_2>/<blob_id_hex>/<chunk_idx>.bin`. Storage
 //! is opaque ciphertext; integrity comes from the AEAD tag inside.
+//!
+//! The client vault (`sunrise-core`, through `sunrise-storage`'s re-export)
+//! and the relay (`sunrise-server`, rooted per account) both write chunks
+//! through this one type, so the two share one layout and one atomic write.
+//! It lives here, beside the other staged-and-renamed write, so the relay
+//! need not depend on the client's storage crate for it (issue #775). Chunks
+//! are ciphertext and are not written owner-only: [`crate::write_private`] is
+//! for secrets.
 
+use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use thiserror::Error;
 
 /// Blob store errors.
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum BlobStoreError {
     /// IO error.
-    #[error("blob store io error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::Error),
     /// Chunk index out of range (negative is impossible by type).
-    #[error("chunk index {0} exceeds chunk_count {1}")]
     ChunkOutOfRange(u32, u32),
+}
+
+impl fmt::Display for BlobStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "blob store io error: {e}"),
+            Self::ChunkOutOfRange(idx, count) => {
+                write!(f, "chunk index {idx} exceeds chunk_count {count}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BlobStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::ChunkOutOfRange(..) => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for BlobStoreError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+/// Lowercase hex of `bytes`: a blob id's directory name.
+fn hex(bytes: &[u8]) -> String {
+    use fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 /// Blob store rooted at a vault directory.
@@ -35,11 +77,11 @@ impl BlobStore {
     }
 
     fn chunk_path(&self, blob_id: &[u8; 16], chunk_idx: u32) -> PathBuf {
-        let hex = hex::encode(blob_id);
-        let prefix = &hex[..2];
+        let name = hex(blob_id);
+        let prefix = &name[..2];
         self.root
             .join(prefix)
-            .join(&hex)
+            .join(&name)
             .join(format!("{chunk_idx}.bin"))
     }
 
@@ -98,8 +140,8 @@ impl BlobStore {
 
     /// Remove all chunks of a blob (tombstone GC).
     pub fn delete_all(&self, blob_id: &[u8; 16]) -> Result<(), BlobStoreError> {
-        let hex = hex::encode(blob_id);
-        let dir = self.root.join(&hex[..2]).join(&hex);
+        let name = hex(blob_id);
+        let dir = self.root.join(&name[..2]).join(&name);
         match fs::remove_dir_all(&dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
@@ -131,6 +173,37 @@ mod tests {
         assert!(!store.has_all(&blob_id, 3).unwrap());
     }
 
+    /// The layout is shared with the relay and with every vault already on
+    /// disk, so the exact path is pinned rather than only round-tripped.
+    #[test]
+    fn a_chunk_lands_at_the_documented_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::new(dir.path()).unwrap();
+        let mut blob_id = [0u8; 16];
+        blob_id[0] = 0x0a;
+        blob_id[15] = 0xff;
+        store.put_chunk(&blob_id, 7, b"c").unwrap();
+        let expected = dir
+            .path()
+            .join("blobs")
+            .join("0a")
+            .join("0a0000000000000000000000000000ff")
+            .join("7.bin");
+        assert_eq!(fs::read(expected).unwrap(), b"c".to_vec());
+    }
+
+    #[test]
+    fn an_io_error_keeps_its_message_and_source() {
+        use std::error::Error as _;
+        let e = BlobStoreError::from(std::io::Error::other("disk gone"));
+        assert_eq!(e.to_string(), "blob store io error: disk gone");
+        assert_eq!(e.source().unwrap().to_string(), "disk gone");
+
+        let e = BlobStoreError::ChunkOutOfRange(3, 2);
+        assert_eq!(e.to_string(), "chunk index 3 exceeds chunk_count 2");
+        assert!(e.source().is_none());
+    }
+
     #[test]
     fn missing_chunk_returns_none() {
         let dir = tempfile::tempdir().unwrap();
@@ -156,8 +229,8 @@ mod tests {
         let mut sibling = doomed;
         sibling[15] = 0x00;
         assert_eq!(
-            hex::encode(doomed)[..2],
-            hex::encode(sibling)[..2],
+            hex(&doomed)[..2],
+            hex(&sibling)[..2],
             "both blobs live under one prefix directory"
         );
         store.put_chunk(&doomed, 0, b"doomed").unwrap();

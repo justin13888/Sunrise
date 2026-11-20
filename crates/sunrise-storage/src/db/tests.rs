@@ -1,4 +1,3 @@
-use super::cipher::{await_cipher_ready, ensure_cipher_ready, probe_cipher};
 use super::{Db, DbError};
 use crate::migrations::{BASELINE_STORAGE_V, MIGRATIONS};
 use rusqlite::Connection;
@@ -10,63 +9,20 @@ fn vault_key() -> VaultRootKey {
     VaultRootKey::from_bytes([0xab; 32])
 }
 
-/// What SQLCipher returns for a key applied before it has initialised.
-fn uninitialised_cipher() -> rusqlite::Error {
-    rusqlite::Error::SqliteFailure(
-        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
-        Some("An error occurred with PRAGMA key or rekey.".into()),
-    )
-}
-
+/// The gate itself, and its retries, are tested in `sunrise-sqlcipher`. What
+/// is left here is how a vault reports a cipher that never started.
 #[test]
-fn the_cipher_gate_waits_out_an_initialisation_in_progress() {
-    let mut probes = 0;
-    let mut waits = 0;
-    let ready = await_cipher_ready(
-        || {
-            probes += 1;
-            if probes < 4 {
-                Err(uninitialised_cipher())
-            } else {
-                Ok(())
-            }
-        },
-        10,
-        || waits += 1,
-    );
-    assert_eq!(ready, Ok(()));
-    assert_eq!((probes, waits), (4, 3));
-}
-
-#[test]
-fn a_cipher_that_never_initialises_is_reported_as_unavailable_with_its_error() {
-    let mut probes = 0;
-    let detail = await_cipher_ready(
-        || {
-            probes += 1;
-            Err(uninitialised_cipher())
-        },
-        3,
-        || {},
-    )
-    .unwrap_err();
-    assert_eq!(probes, 3, "the gate gives up after its attempts");
-    assert!(detail.contains("failed 3 times"), "{detail}");
-    assert!(detail.contains("PRAGMA key or rekey"), "{detail}");
-
-    let e = DbError::CipherUnavailable { detail };
+fn a_cipher_that_never_initialises_is_a_fatal_vault_error_with_its_detail() {
+    let e = DbError::CipherUnavailable {
+        detail: "keying an in-memory database failed 3 times".into(),
+    };
+    let text = e.to_string();
     assert!(
-        e.to_string()
-            .starts_with("SQLCipher could not be initialised"),
-        "{e}"
+        text.starts_with("SQLCipher could not be initialised"),
+        "{text}"
     );
+    assert!(text.ends_with("failed 3 times"), "{text}");
     assert_eq!(e.as_error_code(), ErrorCode::FatalInternal);
-}
-
-#[test]
-fn this_process_cipher_is_ready() {
-    ensure_cipher_ready().unwrap();
-    probe_cipher().unwrap();
 }
 
 #[test]

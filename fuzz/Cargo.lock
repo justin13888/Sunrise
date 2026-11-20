@@ -2117,6 +2117,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-private-file"
+version = "0.2.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "sunrise-server"
 version = "0.2.0"
 dependencies = [
@@ -2150,7 +2157,8 @@ dependencies = [
  "sunrise-id",
  "sunrise-log",
  "sunrise-pairing",
- "sunrise-storage",
+ "sunrise-private-file",
+ "sunrise-sqlcipher",
  "sunrise-telemetry",
  "sunrise-wire-protocol",
  "tempfile",
@@ -2164,15 +2172,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-sqlcipher"
+version = "0.2.0"
+dependencies = [
+ "rusqlite",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "sunrise-storage"
 version = "0.2.0"
 dependencies = [
- "hex",
  "rusqlite",
  "sunrise-cbor",
  "sunrise-crypto",
  "sunrise-error",
  "sunrise-id",
+ "sunrise-private-file",
+ "sunrise-sqlcipher",
  "thiserror 1.0.69",
  "tracing",
 ]

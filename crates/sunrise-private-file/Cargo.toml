@@ -7,7 +7,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-description = "The one owner-only file write every secret Sunrise puts on disk goes through"
+description = "The one owner-only file write every secret Sunrise puts on disk goes through, and the blob chunk store the vault and the relay share"
 
 # The workspace's `[workspace.lints]`, copied rather than inherited, with one
 # change: `unsafe_code` is `deny` here instead of `forbid`. A member crate

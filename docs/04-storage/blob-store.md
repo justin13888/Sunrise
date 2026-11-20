@@ -34,7 +34,7 @@ relay's storage key, and the `{blob_id}` path segment of `GET /api/v1/blobs/{blo
 $VAULT/blobs/<blob_id_hex[..2]>/<blob_id_hex>/<chunk_idx>.bin
 ```
 
-Per `crates/sunrise-storage/src/blob_store.rs:4,37-44`: the first two hex
+Per `crates/sunrise-private-file/src/blob_store.rs:4,79-86`: the first two hex
 characters of the 16-byte `blob_id` are a fanout directory (256 buckets), then a
 directory named by the full hex, then one file per chunk index. Each file is one
 sealed chunk — opaque ciphertext, no header (see

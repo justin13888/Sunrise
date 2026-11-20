@@ -8,7 +8,7 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 
 > **Implementation status.** What `crates/sunrise-server` builds today is the
 > self-host single-binary shape — `rusqlite` against one SQLite file (`store/`)
-> and blobs on the local filesystem (`sunrise_storage::BlobStore`) — and, as an
+> and blobs on the local filesystem (`sunrise_private_file::BlobStore`) — and, as an
 > opt-in, several relay nodes over one Postgres database (`store/postgres/`,
 > `tokio-postgres`; [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md),
 > [`self-hosting.md`](./self-hosting.md) §Several nodes over Postgres), and blobs
@@ -79,14 +79,16 @@ Stateless except for:
 |---|---|---|
 | Server core | Rust, `kynos` over `hyper` ([ADR-0021](../11-adr/0021-kynos-openapi-server.md)); the sync stream is `kynos::response::stream::sse`, and the routing, the security schemes and the OpenAPI 3.2 document all come off the handlers | yes |
 | DB access | `rusqlite` (workspace feature set `bundled-sqlcipher`, `blob`, `trace`); `tokio-postgres` with a `deadpool-postgres` pool for the opt-in Postgres backend | yes |
-| Object storage | `sunrise_storage::BlobStore` — chunk files on the local filesystem | yes |
+| Object storage | `sunrise_private_file::BlobStore` — chunk files on the local filesystem | yes |
 | Push | `push::PushProvider` trait; `push::ApnsProvider` (HTTP/2, `.p8` provider tokens) behind the `push::Dispatcher` queue. FCM and Web Push are not built | APNs only |
 | HTTPS client (JWKS/discovery, APNs) | `hyper` + `hyper-rustls` | yes |
 | Containerization | OCI image on a `debian:<suite>-slim` runtime base (`Dockerfile`) | yes |
 
 The relay has **no direct** dependency on `sunrise-crypto`. It reaches the crate
-transitively through `sunrise-pairing` and `sunrise-storage`, and never calls
-it. Its only view into an op is `sunrise_cbor::decode_envelope_header`, a type
+transitively through `sunrise-pairing` alone, and never calls it. It does not
+depend on `sunrise-storage`, the client vault: the blob chunk store it shares
+with the client is `sunrise-private-file`'s, and the wait for SQLCipher to
+initialise is `sunrise-sqlcipher`'s. Its only view into an op is `sunrise_cbor::decode_envelope_header`, a type
 with no payload field.
 
 Why Rust: shares the wire-format crate with the client core (one source of truth for the protocol) and is operationally cheap.

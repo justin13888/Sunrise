@@ -74,7 +74,11 @@ sunrise-log = { workspace = true }
 # rolling windows and their limits — lives with the protocol it bounds, so the
 # relay and the spec read one set of constants.
 sunrise-pairing = { workspace = true }
-sunrise-storage = { workspace = true }
+# `BlobStore`, the chunk layout and atomic write the client vault keeps too.
+sunrise-private-file = { workspace = true }
+# The wait for SQLCipher to initialise before the store's first key (#521).
+# Not `sunrise-storage`, the client vault, which the relay does not open.
+sunrise-sqlcipher = { workspace = true }
 # Redacted trace export, off unless `[observability]` is written.
 sunrise-telemetry = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
