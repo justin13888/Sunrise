@@ -58,16 +58,15 @@ uniffi::custom_type!(Timestamp, i64, {
 /// The instant `ms` epoch milliseconds name, for a value the foreign side
 /// passed. The whole range reads as itself, its last second included, which
 /// `Timestamp::from_millisecond` refuses (#1204); only a value past either
-/// end is refused.
+/// end is refused. It is [`sunrise_client_core::civil::instant`], the path
+/// the editors read `now` through, so every out-of-range instant the seam
+/// refuses carries the same `BadTime`.
 ///
 /// # Errors
 ///
 /// [`BindingError::BadTime`] past either end of the timestamp range.
 pub(crate) fn timestamp_of_ms(ms: i64) -> Result<Timestamp, BindingError> {
-    sunrise_domain::time::timestamp_at_ms(ms).ok_or_else(|| BindingError::BadTime {
-        value: ms.to_string(),
-        cause: "past the ends of the timestamp range".to_owned(),
-    })
+    sunrise_client_core::civil::instant(ms).map_err(crate::editing::civil_error)
 }
 
 // Civil (zone-less) values keep their ISO-8601 text. `jiff`'s `Display` and
@@ -318,9 +317,12 @@ mod tests {
         assert_eq!(lift(253_402_207_200_500).unwrap(), last);
         assert_eq!(timestamp_of_ms(253_402_207_200_500).unwrap(), last);
         assert!(lift(Timestamp::MAX.as_millisecond() + 1).is_err());
-        assert!(matches!(
-            timestamp_of_ms(Timestamp::MIN.as_millisecond() - 1),
-            Err(BindingError::BadTime { .. })
-        ));
+        let before = Timestamp::MIN.as_millisecond() - 1;
+        // The same `BadTime` the editors' `civil::instant` path gives.
+        let Err(BindingError::BadTime { value, cause }) = timestamp_of_ms(before) else {
+            panic!("{before} ms is before the range");
+        };
+        let expected = sunrise_client_core::civil::CivilError::OutOfRange { ms: before };
+        assert_eq!((value, cause), (before.to_string(), expected.to_string()));
     }
 }
