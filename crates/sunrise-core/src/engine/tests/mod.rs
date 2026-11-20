@@ -194,6 +194,9 @@ mod routines;
 /// Time blocks and the blocks an import writes.
 mod blocks;
 
+/// Recurring blocks and the scopes an edit of one takes.
+mod block_recurrence;
+
 /// A block's kind, series and import fields on the wire and in storage.
 mod block_series;
 

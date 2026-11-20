@@ -291,12 +291,14 @@ impl Engine {
         let mut block = read_block(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
         let anchor = block.starts_at.clone();
+        let was = block.series();
         apply_block_patch(&mut block, patch)?;
         // Moving a series' anchor moves its occurrence keys, and each
         // occurrence binding moves with the occurrence it named.
         block.shift_bindings(&anchor);
         block.updated_at = ms_to_ts(now_ms.cast_signed());
         block.validate_invariants(&self.device_zone())?;
+        follow_anchor(&mut block, was)?;
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
         Ok(CommandResult::new(id, None, done.op_id, done.seq))
     }
@@ -435,11 +437,13 @@ impl Engine {
             ..block
         };
         let anchor = next.starts_at.clone();
+        let was = next.series();
         apply_block_patch(&mut next, patch)?;
         // An edit that moves the continuation moves its occurrence keys, and
-        // each binding moves with the occurrence it named.
+        // each binding and exception moves with the occurrence it named.
         next.shift_bindings(&anchor);
         next.validate_invariants(&tz)?;
+        follow_anchor(&mut next, was)?;
         let create = if existing.is_some() {
             InnerOp::BlockUpdate(Box::new(next.clone()))
         } else {
@@ -826,6 +830,22 @@ fn recurring_block(
         .series()
         .ok_or_else(|| EngineError::Invalid(format!("block {id} does not recur")))?;
     Ok((block, series))
+}
+
+/// Move the exceptions of a recurring block whose edit moved its anchor
+/// from series `was`'s, each with the occurrence it named
+/// ([`BlockSeries::follow_anchor`]). An edit that would leave one applying to
+/// nothing is refused. Called once the edited block's invariants hold, so a
+/// bad anchor or end is reported as itself.
+fn follow_anchor(block: &mut Block, was: Option<BlockSeries>) -> Result<(), EngineError> {
+    let (Some(was), Some(mut series)) = (was, block.series()) else {
+        return Ok(());
+    };
+    series
+        .follow_anchor(&was)
+        .map_err(|e| EngineError::Invalid(format!("block {}: {e}", block.id)))?;
+    block.exceptions = series.exceptions;
+    Ok(())
 }
 
 /// A key the series cannot edit, as the engine reports it: a key that is

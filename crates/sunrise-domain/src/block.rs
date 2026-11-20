@@ -32,7 +32,7 @@ pub use binding::OccurrenceBinding;
 pub use conflict::{merge_blocks, overlaps, BlockOverlap};
 pub use series::{
     expand_block, split_block_id, BlockException, BlockOccurrence, BlockSeries, BlockSeriesError,
-    BlockSeriesSplit,
+    BlockSeriesSplit, StrandedException,
 };
 
 use crate::common::NoteBody;

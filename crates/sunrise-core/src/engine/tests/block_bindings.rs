@@ -1,11 +1,11 @@
 //! A task bound to one occurrence of a recurring block
 //! (`docs/02-domain/time-blocks.md` §Recurring blocks, #1162).
 //!
-//! The series is `blocks::weekly`: a "Standup" every Wednesday from
+//! The series is `block_recurrence::weekly`: a "Standup" every Wednesday from
 //! 2026-03-04, whose occurrence keys are `key(4)`, `key(11)`, `key(18)` and
 //! so on.
 
-use super::blocks::{at, key, march, scoped_update, weekly};
+use super::block_recurrence::{at, key, march, scoped_update, weekly};
 use super::*;
 use crate::feature::{BLOCK_OCCURRENCE_TASKS_FEATURE, BLOCK_RECURRENCE_FEATURE};
 use sunrise_domain::{split_block_id, EditScope, OccurrenceBinding};
@@ -92,7 +92,7 @@ fn a_whole_series_binding_shows_on_every_occurrence_beside_one_weeks_own() {
     let id = bindable(&e, &mut db);
     let every = new_task(&e, &mut db, "Agenda");
     let one = new_task(&e, &mut db, "Demo");
-    super::blocks::bound_to_the_series(&e, &mut db, id, every);
+    super::block_recurrence::bound_to_the_series(&e, &mut db, id, every);
     e.apply(&mut db, bind(id, one, Some(key(11)))).unwrap();
 
     assert_eq!(titles_on(&e, &db, 4), ["Agenda"]);
@@ -150,7 +150,7 @@ fn a_reimport_keeps_the_occurrence_bindings_and_moves_them_with_the_anchor() {
         true,
     )
     .unwrap();
-    super::blocks::recur(&e, &mut db, id, "FREQ=WEEKLY");
+    super::block_recurrence::recur(&e, &mut db, id, "FREQ=WEEKLY");
     let task = new_task(&e, &mut db, "Prepare notes");
     e.apply(&mut db, bind(id, task, Some(key(11)))).unwrap();
     let bound_at = |db: &Db| read_block(db.conn(), id.bytes()).unwrap().unwrap();
@@ -396,7 +396,7 @@ impl Pair {
         )
         .unwrap();
         set_clock(&ca, T0 + 1_000);
-        super::blocks::recur(&ea, &mut dba, id, "FREQ=WEEKLY");
+        super::block_recurrence::recur(&ea, &mut dba, id, "FREQ=WEEKLY");
         let on_a = new_task(&ea, &mut dba, "Agenda");
         let on_b = new_task(&eb, &mut dbb, "Demo");
         sync(&ea, &mut dba, &eb, &mut dbb);

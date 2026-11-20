@@ -223,6 +223,17 @@ The core uses it ([#1148](https://github.com/justin13888/Sunrise/issues/1148)):
   `split_block_id(series root, key)` as one group (ADR-0065 §6), and *all*
   edits the block. At the first occurrence *this and future* is *all*, and
   splitting again at a key edits the continuation already there.
+- An edit that moves a series' anchor, of the whole block or of a
+  continuation, moves each exception's key by the civil distance the anchor
+  moved (`BlockSeries::follow_anchor`, [#1200](https://github.com/justin13888/Sunrise/issues/1200)),
+  so a cancelled occurrence stays cancelled and an override keeps applying.
+  An override's own times do not move. Where the rule would not produce a
+  moved key that it produced before, as when its `BYDAY` holds the weekday
+  while the anchor's date moves, the edit is refused. A re-import writes the
+  exceptions the file states and moves none. As for occurrence bindings
+  below, the move re-keys only the exceptions the moving device holds: one
+  another device writes concurrently is not moved, so it applies to nothing
+  or the move's write replaces it. Neither is repaired yet.
 - The continuation a split writes takes no whole-block task bindings and no
   `source` or `external_id`: a task bound to the whole block stays bound to
   the block it was bound to, and a re-import of the external item writes the
