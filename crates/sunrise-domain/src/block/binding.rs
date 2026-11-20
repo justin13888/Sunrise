@@ -6,9 +6,8 @@
 //! `occurrence_tasks` OR-set, beside `tasks`, whose bindings name every
 //! occurrence. Pure functions of the Block, with no clock and no storage.
 
-use crate::routine_gen::{format_key, parse_occurrence_key};
+use super::series::{civil_distance, shift_key};
 use crate::time::SunriseTime;
-use jiff::civil::DateTime;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use sunrise_id::EntityRef;
@@ -78,33 +77,18 @@ impl crate::Block {
     /// key is the intended civil start). A key, or an anchor, that is not a
     /// civil time is kept as it is.
     pub fn shift_bindings(&mut self, from: &SunriseTime) {
-        let (Some(from), Some(to)) = (civil_of(from), civil_of(&self.starts_at)) else {
+        let Some(moved) = civil_distance(from, &self.starts_at) else {
             return;
         };
-        let moved = to.duration_since(from);
         if moved.is_zero() {
             return;
         }
         self.occurrence_tasks = std::mem::take(&mut self.occurrence_tasks)
             .into_iter()
-            .map(|b| {
-                let shifted = parse_occurrence_key(b.key())
-                    .and_then(|at| at.checked_add(moved).ok())
-                    .map(|at| format_key(at.date(), at.time()));
-                match shifted {
-                    Some(key) => OccurrenceBinding::new(key, b.task()),
-                    None => b,
-                }
+            .map(|b| match shift_key(b.key(), moved) {
+                Some(key) => OccurrenceBinding::new(key, b.task()),
+                None => b,
             })
             .collect();
-    }
-}
-
-/// The civil time of a `floating` or `zoned` bound, the kinds a series
-/// anchor takes.
-fn civil_of(t: &SunriseTime) -> Option<DateTime> {
-    match t {
-        SunriseTime::Floating { civil } | SunriseTime::Zoned { civil, .. } => Some(*civil),
-        _ => None,
     }
 }

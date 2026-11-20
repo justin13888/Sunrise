@@ -16,7 +16,9 @@
 //! off one.
 
 use crate::common::NoteBody;
-use crate::routine_gen::{civil_frame_rule, expand, parse_occurrence_key, ExpandError, SplitError};
+use crate::routine_gen::{
+    civil_frame_rule, expand, format_key, parse_occurrence_key, ExpandError, SplitError,
+};
 use crate::rrule::RRule;
 use crate::time::SunriseTime;
 use crate::unknown::Unknowns;
@@ -127,6 +129,33 @@ pub enum BlockSeriesError {
     /// The rule could not be expanded over the window.
     #[error(transparent)]
     Expand(#[from] ExpandError),
+}
+
+/// Why an edit that moves a series' anchor cannot carry its exceptions
+/// along ([`BlockSeries::follow_anchor`]).
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("the exception at {key} names no occurrence once the series moves")]
+pub struct StrandedException {
+    /// The key, before the move, of the exception that would apply to
+    /// nothing.
+    pub key: String,
+}
+
+/// The civil distance from anchor `from` to anchor `to`, when both are
+/// `floating` or `zoned`, the kinds a series anchor takes.
+pub(crate) fn civil_distance(from: &SunriseTime, to: &SunriseTime) -> Option<SignedDuration> {
+    let civil = |t: &SunriseTime| match t {
+        SunriseTime::Floating { civil } | SunriseTime::Zoned { civil, .. } => Some(*civil),
+        _ => None,
+    };
+    Some(civil(to)?.duration_since(civil(from)?))
+}
+
+/// Occurrence key `key` moved by the civil distance `moved`, when it is an
+/// occurrence key and the move stays in range.
+pub(crate) fn shift_key(key: &str, moved: SignedDuration) -> Option<String> {
+    let at = parse_occurrence_key(key)?.checked_add(moved).ok()?;
+    Some(format_key(at.date(), at.time()))
 }
 
 /// The anchor of a series, read in civil space.
@@ -249,6 +278,43 @@ impl BlockSeries {
     pub fn occurrence_bounds(&self, key: &str) -> Option<(SunriseTime, SunriseTime)> {
         let anchor = self.anchor().ok()?;
         self.bounds_of(&anchor, self.occurrence_civil(key)?)
+    }
+
+    /// Re-key the exceptions for an edit that moved the anchor from `was`'s
+    /// to this series': each key moves by the civil distance the anchor
+    /// moved, so an exception keeps applying to the occurrence it named (an
+    /// occurrence key is the intended civil start). `was` is the series
+    /// before the edit, holding the same exceptions. An exception's own
+    /// `starts_at` and `ends_at` are times the user chose and do not move.
+    ///
+    /// A key that is not an occurrence key, or an anchor that is not a civil
+    /// time, is kept as it is. An exception `was` did not apply moves with
+    /// the rest and still applies to nothing.
+    ///
+    /// # Errors
+    /// [`StrandedException`] when an exception `was` applied would apply to
+    /// nothing once moved, because this rule does not produce the moved key
+    /// (a rule whose `BYDAY` holds the weekday while the anchor's date
+    /// moves). The exceptions are left as they were.
+    pub fn follow_anchor(&mut self, was: &Self) -> Result<(), StrandedException> {
+        let Some(moved) = civil_distance(&was.starts_at, &self.starts_at) else {
+            return Ok(());
+        };
+        if moved.is_zero() {
+            return Ok(());
+        }
+        let mut exceptions = BTreeMap::new();
+        for (key, exception) in &self.exceptions {
+            let shifted = shift_key(key, moved);
+            let applied = was.produces_key(key);
+            let follows = shifted.as_deref().is_some_and(|k| self.produces_key(k));
+            if applied && !follows {
+                return Err(StrandedException { key: key.clone() });
+            }
+            exceptions.insert(shifted.unwrap_or_else(|| key.clone()), exception.clone());
+        }
+        self.exceptions = exceptions;
+        Ok(())
     }
 
     /// Edit one occurrence (§Recurring blocks, *Edit scope* "this"): write
