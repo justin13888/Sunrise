@@ -20,14 +20,15 @@ on:
         description: >-
           The commit `Bench A/B` compares the dispatched ref against. Empty
           means its parent. The dispatched ref itself makes an A/A run, which
-          measures the runner's own spread.
+          measures the spread of the runner itself.
         required: false
         default: ""
 
 # The whole scope this workflow needs, stated where it can be read. Every job
 # below checks out, and `actions/checkout` wants `contents: read` and nothing
-# more. No `run:` step in this file reads `GITHUB_TOKEN` and none reads a
-# secret. Two actions read the token without being asked to — `oven-sh/setup-bun`
+# more. One `run:` step reads `GITHUB_TOKEN` — `bench-ab`'s base choice, which
+# lists earlier runs of this workflow under a job-level grant that says why —
+# and none reads a secret. Two actions read the token without being asked to — `oven-sh/setup-bun`
 # and `taiki-e/install-action` each default an input to `github.token` — and
 # both spend it on public GitHub API reads to dodge the anonymous rate limit,
 # which a `contents: read` token already satisfies.
@@ -1056,8 +1057,12 @@ jobs:
   #
   # After the merge, never on a pull request (#1117): two full bench runs cost
   # about twice `bench-regression`'s leg, and master is where the slow work runs.
-  # On a push the base is the commit master moved from; on a dispatch it is the
-  # `bench_ab_base` input, or the dispatched commit's parent.
+  # On a push the base is the head the last successful `bench-ab` on master
+  # benched, not the commit master moved from: the workflow-level concurrency
+  # group cancels a queued push run whenever a newer one queues, so the commit
+  # master moved from may be one no run ever benched, and the commits it brought
+  # would never be compared. On a dispatch the base is the `bench_ab_base`
+  # input, or the dispatched commit's parent.
   bench-ab:
     name: Bench A/B (base vs head)
     runs-on: ubuntu-latest
@@ -1069,6 +1074,13 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch'
       || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    # `actions: read` on top of the workflow's `contents: read`, for one step:
+    # the base choice lists this workflow's earlier push runs on master and
+    # reads which of them finished this job. Read-only; nothing here writes
+    # through the token.
+    permissions:
+      contents: read
+      actions: read
     env:
       # The sizes `baseline.rs` records, as in `bench-regression`.
       SUNRISE_BENCH_COMPACT_TASKS: "10000"
@@ -1093,13 +1105,43 @@ jobs:
           save-if: false
       - name: Choose the base
         id: base
+        # On a push: the newest of the last 20 completed push runs on master
+        # whose `Bench A/B` job succeeded and whose head is an ancestor of
+        # this one. A queued run the concurrency group cancelled never ran
+        # this job, so it is passed over, and the commits it carried are
+        # compared here instead of nowhere. A failed comparison is passed over
+        # too, so a range that failed stays under comparison until a run
+        # passes. With no such run in the window (the first run, or twenty
+        # failures in a row) it falls back to the commit master moved from,
+        # and says so.
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
           INPUT_BASE: ${{ inputs.bench_ab_base }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          JOB_NAME: Bench A/B (base vs head)
         run: |
           if [ "$EVENT" = push ]; then
-            base="$BEFORE"
+            base=""
+            runs=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=master&event=push&status=completed&per_page=20" \
+              --jq ".workflow_runs[] | select(.id != $RUN_ID) | \"\(.id) \(.head_sha)\"")
+            while read -r id sha; do
+              [ -n "$id" ] || continue
+              git merge-base --is-ancestor "$sha" HEAD 2>/dev/null || continue
+              conclusion=$(gh api --paginate "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+                --jq ".jobs[] | select(.name == env.JOB_NAME) | .conclusion")
+              if [ "$conclusion" = success ]; then
+                base="$sha"
+                echo "Last benched head: $sha (run $id)"
+                break
+              fi
+            done <<< "$runs"
+            if [ -z "$base" ]; then
+              echo "::warning::no earlier successful Bench A/B run found; comparing against the commit master moved from"
+              base="$BEFORE"
+            fi
           else
             base="${INPUT_BASE:-HEAD^}"
           fi

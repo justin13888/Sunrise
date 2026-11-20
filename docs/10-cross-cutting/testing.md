@@ -288,8 +288,13 @@ The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross
   metric of the head with the base's rather than with `bench/baseline.json`.
   The head must be complete, as `--check` requires; a bench only the head has
   is reported and skipped. It runs after every merge to master, against the
-  commit master moved from, and on a dispatch, against the `bench_ab_base`
-  input or the dispatched commit's parent. It never runs on a pull request: two
+  head the last successful A/B run on master benched, and on a dispatch,
+  against the `bench_ab_base` input or the dispatched commit's parent. Not
+  against the commit master moved from: the workflow's concurrency group
+  cancels a queued push run whenever a newer one queues, so that commit may be
+  one no run benched, and the commits it brought would never be compared. With
+  no successful run among the last 20, it falls back to the commit master
+  moved from and warns. It never runs on a pull request: two
   full bench runs cost about twice a `bench-regression` leg, and master is
   where the slow work runs (#1117).
 - **The A/B tolerance comes from an A/A run.** Running the base and the head
