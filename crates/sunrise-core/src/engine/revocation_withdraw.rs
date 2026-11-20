@@ -236,7 +236,11 @@ impl Engine {
     ///    releases the device's read bound here when ADR-0056 §4's three
     ///    conditions hold.
     /// 3. This replica's unsent `relay_revocation_intents` row for the device
-    ///    is deleted (§5). One already sent cannot be taken back: the relay
+    ///    is deleted (§5), unless the relay is still owed it: the register
+    ///    still names the device, or a live claim of this device's own does
+    ///    (its identity-signed revocation, which shares the row). Then the row
+    ///    stays and `relay_intent_cancelled` is `false`. One already sent
+    ///    cannot be taken back: the relay
     ///    has no reinstatement yet, and [`Withdrawal::relay_intent_cancelled`]
     ///    is how a caller says so.
     /// 4. When the bound is released, every epoch this device holds is sealed
@@ -333,10 +337,21 @@ impl Engine {
                 &seal_under.1,
             )?;
 
-            let relay_intent_cancelled = tx.execute(
-                "DELETE FROM relay_revocation_intents WHERE device_id = ?",
-                params![&target[..]],
-            )? > 0;
+            // The intents table holds one row per device, and every claim this
+            // device makes of the target shares it, the identity-signed one
+            // (ADR-0058) included. So the row is cancelled only once nothing
+            // still owes the relay its telling: the register no longer names
+            // the device, and no live claim of this device's own does either.
+            // A claim of this device's that the walk gates keeps the row too,
+            // so the relay is told should the gate lift; the drain sends only
+            // what the register names, so a kept row is never sent early.
+            let still_owed =
+                self.is_revoked(tx, &target)? || live_revocation_names(tx, &target, Some(&me[..]))?;
+            let relay_intent_cancelled = !still_owed
+                && tx.execute(
+                    "DELETE FROM relay_revocation_intents WHERE device_id = ?",
+                    params![&target[..]],
+                )? > 0;
 
             let bounded_after = self.is_read_bounded(tx, &target)?;
             let member: Option<CertColumns> = tx

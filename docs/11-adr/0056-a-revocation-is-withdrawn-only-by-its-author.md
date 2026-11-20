@@ -228,7 +228,11 @@ withdrawal reverses the relay's half too:
 
 - **The command reverses the queued telling.** It deletes an undrained
   `relay_revocation_intents` row for the device in the same transaction, and
-  queues a reinstatement intent that the sync driver drains the same way.
+  queues a reinstatement intent that the sync driver drains the same way. The
+  row is one per device and shared by every claim this device makes of it, so
+  it is kept while the relay is still owed the telling: while the register
+  still names the device, or a live claim of this device's own does, such as
+  its identity-signed revocation (ADR-0058).
 - **The relay records who revoked the device.** `DELETE
   /api/v1/devices/by-vault-id/{id}` records the calling device on the row when
   the request is device-signed.

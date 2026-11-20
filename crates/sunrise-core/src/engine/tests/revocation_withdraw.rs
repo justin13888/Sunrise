@@ -382,6 +382,49 @@ fn the_command_reports_a_claim_that_remains() {
     assert!(eh.is_revoked(db.conn(), &x_id).unwrap());
 }
 
+/// **A claim of this device's own that remains keeps the relay's telling
+/// queued** (ADR-0056 §5): the intents table holds one row per device, shared
+/// by this device's ordinary revocation and its identity-signed one
+/// (ADR-0058). Withdrawing the ordinary one leaves the authority claim live
+/// and the device revoked, so the row stays, the drain still sends it, and
+/// the result does not say it was cancelled.
+#[test]
+fn a_claim_that_remains_keeps_the_relay_intent() {
+    let e = engines(3);
+    let (eh, ex, eother) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    for d in [ex, eother] {
+        trust(eh, &mut db, d);
+        advertise(eh, &mut db, d);
+    }
+    let x_id = ex.keychain.device_id();
+    revoke(eh, &mut db, eh, x_id, T0);
+    super::revocation_authority::revoke_by_identity(eh, &mut db, eh, x_id, T0 + 1_000);
+    db.conn()
+        .execute(
+            "INSERT INTO relay_revocation_intents (device_id, created_at_ms) VALUES (?, ?)",
+            params![&x_id[..], 1_i64],
+        )
+        .unwrap();
+    assert!(device_list_row(eh, &db, &x_id).withdrawable);
+
+    let w = withdraw_cmd(eh, &mut db, x_id).unwrap().withdrawal.unwrap();
+    assert_eq!(w.outcome, WithdrawalOutcome::StillClaimed);
+    assert!(!w.relay_intent_cancelled);
+    assert_eq!(emitted(&db, "device.revoke_withdraw"), 1);
+    assert!(eh.is_revoked(db.conn(), &x_id).unwrap());
+    assert_eq!(pending_relay_revocations(&db), vec![x_id]);
+    let owed = db
+        .conn()
+        .prepare(crate::relay_intents::OWED_RELAY_REVOCATIONS_SQL)
+        .unwrap()
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(owed, vec![x_id.to_vec()], "the drain still sends it");
+}
+
 /// **A revocation that rotated the identity away cannot be undone by a
 /// withdrawal** (ADR-0056 §4): the device's cert names a retired identity,
 /// so it is not a member, the result says it must be paired again, and
