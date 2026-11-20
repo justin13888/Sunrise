@@ -12,12 +12,12 @@
 //! BLAKE3 hash, a parsed upload id, a content address — so no path is ever
 //! built from a string a client spelled, and none reveals an account id to
 //! anyone reading the disk. Chunks are written to a temporary and renamed into
-//! place whole by [`sunrise_storage::BlobStore`].
+//! place whole by [`sunrise_private_file::BlobStore`].
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sunrise_storage::BlobStore;
+use sunrise_private_file::BlobStore;
 
 use super::{
     AccountKey, AccountTree, Area, BackupTotals, BlobBackend, BlobError, BlobUsage,

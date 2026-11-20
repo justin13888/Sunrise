@@ -183,6 +183,9 @@ THRESHOLDS: dict[str, int] = {
     "crates/sunrise-storage": 802,
     "crates/sunrise-test-seed": 802,
     "crates/sunrise-wire-protocol": 802,
+    # One file on the day it was split out of `sunrise-storage` (#775), so the
+    # pooled number as for the twenty-one above.
+    "crates/sunrise-sqlcipher": 802,
 }
 
 # package root -> why nothing measures it. Every directory under `crates/` is

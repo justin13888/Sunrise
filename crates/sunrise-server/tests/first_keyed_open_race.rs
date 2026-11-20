@@ -6,7 +6,7 @@
 //! "PRAGMA key requires a key of one or more characters". The window is the
 //! first moments of a process, so this test lives in its own binary: nothing
 //! else may touch `SQLite` first. The store's keying waits on
-//! `sunrise_storage::ensure_cipher_ready` instead.
+//! `sunrise_sqlcipher::ensure_cipher_ready` instead.
 
 use std::sync::{Arc, Barrier};
 

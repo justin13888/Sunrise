@@ -27,6 +27,12 @@
 //!
 //! [`verify_owner_only`] reads the protection back, so a test in any crate can
 //! assert it on every platform without an `unsafe` block of its own.
+//!
+//! The crate also holds [`BlobStore`], the content-addressed chunk files the
+//! client vault and the relay both keep, each chunk staged and renamed into
+//! place whole. Chunks are ciphertext, so they are not written owner-only; the
+//! store is here because both sides need it and this crate depends on
+//! nothing (issue #775).
 
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 
@@ -35,8 +41,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod blob_store;
 #[cfg(windows)]
 mod windows;
+
+pub use blob_store::{BlobStore, BlobStoreError};
 
 /// Distinguishes two writes in one process; the pid distinguishes processes.
 static NONCE: AtomicU64 = AtomicU64::new(0);

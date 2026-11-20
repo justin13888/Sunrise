@@ -29,7 +29,6 @@ mod schema;
 #[cfg(test)]
 mod tests;
 
-pub use cipher::ensure_cipher_ready;
 use schema::Schema;
 
 use rusqlite::{Connection, OpenFlags};
