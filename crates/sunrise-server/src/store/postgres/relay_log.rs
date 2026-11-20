@@ -10,7 +10,9 @@
 //! after 11 would never be sent it. With it, every frame of a channel that
 //! commits later has a larger id, so "after the last id I saw" is a complete
 //! description of what is new. Channels whose hashes collide only share a
-//! lock, which costs them some concurrency and nothing else.
+//! lock, which costs them some concurrency and nothing else. Before it, the
+//! append holds its account's lock shared, which an erasure of the account's
+//! log holds exclusively, so the two never meet row by row and deadlock.
 //!
 //! **The append announces itself.** `pg_notify('sunrise_relay',
 //! '<account_h>:<stream_id>:<frame_id>')` runs inside the append's
@@ -38,12 +40,16 @@ const CHANNEL_LOCK: i32 = 0x5352_4c59;
 /// not a metric.
 pub(super) const NOTIFY_CHANNEL: &str = concat!("sunrise", "_relay");
 
-/// The second key of `key`'s channel lock: the first four bytes of a BLAKE3
-/// of the channel.
-fn channel_lock(key: StreamKey) -> i32 {
+/// The first key of every account's two-key advisory lock: "SRLA". An append
+/// holds it shared, an erasure of the account's log exclusive.
+const ACCOUNT_LOCK: i32 = 0x5352_4c41;
+
+/// The first four bytes of a BLAKE3 of `parts`: the second key of a lock.
+fn lock_key(parts: &[&[u8]]) -> i32 {
     let mut h = blake3::Hasher::new();
-    h.update(&key.0);
-    h.update(&key.1);
+    for part in parts {
+        h.update(part);
+    }
     let b = h.finalize();
     i32::from_le_bytes([
         b.as_bytes()[0],
@@ -51,6 +57,29 @@ fn channel_lock(key: StreamKey) -> i32 {
         b.as_bytes()[2],
         b.as_bytes()[3],
     ])
+}
+
+/// The second key of `key`'s channel lock.
+fn channel_lock(key: StreamKey) -> i32 {
+    lock_key(&[&key.0, &key.1])
+}
+
+/// Take, in `tx`, `account_h`'s account lock exclusively: what a transaction
+/// that deletes an account's log takes before touching a row. Every append
+/// holds it shared before touching one, so the two take turns rather than
+/// meeting row by row in opposite orders and deadlocking, a channel the
+/// account had no row in yet included.
+pub(super) async fn lock_account(
+    tx: &Transaction<'_>,
+    account_h: [u8; 16],
+) -> Result<(), MetadataError> {
+    tx.execute(
+        "SELECT pg_advisory_xact_lock($1, $2)",
+        &[&ACCOUNT_LOCK, &lock_key(&[&account_h])],
+    )
+    .await
+    .map_err(unavailable)?;
+    Ok(())
 }
 
 /// The notice an append of frame `id` to `key` sends.
@@ -90,6 +119,14 @@ impl PgStore {
         let (account_h, stream_id) = (&key.0[..], &key.1[..]);
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(unavailable)?;
+        // Both locks before any row: the account's shared, which an erasure
+        // of the account takes exclusive, then the channel's.
+        tx.execute(
+            "SELECT pg_advisory_xact_lock_shared($1, $2)",
+            &[&ACCOUNT_LOCK, &lock_key(&[&key.0])],
+        )
+        .await
+        .map_err(unavailable)?;
         tx.execute(
             "SELECT pg_advisory_xact_lock($1, $2)",
             &[&CHANNEL_LOCK, &channel_lock(key)],
@@ -311,8 +348,18 @@ impl PgStore {
         let _op = op("store.relay_frames_after");
         let (account_h, stream_id) = (&key.0[..], &key.1[..]);
         let after = signed(after_id);
-        let c = self.client().await?;
-        let rows = c
+        let mut c = self.client().await?;
+        // One snapshot for the frames and their heads, as the replay takes:
+        // a frame evicted between two reads would otherwise go out with no
+        // heads, and its device's watermark would never advance here.
+        let tx = c
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await
+            .map_err(unavailable)?;
+        let rows = tx
             .query(
                 "SELECT id, bytes, n_ops, from_conn FROM relay_frames
                  WHERE account_h = $1 AND stream_id = $2 AND id > $3 ORDER BY id",
@@ -322,7 +369,7 @@ impl PgStore {
             .map_err(unavailable)?;
         let mut heads: HashMap<i64, Vec<FrameHead>> = HashMap::new();
         if !rows.is_empty() {
-            for r in c
+            for r in tx
                 .query(
                     "SELECT h.frame_id, h.device_id, h.max_seq FROM relay_frame_heads h
                      JOIN relay_frames f ON f.id = h.frame_id
@@ -340,6 +387,7 @@ impl PgStore {
                 }
             }
         }
+        tx.commit().await.map_err(unavailable)?;
         Ok(rows
             .iter()
             .map(|r| {

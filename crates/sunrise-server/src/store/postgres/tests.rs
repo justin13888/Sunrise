@@ -284,3 +284,105 @@ async fn a_postgres_state_is_fed_by_the_bus() {
     assert!(state.store.as_sqlite().is_none());
     feed.shutdown();
 }
+
+/// Every transaction defaults to READ COMMITTED, whatever the URL (and so,
+/// a fortiori, the role or the server) asked for: the read-then-write
+/// transactions are written for it.
+#[tokio::test]
+async fn transactions_are_read_committed_whatever_the_default() {
+    let Some(url) = url() else { return };
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let asked = format!("{url}{sep}options=-c%20default_transaction_isolation%3Dserializable");
+    let store = store(&asked).await;
+    let level: String = store
+        .client()
+        .await
+        .unwrap()
+        .query_one("SHOW default_transaction_isolation", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(level, "read committed");
+}
+
+/// A read that finds an expired session deletes it only while it is still
+/// expired: a refresh another node committed since the read keeps its row.
+#[tokio::test]
+async fn reading_an_expired_session_spares_one_refreshed_since() {
+    let Some(url) = url() else { return };
+    let store = store(&url).await;
+    let sessions = PgSessions::new(store.clone());
+    sessions
+        .insert("ses_r".into(), session(Some(100), 0))
+        .await
+        .unwrap();
+    // The deadline column as a concurrent refresh leaves it, under a body the
+    // read still decodes as expired.
+    store
+        .client()
+        .await
+        .unwrap()
+        .execute("UPDATE sync_sessions SET deadline_ms = 10000", &[])
+        .await
+        .unwrap();
+    assert!(sessions.get("ses_r", 200).await.unwrap().is_none());
+    assert_eq!(
+        sessions.count().await.unwrap(),
+        1,
+        "the refreshed row stays"
+    );
+
+    sessions
+        .insert("ses_e".into(), session(Some(100), 0))
+        .await
+        .unwrap();
+    assert!(sessions.get("ses_e", 200).await.unwrap().is_none());
+    assert_eq!(sessions.count().await.unwrap(), 1, "the expired row went");
+}
+
+/// Erasing an account while its channels are being appended to completes on
+/// both sides: the erasure holds the account lock every append shares, first.
+#[tokio::test]
+async fn erasing_an_account_beside_its_appends_does_not_deadlock() {
+    let Some(url) = url() else { return };
+    let store = store(&url).await;
+    let account_h = crate::account_ns::account_key("acc-erase");
+    let caps = crate::relay_log::DurableCaps {
+        max_bytes: 64,
+        max_age_ms: u64::MAX,
+    };
+    for round in 0..20u64 {
+        let mut appends = Vec::new();
+        for stream in 0..3u8 {
+            let store = store.clone();
+            appends.push(tokio::spawn(async move {
+                for n in 0..5u64 {
+                    let head = [crate::relay::FrameHead {
+                        device_id: [7; 16],
+                        max_seq: round * 10 + n + 1,
+                    }];
+                    let ops_h = [stream ^ u8::try_from(n).unwrap(); 32];
+                    store
+                        .relay_append(
+                            (account_h, [stream; 16]),
+                            &[0; 40],
+                            &head,
+                            1,
+                            Some(&ops_h),
+                            n,
+                            1,
+                            caps,
+                        )
+                        .await
+                        .unwrap();
+                }
+            }));
+        }
+        for _ in 0..5 {
+            store.erase_account("acc-erase").await.unwrap();
+        }
+        for a in appends {
+            a.await.unwrap();
+        }
+    }
+}

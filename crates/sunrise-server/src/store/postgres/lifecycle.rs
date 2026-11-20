@@ -150,11 +150,16 @@ impl PgStore {
 
     /// `Store::erase_account`: the relay log, keyed by the account's hash,
     /// and the account row, which cascades to everything else, together.
+    ///
+    /// Under the account's lock held exclusively, which every append to one of
+    /// its channels holds shared before it touches a row, so the two take
+    /// turns instead of deadlocking.
     pub(super) async fn erase_account(&self, account_id: &str) -> Result<bool, MetadataError> {
         let _op = op("store.erase_account");
         let account_h = crate::account_ns::account_key(account_id);
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(unavailable)?;
+        super::relay_log::lock_account(&tx, account_h).await?;
         for table in ["relay_batches", "relay_evicted", "relay_frames"] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE account_h = $1"),

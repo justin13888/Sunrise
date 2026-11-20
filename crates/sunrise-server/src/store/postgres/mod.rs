@@ -70,9 +70,26 @@ const POOL_WAIT: Duration = Duration::from_secs(5);
 /// `connect_timeout` of its own.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// `options` with every transaction defaulting to READ COMMITTED, after
+/// whatever the URL set, so the later setting wins.
+///
+/// The read-then-write transactions here (the relay append's dedup read, the
+/// account row's `FOR UPDATE`) are written for READ COMMITTED: under a server
+/// or role default of REPEATABLE READ or SERIALIZABLE a concurrent duplicate
+/// append fails on the batch's key instead of reading the first one's row.
+/// A startup option outranks both of those defaults. The transactions that
+/// want one snapshot ask for REPEATABLE READ themselves.
+fn with_read_committed(options: Option<&str>) -> String {
+    let ours = r"-c default_transaction_isolation=read\ committed";
+    match options {
+        Some(theirs) if !theirs.trim().is_empty() => format!("{theirs} {ours}"),
+        _ => ours.to_owned(),
+    }
+}
+
 /// The session-level advisory lock the maintenance leader holds. Distinct
-/// from the migration lock's key, and from the channel locks, which use the
-/// two-key form and so a different key space.
+/// from the migration lock's key, and from the channel and account locks,
+/// which use the two-key form and so a different key space.
 const MAINTENANCE_LOCK: i64 = 0x5352_5345_4d41_494e;
 
 /// Why the Postgres backend could not be opened.
@@ -203,6 +220,7 @@ impl PgConnect {
         if config.get_connect_timeout().is_none() {
             config.connect_timeout(CONNECT_TIMEOUT);
         }
+        config.options(with_read_committed(config.get_options()));
         let tls = match ca_file {
             Some(ca) => {
                 config.ssl_mode(SslMode::Require);
@@ -227,7 +245,9 @@ impl PgConnect {
     /// own: the tests' way of sharing one database without sharing state.
     #[cfg(test)]
     pub(crate) fn isolated(mut self, schema: &str) -> Self {
-        self.config.options(format!("-c search_path={schema}"));
+        let options = self.config.get_options().unwrap_or_default();
+        self.config
+            .options(format!("{options} -c search_path={schema}").trim_start());
         self.notify = format!("{}_{schema}", relay_log::NOTIFY_CHANNEL);
         self
     }

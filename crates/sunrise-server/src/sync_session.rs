@@ -301,8 +301,9 @@ impl SessionStore {
     /// Drop every expired or long-idle session.
     ///
     /// Called on establishment, which is the one operation guaranteed to keep
-    /// happening on a live server: hanging collection off the busiest path
-    /// avoids a timer task whose only job is to hold a lock occasionally.
+    /// happening on a live server, by the metrics scrape, and by each
+    /// maintenance pass, which bounds a shared table's expired rows in time
+    /// when nobody establishes a session.
     pub async fn collect(&self, now_ms: u64) -> Result<(), SessionError> {
         logged(self.backend.collect(now_ms).await)
     }

@@ -104,7 +104,8 @@ async fn admin(args: &[String]) -> Result<(), u8> {
 /// Only on the node that leads (ADR-0062 §5): a relay running as several nodes
 /// over Postgres runs each pass on whichever node takes the maintenance lock,
 /// and the rest skip it. A single process always leads. The leader also
-/// forgets the shared rate cells that have refilled.
+/// forgets the shared rate cells that have refilled and collects expired and
+/// idle sync sessions.
 fn spawn_maintenance(state: ServerState) {
     let every = std::time::Duration::from_secs(state.config.maintenance_interval_secs);
     tokio::spawn(async move {
@@ -133,6 +134,10 @@ fn spawn_maintenance(state: ServerState) {
                     "could not forget refilled rate cells; retrying at the next interval"
                 );
             }
+            // Establishment collects too, but a cluster nobody opens a session
+            // on would otherwise keep its expired rows: this bounds them in
+            // time (ADR-0062 §3). A failure is logged where it happened.
+            let _ = state.sessions.collect(state.clock.now_ms()).await;
             run_pass(&state).await;
             drop(lead);
         }

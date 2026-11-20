@@ -84,13 +84,35 @@ impl SessionBackend for PgSessions {
             return Ok(None);
         };
         let session = decode(row.get(0))?;
-        if session.expired(now_ms) {
-            c.execute("DELETE FROM sync_sessions WHERE session_h = $1", &[&key])
-                .await
-                .map_err(down)?;
+        if !session.expired(now_ms) {
+            return Ok(Some(session));
+        }
+        // Deleted only if it is still expired: another node may have refreshed
+        // it since the read, and its new deadline must stand.
+        let deleted = c
+            .execute(
+                "DELETE FROM sync_sessions
+                 WHERE session_h = $1 AND deadline_ms IS NOT NULL AND deadline_ms <= $2",
+                &[&key, &signed(now_ms)],
+            )
+            .await
+            .map_err(down)?;
+        if deleted == 1 {
             return Ok(None);
         }
-        Ok(Some(session))
+        // Refreshed (or removed) in between: what the row holds now decides.
+        let Some(row) = c
+            .query_opt(
+                "SELECT body FROM sync_sessions WHERE session_h = $1",
+                &[&key],
+            )
+            .await
+            .map_err(down)?
+        else {
+            return Ok(None);
+        };
+        let session = decode(row.get(0))?;
+        Ok((!session.expired(now_ms)).then_some(session))
     }
 
     async fn update(&self, id: &str, now_ms: u64, edit: SessionEdit) -> Result<bool, SessionError> {
