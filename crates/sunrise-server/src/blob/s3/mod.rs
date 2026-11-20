@@ -156,19 +156,25 @@ impl S3Blobs {
             cfg.s3_bucket.as_deref().ok_or(missing("s3_bucket"))?,
             cfg.s3_region.as_deref().ok_or(missing("s3_region"))?,
             credentials,
+            cfg.s3_ca_file.as_deref(),
         )
     }
 
-    /// The bucket `bucket` at `endpoint`, signed for `region`.
+    /// The bucket `bucket` at `endpoint`, signed for `region`. Over
+    /// `https://` the store's certificate is verified against the PEM
+    /// certificates in `ca_file` alone where one is named, else against the
+    /// public web roots.
     ///
     /// # Errors
     /// [`S3OpenError::Config`] for an endpoint or bucket
-    /// [`BlobsConfig::validate`] refuses.
+    /// [`BlobsConfig::validate`] refuses, and [`S3OpenError::CaFile`] for a
+    /// CA file that cannot be read or holds no certificate.
     pub fn new(
         endpoint: &str,
         bucket: &str,
         region: &str,
         credentials: S3Credentials,
+        ca_file: Option<&Path>,
     ) -> Result<Self, S3OpenError> {
         BlobsConfig {
             backend: BlobBackendKind::S3,
@@ -176,6 +182,7 @@ impl S3Blobs {
             s3_bucket: Some(bucket.to_owned()),
             s3_region: Some(region.to_owned()),
             s3_credentials_file: Some(PathBuf::new()),
+            s3_ca_file: ca_file.map(Path::to_owned),
         }
         .validate()?;
         let endpoint = endpoint.trim_end_matches('/').to_owned();
@@ -183,11 +190,17 @@ impl S3Blobs {
             .split_once("://")
             .map(|(_, authority)| authority.to_owned())
             .unwrap_or_default();
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_webpki_roots()
-            .https_or_http()
-            .enable_http1()
-            .build();
+        let roots = hyper_rustls::HttpsConnectorBuilder::new();
+        let https = match ca_file {
+            Some(ca) => roots.with_tls_config(
+                crate::store::postgres::client_config_from_ca_file(ca, "[blobs] s3_ca_file")
+                    .map_err(S3OpenError::CaFile)?,
+            ),
+            None => roots.with_webpki_roots(),
+        }
+        .https_or_http()
+        .enable_http1()
+        .build();
         let client =
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https);

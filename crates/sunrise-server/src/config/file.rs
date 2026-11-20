@@ -487,9 +487,10 @@ mod file_tests {
     fn the_blobs_table_overlays_and_refuses_what_it_does_not_know() {
         use super::super::{BlobBackendKind, BlobsConfig};
         let cfg = FileConfig::parse(
-            "[blobs]\nbackend = \"s3\"\ns3_endpoint = \"http://127.0.0.1:9000\"\n\
+            "[blobs]\nbackend = \"s3\"\ns3_endpoint = \"https://127.0.0.1:9000\"\n\
              s3_bucket = \"sunrise\"\ns3_region = \"us-east-1\"\n\
-             s3_credentials_file = \"/etc/sunrise/s3.toml\"",
+             s3_credentials_file = \"/etc/sunrise/s3.toml\"\n\
+             s3_ca_file = \"/etc/sunrise/s3-ca.pem\"",
             "t.toml",
         )
         .unwrap()
@@ -498,10 +499,11 @@ mod file_tests {
             cfg.blobs,
             BlobsConfig {
                 backend: BlobBackendKind::S3,
-                s3_endpoint: Some("http://127.0.0.1:9000".into()),
+                s3_endpoint: Some("https://127.0.0.1:9000".into()),
                 s3_bucket: Some("sunrise".into()),
                 s3_region: Some("us-east-1".into()),
                 s3_credentials_file: Some(PathBuf::from("/etc/sunrise/s3.toml")),
+                s3_ca_file: Some(PathBuf::from("/etc/sunrise/s3-ca.pem")),
             }
         );
         assert_eq!(cfg.validate(true), Ok(()));

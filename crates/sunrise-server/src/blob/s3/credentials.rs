@@ -110,6 +110,10 @@ pub enum S3OpenError {
         /// Its permission bits.
         mode: u32,
     },
+    /// `[blobs] s3_ca_file` could not be read, or holds no certificate rustls
+    /// takes as a root.
+    #[error("{0}")]
+    CaFile(String),
 }
 
 #[cfg(test)]

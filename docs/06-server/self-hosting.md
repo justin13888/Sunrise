@@ -446,6 +446,7 @@ s3_endpoint         = "https://s3.us-east-1.amazonaws.com" # scheme, host, port;
 s3_bucket           = "sunrise-blobs"                       # created beforehand
 s3_region           = "us-east-1"                           # MinIO's default too
 s3_credentials_file = "/etc/sunrise/s3.toml"
+# s3_ca_file        = "/etc/sunrise/s3-ca.pem"              # optional: a private CA, https:// only
 ```
 
 `s3_credentials_file` is TOML holding `access_key_id` and `secret_access_key`,
@@ -453,9 +454,12 @@ and the relay refuses it unless only its owner can read it (`chmod 600`), for
 the reason `postgres_url_file` is. The key pair needs `GetObject`,
 `PutObject`, `DeleteObject` and `ListBucket` on the bucket, nothing else. The
 relay writes under `blobs/` and its readiness probe under `probes/`; give it a
-bucket of its own. `http://` endpoints are accepted for a store on a private
-network: what crosses it is ciphertext, and the signature never carries the
-secret.
+bucket of its own. Over `https://` the store's certificate is verified
+against the public web roots, or, where `s3_ca_file` names PEM certificates,
+against those alone, as `postgres_ca_file` does for the database: a
+self-hosted store behind a private CA. `http://` endpoints are accepted for a
+store on a private network: what crosses it is ciphertext, and the signature
+never carries the secret.
 
 Each chunk is one object of at most 1 MiB, so no multipart upload is ever
 started. Finalize re-reads and re-hashes every chunk and writes the manifest

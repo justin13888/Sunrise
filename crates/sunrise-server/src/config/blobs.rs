@@ -48,6 +48,11 @@ pub struct BlobsConfig {
     /// `secret_access_key`, mode `0600`.
     #[serde(default)]
     pub s3_credentials_file: Option<PathBuf>,
+    /// `[blobs] s3_ca_file`: PEM certificates the store's TLS certificate is
+    /// verified against, in place of the public web roots: a self-hosted
+    /// store behind a private CA. Optional; `https://` endpoints only.
+    #[serde(default)]
+    pub s3_ca_file: Option<PathBuf>,
 }
 
 /// A `[blobs]` table that names a backend it does not configure.
@@ -71,6 +76,10 @@ pub enum BlobsConfigError {
          and hyphens, beginning and ending with a letter or digit"
     )]
     BadBucket(String),
+    /// A CA file beside an `http://` endpoint, where no certificate is
+    /// presented to verify.
+    #[error("[blobs] s3_ca_file needs an https:// s3_endpoint")]
+    CaFileOnPlaintext,
 }
 
 impl BlobsConfig {
@@ -90,6 +99,9 @@ impl BlobsConfig {
                 if let Some((key, _)) = keys.iter().find(|(_, set)| *set) {
                     return Err(BlobsConfigError::S3KeyOnFilesystem(key));
                 }
+                if self.s3_ca_file.is_some() {
+                    return Err(BlobsConfigError::S3KeyOnFilesystem("s3_ca_file"));
+                }
             }
             BlobBackendKind::S3 => {
                 if let Some((key, _)) = keys.iter().find(|(_, set)| !*set) {
@@ -105,6 +117,9 @@ impl BlobsConfig {
                 let endpoint = self.s3_endpoint.as_deref().unwrap_or_default();
                 if !is_endpoint(endpoint) {
                     return Err(BlobsConfigError::BadEndpoint(endpoint.to_owned()));
+                }
+                if self.s3_ca_file.is_some() && !endpoint.starts_with("https://") {
+                    return Err(BlobsConfigError::CaFileOnPlaintext);
                 }
                 let bucket = self.s3_bucket.as_deref().unwrap_or_default();
                 if !is_bucket(bucket) {
@@ -213,7 +228,40 @@ mod tests {
             s3_bucket: Some("sunrise-blobs".into()),
             s3_region: Some("us-east-1".into()),
             s3_credentials_file: Some("/etc/sunrise/s3.toml".into()),
+            s3_ca_file: None,
         }
+    }
+
+    /// A CA file is optional, and only where there is a certificate to
+    /// verify: an S3 backend on `https://`.
+    #[test]
+    fn a_ca_file_needs_an_https_object_store() {
+        let ca = Some(PathBuf::from("/etc/sunrise/s3-ca.pem"));
+        assert_eq!(
+            BlobsConfig {
+                s3_ca_file: ca.clone(),
+                ..s3()
+            }
+            .validate(),
+            Ok(())
+        );
+        assert_eq!(
+            BlobsConfig {
+                s3_endpoint: Some("http://127.0.0.1:9000".into()),
+                s3_ca_file: ca.clone(),
+                ..s3()
+            }
+            .validate(),
+            Err(BlobsConfigError::CaFileOnPlaintext)
+        );
+        assert_eq!(
+            BlobsConfig {
+                s3_ca_file: ca,
+                ..BlobsConfig::default()
+            }
+            .validate(),
+            Err(BlobsConfigError::S3KeyOnFilesystem("s3_ca_file"))
+        );
     }
 
     /// The filesystem is the default and takes no S3 key; S3 takes all four,

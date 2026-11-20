@@ -37,6 +37,8 @@ mod relay_log;
 mod sessions;
 mod tls;
 
+pub(crate) use tls::client_config_from_ca_file;
+
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

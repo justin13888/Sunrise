@@ -19,6 +19,7 @@ fn offline() -> S3Blobs {
         "sunrise",
         "us-east-1",
         S3Credentials::new("k", "s"),
+        None,
     )
     .unwrap()
 }
@@ -118,6 +119,7 @@ fn the_state_opens_the_object_store_the_config_names() {
             s3_bucket: Some("sunrise".into()),
             s3_region: Some("us-east-1".into()),
             s3_credentials_file: Some(file.to_owned()),
+            s3_ca_file: None,
         },
         ..crate::ServerConfig::default()
     };
@@ -133,6 +135,50 @@ fn the_state_opens_the_object_store_the_config_names() {
     }
     let state = ServerState::try_new(config(&file)).unwrap();
     assert_eq!(state.blobs.location(), "s3://sunrise at http://127.0.0.1:1");
+}
+
+/// A self-signed CA certificate, public by nature, that no store presents:
+/// enough for rustls to take it as the one trust root.
+const TEST_CA: &str = "-----BEGIN CERTIFICATE-----
+MIIBaTCCARCgAwIBAgIULIhsGQVVBDoRRS4wEN0h+d1AG3YwCgYIKoZIzj0EAwIw
+GjEYMBYGA1UEAwwPc3VucmlzZS10ZXN0LWNhMCAXDTI2MTEyMDExNTUzOFoYDzIx
+MjYxMDI3MTE1NTM4WjAaMRgwFgYDVQQDDA9zdW5yaXNlLXRlc3QtY2EwWTATBgcq
+hkjOPQIBBggqhkjOPQMBBwNCAARlu9BP8PDxS0wLhY7tTiQPO2Gqo6jIwVLhMBBa
+vLEdHTkXv+TFvCSqx/s6gppwdOvGYAU0ruyINe5fyXBji8lUozIwMDAdBgNVHQ4E
+FgQUUaG0WoONNfbYJntq4cNYoMkig58wDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjO
+PQQDAgNHADBEAiB7KGRnjbJOBSvOheYbX3ScW1om6Piowo4rXzHy3k/i3QIgQ9fH
+ATB4y0xcEGDp5LwUZ970QMc+tgSRyAOyXc0liNQ=
+-----END CERTIFICATE-----
+";
+
+/// `[blobs] s3_ca_file` is read at open: a file holding a certificate opens
+/// the store, and one that is missing or holds none refuses it by name
+/// rather than falling back to the public roots.
+#[test]
+fn an_s3_ca_file_is_the_trust_root_or_refuses_the_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let open = |ca: &Path| {
+        S3Blobs::new(
+            "https://127.0.0.1:1",
+            "sunrise",
+            "us-east-1",
+            S3Credentials::new("k", "s"),
+            Some(ca),
+        )
+    };
+    let ca = dir.path().join("ca.pem");
+    std::fs::write(&ca, TEST_CA).unwrap();
+    assert!(open(&ca).is_ok());
+    let empty = dir.path().join("empty.pem");
+    std::fs::write(&empty, "not a certificate\n").unwrap();
+    for refused in [empty, dir.path().join("absent.pem")] {
+        match open(&refused) {
+            Err(S3OpenError::CaFile(cause)) => {
+                assert!(cause.contains("[blobs] s3_ca_file"), "{cause}");
+            }
+            other => panic!("{} opened: {other:?}", refused.display()),
+        }
+    }
 }
 
 /// The variable naming the test store.
@@ -162,6 +208,7 @@ async fn fresh() -> Option<S3Blobs> {
             var("SUNRISE_TEST_S3_ACCESS_KEY_ID", "minioadmin"),
             var("SUNRISE_TEST_S3_SECRET_ACCESS_KEY", "minioadmin"),
         ),
+        None,
     )
     .unwrap();
     blobs.create_bucket().await.unwrap();
