@@ -180,8 +180,11 @@ impl ServerState {
     ///
     /// # Errors
     /// Each refusal [`ServerState::try_new`] makes, or the Postgres backend's
-    /// own: its files, its connection, a schema a newer release wrote.
+    /// own: its files, its connection, a schema a newer release wrote. A
+    /// `[storage]` table [`ServerConfig::validate_backend`] refuses is refused
+    /// first, before any database is opened.
     pub async fn open(config: ServerConfig) -> Result<Self, StartError> {
+        config.validate_backend()?;
         if config.backend.kind == StorageBackend::Sqlite {
             return Self::try_new(config);
         }

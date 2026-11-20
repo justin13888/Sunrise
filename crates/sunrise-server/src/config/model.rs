@@ -407,9 +407,21 @@ impl ServerConfig {
         if let Some(obs) = &self.observability {
             obs.validate()?;
         }
-        let has_blob_root = self.resolved_blob_root().is_some();
-        self.backend.validate(self.sqlite_encrypt, has_blob_root)?;
+        self.validate_backend()?;
         Ok(())
+    }
+
+    /// The `[storage]` backend refusals alone: the half of
+    /// [`ServerConfig::validate`] that must hold before the store is opened,
+    /// so a refused config never connects to, or migrates, a shared database.
+    /// [`crate::state::ServerState::open`] runs it first, which covers the
+    /// server and the admin CLI alike.
+    ///
+    /// # Errors
+    /// Each [`BackendError`](super::storage::BackendError) the keys earn.
+    pub fn validate_backend(&self) -> Result<(), super::storage::BackendError> {
+        let has_blob_root = self.resolved_blob_root().is_some();
+        self.backend.validate(self.sqlite_encrypt, has_blob_root)
     }
 
     /// [`ServerConfig::trusted_proxies`] as the networks the router trusts.

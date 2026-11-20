@@ -258,4 +258,42 @@ mod tests {
             );
         }
     }
+
+    /// Opening refuses a backend the keys refuse before reading the URL file,
+    /// so neither the server nor the admin CLI, which both open through
+    /// `ServerState::open`, connects to or migrates a database it should not.
+    #[tokio::test]
+    async fn opening_refuses_the_backend_before_touching_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = parsed(&format!(
+            "[storage]\ndata_dir = \"{}\"\nbackend = \"postgres\"\n\
+             postgres_url_file = \"{}\"\nencrypt = true",
+            dir.path().display(),
+            dir.path().join("absent.url").display(),
+        ))
+        .unwrap();
+        let err = crate::state::ServerState::open(cfg.clone())
+            .await
+            .expect_err("encrypt beside Postgres is refused");
+        assert!(
+            matches!(
+                err,
+                crate::state::StartError::Backend(BackendError::EncryptOnPostgres)
+            ),
+            "{err}"
+        );
+        cfg.sqlite_encrypt = false;
+        cfg.blob_root = None;
+        cfg.sqlite_path = None;
+        let err = crate::state::ServerState::open(cfg)
+            .await
+            .expect_err("Postgres without data_dir is refused");
+        assert!(
+            matches!(
+                err,
+                crate::state::StartError::Backend(BackendError::NoBlobRoot)
+            ),
+            "{err}"
+        );
+    }
 }
