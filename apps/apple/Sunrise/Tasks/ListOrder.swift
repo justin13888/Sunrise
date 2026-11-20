@@ -170,10 +170,12 @@ extension TaskListKind {
     /// section heading would either snap back on the next refresh or claim
     /// that a deadline had moved. Search is ranked by relevance to a query
     /// that changes on every keystroke, and an arrangement keyed to one query
-    /// is an arrangement nobody would ever see twice.
+    /// is an arrangement nobody would ever see twice. Upcoming is laid out
+    /// by day, and a row dropped there is a reschedule to that day, not a
+    /// place in an order (``UpcomingPlanner``).
     var acceptsReordering: Bool {
         switch self {
-        case .today, .search: false
+        case .today, .search, .upcoming: false
         case .inbox, .stream, .context: true
         }
     }
@@ -182,7 +184,7 @@ extension TaskListKind {
     /// only by ``ListOrderImport``; `nil` for a list that never had one.
     var legacyOrderKey: String? {
         switch self {
-        case .today, .search: nil
+        case .today, .search, .upcoming: nil
         case .inbox: "list.order.inbox"
         case let .stream(id, _): "list.order.stream.\(id)"
         case let .context(id, _): "list.order.context.\(id)"

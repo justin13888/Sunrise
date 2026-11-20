@@ -145,7 +145,9 @@ fn the_weekly_review_lists_a_commitment_that_came_due_and_stayed_open() {
             Command::UpdateTask {
                 id,
                 patch: TaskPatch {
-                    hard_due_at: Some(Some(ms_to_ts((REVIEW_MON + 2 * REVIEW_DAY) as i64).into())),
+                    hard_due_at: Some(Some(
+                        ms_to_ts((REVIEW_MON + 2 * REVIEW_DAY).cast_signed()).into(),
+                    )),
                     ..Default::default()
                 },
             },
@@ -430,7 +432,9 @@ fn the_daily_review_shows_last_nights_captures_and_the_blocked_subset() {
             Command::UpdateTask {
                 id,
                 patch: TaskPatch {
-                    planned_at: Some(Some(ms_to_ts((REVIEW_MON + 25 * 3_600_000) as i64).into())),
+                    planned_at: Some(Some(
+                        ms_to_ts((REVIEW_MON + 25 * 3_600_000).cast_signed()).into(),
+                    )),
                     blocked_by: if id == waiting {
                         Some(vec![blocker])
                     } else {

@@ -133,7 +133,7 @@ impl super::Engine {
     pub(super) fn create_saved_view(
         &self,
         db: &mut Db,
-        d: SavedViewDraft,
+        d: &SavedViewDraft,
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
         let now_ms = self.clock.now_ms();
@@ -158,7 +158,7 @@ impl super::Engine {
     }
 
     /// The live view `id`, or `NotFound`.
-    fn live_saved_view(&self, db: &Db, id: EntityRef) -> Result<SavedView, EngineError> {
+    fn live_saved_view(db: &Db, id: EntityRef) -> Result<SavedView, EngineError> {
         require_kind(id, EntityKind::SavedView)?;
         match read_saved_view(db.conn(), id.bytes())? {
             Some(v) if !v.deleted => Ok(v),
@@ -172,10 +172,10 @@ impl super::Engine {
         &self,
         db: &mut Db,
         id: EntityRef,
-        patch: SavedViewPatch,
+        patch: &SavedViewPatch,
     ) -> Result<CommandResult, EngineError> {
         patch.validate()?;
-        self.live_saved_view(db, id)?;
+        Self::live_saved_view(db, id)?;
         if patch.is_empty() {
             return Err(EngineError::Invalid("an edit that changes nothing".into()));
         }
@@ -205,7 +205,7 @@ impl super::Engine {
         db: &mut Db,
         id: EntityRef,
     ) -> Result<CommandResult, EngineError> {
-        self.live_saved_view(db, id)?;
+        Self::live_saved_view(db, id)?;
         let mut fields = Unknowns::new();
         fields.insert("deleted".into(), set(&true)?);
         self.patch_saved_view(db, id, false, fields)
@@ -236,7 +236,7 @@ impl super::Engine {
     }
 
     /// `Query::SavedViews`.
-    pub(super) fn query_saved_views(&self, db: &Db) -> Result<QueryResult, EngineError> {
+    pub(super) fn query_saved_views(db: &Db) -> Result<QueryResult, EngineError> {
         Ok(QueryResult::SavedViews(read_saved_views(db.conn())?))
     }
 
@@ -246,7 +246,7 @@ impl super::Engine {
         db: &Db,
         id: EntityRef,
     ) -> Result<QueryResult, EngineError> {
-        let view = self.live_saved_view(db, id)?;
+        let view = Self::live_saved_view(db, id)?;
         let tz = self.device_zone();
         let now_ms = self.clock.now_ms();
         let reader: FilterReader = self.lateness_reader(db, now_ms)?.filter_reader();

@@ -82,7 +82,7 @@ the code rather than from the issue:
   sentence that mentions the table.
 - Since migration 0028 the key-distribution side reads `device_read_bounds`
   rather than the register, so the register's own predicate `Engine::is_revoked`
-  (`crates/sunrise-core/src/engine/revocation.rs:690#is_revoked`) has exactly
+  (`crates/sunrise-core/src/engine/revocation.rs:699#is_revoked`) has exactly
   **one** non-test caller and it is not on the apply path at all: the revoking
   command reads it to report whether its own row survived the fold
   (`crates/sunrise-core/src/engine/revocation.rs:350#revoke_device`). What the

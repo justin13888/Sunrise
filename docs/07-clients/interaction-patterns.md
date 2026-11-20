@@ -107,39 +107,54 @@ they cannot honour.
 
 Android and Web are omitted; see [`parity-matrix.md`](./parity-matrix.md).
 The iOS column is not a second implementation: every modifier below sits in a
-shared file with no platform fork. Three things still differ. The gesture is a
-long-press drag where the Mac has a click-drag. One cell splits outright —
-*Task → Calendar block* is a **Yes** on macOS and a **No** on iOS — which is
-not about the gesture at all, but about which surfaces the shell can put in
-front of a user at once. And one is narrowed rather than lost: *File → Task* is
-a plain **Yes** on the Mac and iPad-only on iOS, because dragging a file in
-from another app needs two apps on screen. The gesture is the whole of the
-first difference; the other two are set out below.
+shared file with no platform fork but one: the grip a block is dragged onto a
+task by is the Mac's alone. Three things still differ. The gesture is a
+long-press drag where the Mac has a click-drag. Two cells split outright —
+*Task → Calendar block* and *Calendar block → Task* are each a **Yes** on
+macOS and a **No** on iOS — which is not about the gesture at all, but about
+which surfaces the shell can put in front of a user at once. And one is
+narrowed rather than lost: *File → Task* is a plain **Yes** on the Mac and
+iPad-only on iOS, because dragging a file in from another app needs two apps
+on screen. The gesture is the whole of the first difference; the other two
+are set out below.
 
 | From → To | macOS | iOS | CLI |
 |---|---|---|---|
 | Task → Stream | Yes | Yes | N/A |
 | Task → Context | Yes | Yes | N/A |
 | Task → Calendar block | Yes | **No** — see below | N/A |
-| Calendar block → Task | **No** — see below | **No** — see below | N/A |
+| Calendar block → Task | Yes | **No** — see below | N/A |
 | Calendar block → Calendar (move / resize) | Yes | Yes | N/A |
 | File → Task (attach) | Yes | Yes *(iPad)* | N/A |
 | Task → Task (reorder) | Yes | Yes | N/A |
 | Stream → Stream (reorder) | Yes | Yes | N/A |
 
-**Calendar block → Task is No in both columns, and what is missing is the two
-modifiers, not a layout that could hold them.** A Block is not a drag
-source: `BlockChip` (`CalendarView.swift:417-516`) carries a tap
-(`:466`), a move gesture (`:467`) and a context menu (`:469`), and no
-`.draggable` — the only `.draggable` in the whole tree is the task row's
-(`TaskRowView.swift:74`). A task row is not a drop target for one either:
-`TaskListView.swift:192` is a `dropDestination` that reorders and does nothing
-else, returning `model.reorder(moved, before: task.id)` and declining outright
-in Today and in Search. The write the cell would perform exists and is tested —
-`TaskListModel.bind(_:to:)` (`TaskListModel.swift:179`) issuing the same
-`Command::BindTask` (`crates/sunrise-core/src/commands.rs:178#Command`) the grid's own
-drop issues — so building it is UI work with no core work behind it. Until then
-a Block is bound to a Task from the grid side, by dropping the task onto it.
+**Calendar block → Task binds or unbinds, and on the Mac only.** Dragging a
+block's chip moves it on the grid, so the chip cannot also be the drag source:
+a small grip on it (`BlockChip.bindGrip`, macOS only) is `.draggable` with the
+block's `EntityRef`. A task row's `dropDestination` (`TaskListView.swift`)
+takes a `blk_` payload before it tries a reorder, in every list, Today and
+Search included, because it changes the task and not where the row sits.
+`TaskListModel.toggleBinding(_:block:)` sends `Command::BindTask` when the
+task is not bound to that block and `Command::UnbindTask` (from the whole
+block) when it is, the same two commands the block editor sends. The iPhone
+cell stays **No** for the reason *Task → Calendar block* is No there: no
+screen shows the grid beside a task list. The grip is left off iOS rather than
+shipped unreachable.
+
+**Moving and resizing a block is planned.** Every drag of a block that does
+not repeat is sent to the core's planner (`plan_preview`,
+[`../08-features/planner.md`](../08-features/planner.md)) on each snapped
+position; the grid draws the diff it returns — a ghost where each item goes,
+a dashed outline where it was, tinted by the worst rule it breaks — and a
+summary line names the consequence. The drop commits exactly that diff as one
+undo step; dropped back where it started, or after Esc, it commits nothing.
+The keyboard path is the planning keys on a block with focus (Mac): ⌥↑/⌥↓,
+⇧⌥↑/⇧⌥↓, ⌥←/⌥→, Return and Esc (`Keymap.planning`). One event of a repeating
+block is not planned, because the planner reads the series and not the event:
+its drag asks how far the change reaches and writes the edit, as before. A
+task dropped on the grid becomes a block as long as the planner says the task
+is: its estimate, or the `planner.default_task_duration_s` preference.
 
 **The iOS cell for *Task → Calendar block* is No: both ends ship, and no screen
 in the shell presents them together.** The drag source (`TaskRowView.swift:74`)

@@ -17,6 +17,10 @@ struct TaskRowView: View {
     var isTicked = false
     let complete: () async -> Void
     let edit: () -> Void
+    /// Told when a drag of this row starts. A drop target cannot read a
+    /// drag's payload until the drop, so a list that previews what dropping
+    /// would do (Upcoming) learns what is being dragged here.
+    var onDrag: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -74,8 +78,15 @@ struct TaskRowView: View {
         // The payload is the id's own text — the same string the CLI accepts —
         // so a drop target has something it can verify rather than an opaque
         // pasteboard type only this app understands.
-        .draggable(facets.id)
+        // The payload is an autoclosure, read when the drag starts, which is
+        // when ``onDrag`` fires.
+        .draggable(dragPayload())
         .padding(.vertical, 3)
+    }
+
+    private func dragPayload() -> String {
+        onDrag?()
+        return facets.id
     }
 
     @ViewBuilder

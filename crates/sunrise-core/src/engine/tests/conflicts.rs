@@ -185,7 +185,10 @@ fn terminal_beats_a_concurrent_reopen() {
     assert_eq!(c[0].losers.len(), 1);
     assert_eq!(c[0].losers[0].version.seq, open_v.seq);
     assert_eq!(
-        c[0].losers[0].value.as_ref().map(|v| v.get()),
+        c[0].losers[0]
+            .value
+            .as_ref()
+            .map(sunrise_domain::CborValue::get),
         Some(&state("in_progress"))
     );
 }
@@ -217,7 +220,10 @@ fn two_terminals_are_decided_by_stamp() {
     let c = conflicts_of(&p.ea, &p.dba, false);
     assert_eq!(c.len(), 1);
     assert_eq!(
-        c[0].losers[0].value.as_ref().map(|v| v.get()),
+        c[0].losers[0]
+            .value
+            .as_ref()
+            .map(sunrise_domain::CborValue::get),
         Some(&state("done"))
     );
 }
@@ -332,7 +338,10 @@ fn delete_wins_over_a_concurrent_restore() {
         ("deleted", ConflictClass::Tombstone)
     );
     assert_eq!(
-        c[0].losers[0].value.as_ref().map(|v| v.get()),
+        c[0].losers[0]
+            .value
+            .as_ref()
+            .map(sunrise_domain::CborValue::get),
         Some(&Value::Bool(false))
     );
 }

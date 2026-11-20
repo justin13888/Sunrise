@@ -20,6 +20,9 @@ struct TaskListView: View {
             if model.kind.acceptsCapture {
                 CaptureBar(model: capture, focus: focus) { draft in await model.create(draft) }
             }
+            if model.kind.isUpcoming {
+                UpcomingHeader(model: model)
+            }
             TaskRows(
                 model: model,
                 selection: selection,
@@ -73,11 +76,11 @@ struct TaskRows: View {
                     .padding(.top, 6)
             }
 
-            if model.tasks.isEmpty {
+            if model.showsNothing {
                 ContentUnavailableView(
                     model.kind.title,
                     systemImage: model.kind.symbol,
-                    description: Text(model.kind.emptyDescription(hinted: KeyboardClass.isDesktopClass))
+                    description: Text(model.emptyDescription(hinted: KeyboardClass.isDesktopClass))
                 )
             } else {
                 list
@@ -99,6 +102,8 @@ struct TaskRows: View {
                 ForEach(model.groups) { group in
                     section(group)
                 }
+            } else if model.kind.isUpcoming {
+                ForEach(model.upcoming) { upcomingSection($0) }
             } else {
                 ForEach(model.tasks, id: \.id) { row($0) }
             }
@@ -115,7 +120,11 @@ struct TaskRows: View {
         // here, and only here: a focused capture field consumes its own
         // keystrokes before the list ever sees them, which is what lets `d`
         // mean Defer and still be a letter you can type.
-        .onKeyChord(scope: .list, vim: preferences.vimMode ? vim : nil) { action in
+        .onKeyChord(
+            scope: .list,
+            vim: preferences.vimMode ? vim : nil,
+            intercept: keyIntercept
+        ) { action in
             ListCommand.perform(
                 action,
                 list: model,
@@ -168,13 +177,17 @@ struct TaskRows: View {
         }
     }
 
-    private func row(_ task: TaskItem) -> some View {
+    /// One task row. `day` is the Upcoming section it is drawn in: a task
+    /// dropped on the row is rescheduled there, as one dropped on the
+    /// section's heading is.
+    func row(_ task: TaskItem, day: UpcomingTarget? = nil) -> some View {
         TaskRowView(
             facets: model.facets(for: task),
             isCursor: selection.cursor == task.id,
             isTicked: selection.explicit.contains(task.id),
             complete: { await model.complete(task) },
-            edit: { sheets.editing = task }
+            edit: { sheets.editing = task },
+            onDrag: day == nil ? nil : { model.upcomingPlanner.beginDrag([task.id]) }
         )
         .tag(task.id)
         // **Task → Task (reorder).** Dropping a row onto another puts it
@@ -191,13 +204,27 @@ struct TaskRows: View {
         // the cursor say "no" rather than promising a move that never happens.
         // The answer is known before the write, which goes to the core as
         // `MoveTasks` and so syncs.
+        //
+        // A block dropped here, from its grip on the calendar, binds this
+        // task to it or unbinds it — in every list, Today and Search
+        // included, since it changes the task and not where the row sits.
         .dropDestination(for: String.self) { items, _ in
+            if let block = DropPayload.blockIDs(items).first {
+                Task { await model.toggleBinding(task, block: block) }
+                return true
+            }
+            if let day {
+                return dropUpcoming(items, on: day)
+            }
             let moved = DropPayload.taskIDs(items).filter { $0 != task.id }
             guard model.reorderCommand(moved, before: task.id) != nil else { return false }
             Task { await model.reorder(moved, before: task.id) }
             return true
-        } isTargeted: { targeted = $0 ? task.id : (targeted == task.id ? nil : targeted) }
-        .dropHighlight(isActive: model.acceptsReordering && targeted == task.id)
+        } isTargeted: { isOver in
+            targeted = isOver ? task.id : (targeted == task.id ? nil : targeted)
+            if let day { hoverUpcoming(day, isOver) }
+        }
+        .dropHighlight(isActive: (model.acceptsReordering || day != nil) && targeted == task.id)
         .contextMenu { rowMenu(task) }
         .swipeActions(edge: .trailing) {
             Group {

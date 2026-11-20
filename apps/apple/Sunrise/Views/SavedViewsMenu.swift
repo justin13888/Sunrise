@@ -6,6 +6,9 @@ struct SavedViewsMenu: View {
     let contexts: NameBook
     let recall: (Destination) -> Void
     let saveCurrent: () -> Void
+    /// Whether the screen on show is one a saved view can name
+    /// (``Destination/primary``).
+    var canSave = true
 
     var body: some View {
         Menu(L10n.SavedViews.menu, systemImage: "bookmark") {
@@ -34,6 +37,7 @@ struct SavedViewsMenu: View {
             }
             Divider()
             Button(L10n.SavedViews.saveEllipsis, action: saveCurrent)
+                .disabled(!canSave)
             if !model.warnings.isEmpty {
                 Divider()
                 ForEach(Array(model.warnings.enumerated()), id: \.offset) { _, warning in

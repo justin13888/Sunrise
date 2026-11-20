@@ -296,7 +296,8 @@ pub(super) fn day_ms() -> u64 {
     SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(12, 0, 0, 0))
         .to_instant(&jiff::tz::TimeZone::UTC)
         .unwrap()
-        .as_millisecond() as u64
+        .as_millisecond()
+        .cast_unsigned()
 }
 
 pub(super) fn import(source: &str, uid: &str, draft: BlockDraft) -> Command {
@@ -390,7 +391,7 @@ pub(super) fn engine_at_ms(now_ms: i64) -> (Engine, Db) {
     let e = engine_seeded(
         ROOT,
         [1u8; 32],
-        Arc::new(FakeClock(PLMutex::new(now_ms as u64))),
+        Arc::new(FakeClock(PLMutex::new(now_ms.cast_unsigned()))),
     );
     (e, db_root(ROOT))
 }
@@ -400,7 +401,7 @@ pub(super) fn morning(e: &Engine, db: &Db, now_ms: i64) -> MorningSummary {
         .query(
             db,
             Query::MorningSummary {
-                now_ms: now_ms as u64,
+                now_ms: now_ms.cast_unsigned(),
             },
         )
         .unwrap()
@@ -415,7 +416,7 @@ pub(super) fn evening(e: &Engine, db: &Db, now_ms: i64) -> EndOfDayPlan {
         .query(
             db,
             Query::EndOfDayPlan {
-                now_ms: now_ms as u64,
+                now_ms: now_ms.cast_unsigned(),
             },
         )
         .unwrap()
@@ -436,8 +437,8 @@ pub(super) fn reminders(
         .query(
             db,
             Query::ReminderIntents {
-                now_ms: now_ms as u64,
-                horizon_ms: horizon_ms as u64,
+                now_ms: now_ms.cast_unsigned(),
+                horizon_ms: horizon_ms.cast_unsigned(),
                 settings,
             },
         )
@@ -769,8 +770,8 @@ pub(super) fn seed_stream(db: &mut Db, name: &str) -> EntityRef {
     let id = EntityRef::new(EntityKind::Stream, [0x11; 16]);
     let stream = Stream {
         id,
-        created_at: ms_to_ts(T0 as i64),
-        updated_at: ms_to_ts(T0 as i64),
+        created_at: ms_to_ts(T0.cast_signed()),
+        updated_at: ms_to_ts(T0.cast_signed()),
         name: name.to_string(),
         description: None,
         color: StreamColor::Slate,
@@ -803,8 +804,8 @@ pub(super) fn seed_context(db: &mut Db, name: &str) -> EntityRef {
     let id = EntityRef::new(EntityKind::Context, [0x22; 16]);
     let ctx = Context {
         id,
-        created_at: ms_to_ts(T0 as i64),
-        updated_at: ms_to_ts(T0 as i64),
+        created_at: ms_to_ts(T0.cast_signed()),
+        updated_at: ms_to_ts(T0.cast_signed()),
         name: name.to_string(),
         description: None,
         archived: false,
@@ -828,14 +829,14 @@ pub(super) fn seed_bare_routine(db: &mut Db) -> EntityRef {
     let d = routine_draft(
         inbox_stream_ref(),
         "FREQ=DAILY",
-        T0 as i64,
+        T0.cast_signed(),
         RoutineCatchupPolicy::Skip,
         Vec::new(),
     );
     let routine = Routine {
         id,
-        created_at: ms_to_ts(T0 as i64),
-        updated_at: ms_to_ts(T0 as i64),
+        created_at: ms_to_ts(T0.cast_signed()),
+        updated_at: ms_to_ts(T0.cast_signed()),
         template: d.template,
         rrule: d.rrule,
         timezone: d.timezone,

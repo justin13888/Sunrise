@@ -220,11 +220,12 @@ impl Engine {
         let due = parse_occurrence_key(&key)
             .and_then(|c| routine.occurrence_instant(c, &reader))
             .unwrap_or(occurrence_at);
-        let outcome = routine.record_occurrence_completion(&key, due, ms_to_ts(done_ms as i64));
+        let outcome =
+            routine.record_occurrence_completion(&key, due, ms_to_ts(done_ms.cast_signed()));
         if outcome == StreakOutcome::Duplicate {
             return None;
         }
-        routine.updated_at = ms_to_ts(now_ms as i64);
+        routine.updated_at = ms_to_ts(now_ms.cast_signed());
         Some((key, outcome))
     }
 
@@ -242,8 +243,8 @@ impl Engine {
         let routine_id = self.fresh_id(EntityKind::Routine, now_ms);
         let mut routine = Routine {
             id: routine_id,
-            created_at: ms_to_ts(now_ms as i64),
-            updated_at: ms_to_ts(now_ms as i64),
+            created_at: ms_to_ts(now_ms.cast_signed()),
+            updated_at: ms_to_ts(now_ms.cast_signed()),
             template: d.template,
             rrule: d.rrule,
             timezone: d.timezone,
@@ -344,7 +345,7 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut routine = read_routine(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
-        let effect = patch.apply_to(&mut routine, ms_to_ts(now_ms as i64))?;
+        let effect = patch.apply_to(&mut routine, ms_to_ts(now_ms.cast_signed()))?;
 
         let wire = self.routine_op_form(db, &routine)?;
         let op = InnerOp::RoutineUpdate(Box::new(wire));
@@ -490,7 +491,7 @@ impl Engine {
         patch: RoutinePatch,
     ) -> Result<CommandResult, EngineError> {
         let now_ms = self.clock.now_ms();
-        let now = ms_to_ts(now_ms as i64);
+        let now = ms_to_ts(now_ms.cast_signed());
         let routine = read_routine(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
         // Splitting again where the series was already split edits the
@@ -511,7 +512,7 @@ impl Engine {
         let reader = self.device_zone();
         let mut adopted = Vec::new();
         let mut dropped = Vec::new();
-        for t in self.untouched_open_occurrences(db.conn(), &routine, Some(key))? {
+        for t in Self::untouched_open_occurrences(db.conn(), &routine, Some(key))? {
             match occurrence_key_of_task(&routine, &t) {
                 Some(k) if next.has_occurrence(&k) => {
                     let mut t = template_onto(t, &next, &reader);
@@ -568,7 +569,6 @@ impl Engine {
     /// by a user, not done or cancelled, not deleted), each at or after
     /// `from` when it is given, by id.
     fn untouched_open_occurrences(
-        &self,
         conn: &rusqlite::Connection,
         routine: &Routine,
         from: Option<&str>,
@@ -616,12 +616,12 @@ impl Engine {
     ) -> Result<Vec<Task>, EngineError> {
         let reader = self.device_zone();
         let mut out = Vec::new();
-        for t in self.untouched_open_occurrences(conn, of, from)? {
+        for t in Self::untouched_open_occurrences(conn, of, from)? {
             let mut next = template_onto(t.clone(), routine, &reader);
             if next == t {
                 continue;
             }
-            next.updated_at = ms_to_ts(now_ms as i64);
+            next.updated_at = ms_to_ts(now_ms.cast_signed());
             out.push(next);
         }
         Ok(out)
@@ -777,7 +777,7 @@ impl Engine {
         let SunriseTime::Zoned { tz: new, .. } = &routine.starts_at else {
             return Ok(());
         };
-        let now = ms_to_ts(now_ms as i64);
+        let now = ms_to_ts(now_ms.cast_signed());
         for raw in routine_task_ids(db.conn(), routine.id.bytes())? {
             let Some(mut t) = read_task(db.conn(), &raw)? else {
                 continue;
@@ -830,7 +830,7 @@ impl Engine {
         let mut routine = read_routine(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
         routine.deleted = true;
-        routine.updated_at = ms_to_ts(now_ms as i64);
+        routine.updated_at = ms_to_ts(now_ms.cast_signed());
         let op = InnerOp::RoutineDelete(Box::new(self.routine_op_form(db, &routine)?));
         let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
         let (op_id, seq) = (done.op_id, done.seq);
@@ -841,21 +841,21 @@ impl Engine {
         &self,
         db: &mut Db,
         id: EntityRef,
-        occurrence_key: String,
+        occurrence_key: &str,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Routine)?;
         let now_ms = self.clock.now_ms();
         let mut routine = read_routine(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
-        if !routine.skipped_keys.contains(&occurrence_key) {
-            routine.skipped_keys.push(occurrence_key.clone());
+        if !routine.skipped_keys.iter().any(|k| k == occurrence_key) {
+            routine.skipped_keys.push(occurrence_key.to_owned());
         }
-        routine.updated_at = ms_to_ts(now_ms as i64);
+        routine.updated_at = ms_to_ts(now_ms.cast_signed());
 
         // Tombstone the already-materialized task for this occurrence, but only
         // if it exists and is still an untouched (Todo, non-deferred) routine
         // task — a user who already started/edited it keeps it.
-        let task_id = routine.occurrence_task_id(&occurrence_key);
+        let task_id = routine.occurrence_task_id(occurrence_key);
         let existing = read_task(db.conn(), task_id.bytes())?;
         let drop_task = existing
             .as_ref()
@@ -875,7 +875,7 @@ impl Engine {
             let mut members = vec![(op.clone(), META_STREAM)];
             if let Some(mut t) = drop_task {
                 t.deleted = true;
-                t.updated_at = ms_to_ts(now_ms as i64);
+                t.updated_at = ms_to_ts(now_ms.cast_signed());
                 let stream = domain_bytes(t.stream_id);
                 members.push((InnerOp::TaskDelete(t), stream));
             }
@@ -949,13 +949,13 @@ impl Engine {
             return Ok(());
         }
         let window = (
-            ms_to_ts(window_start_ms as i64),
-            ms_to_ts(window_end_ms as i64),
+            ms_to_ts(window_start_ms.cast_signed()),
+            ms_to_ts(window_end_ms.cast_signed()),
         );
         let occ = routine
             .occurrences_in(window, &reader)
             .map_err(|e| EngineError::Invalid(format!("routine expand: {e}")))?;
-        let now_ts = ms_to_ts(now_ms as i64);
+        let now_ts = ms_to_ts(now_ms.cast_signed());
         let first_scan = ms_to_ts(i64::try_from(mat_until).unwrap_or(i64::MAX));
 
         // Partition into missed (<= now) and future (> now). A missed one in
@@ -1030,8 +1030,11 @@ impl Engine {
         now_ms: u64,
     ) -> Result<Vec<Task>, EngineError> {
         let horizon_ms = u64::from(materialization_horizon_days(&routine.rrule.freq)) * 86_400_000;
-        let now_ts = ms_to_ts(now_ms as i64);
-        let window = (now_ts, ms_to_ts(now_ms.saturating_add(horizon_ms) as i64));
+        let now_ts = ms_to_ts(now_ms.cast_signed());
+        let window = (
+            now_ts,
+            ms_to_ts(now_ms.saturating_add(horizon_ms).cast_signed()),
+        );
         let valid: BTreeSet<[u8; 16]> = routine
             .occurrences_in(window, &self.device_zone())
             .map_err(|e| EngineError::Invalid(format!("routine expand: {e}")))?
@@ -1051,7 +1054,7 @@ impl Engine {
         )?;
         // The index key prefilters, widened (time.md §2 rule 2); whether a
         // task is in the future is decided on its resolved time below.
-        let floor = (now_ms as i64).saturating_sub(PREFILTER_SLACK_MS);
+        let floor = (now_ms.cast_signed()).saturating_sub(PREFILTER_SLACK_MS);
         let ids = stmt
             .query_map(params![rid_blob, floor], |row| row.get::<_, Vec<u8>>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1078,7 +1081,7 @@ impl Engine {
                 continue;
             }
             t.deleted = true;
-            t.updated_at = ms_to_ts(now_ms as i64);
+            t.updated_at = ms_to_ts(now_ms.cast_signed());
             out.push(t);
         }
         Ok(out)
@@ -1164,8 +1167,8 @@ fn build_routine_task(
     let mut task = Task {
         reminder_lead_s: draft.reminder_lead_s,
         id: routine.occurrence_task_id(key),
-        created_at: ms_to_ts(now_ms as i64),
-        updated_at: ms_to_ts(now_ms as i64),
+        created_at: ms_to_ts(now_ms.cast_signed()),
+        updated_at: ms_to_ts(now_ms.cast_signed()),
         title: title_override.unwrap_or(draft.title),
         body: draft.body,
         stream_id: routine.template.stream_id,
@@ -1332,7 +1335,7 @@ impl StreakStateProj {
         Self {
             grace_window_s: r.grace_window_s,
             forgiveness_disabled: !r.forgiveness_enabled,
-            streak_started_at_ms: r.streak_started_at.map(|t| t.as_millisecond()),
+            streak_started_at_ms: r.streak_started_at.map(jiff::Timestamp::as_millisecond),
             forgivenesses_in_window: r.forgivenesses_in_window,
             streak_keys: r.streak_keys.clone(),
         }

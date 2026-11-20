@@ -76,7 +76,7 @@ struct TriageModelTests {
         #expect(model.rows.isEmpty)
         #expect(model.selection.isEmpty)
         #expect(try await task(late, in: vault).lateAcknowledgedAt != nil)
-        #expect(try await vault.bridge.undo() == L10n.Triage.keep)
+        #expect(try await vault.bridge.undo()?.label == L10n.Triage.keep)
         await model.refresh()
         #expect(model.rows.map(\.task.id) == [late])
         await vault.bridge.shutdown()

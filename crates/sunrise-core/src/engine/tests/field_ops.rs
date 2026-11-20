@@ -421,6 +421,10 @@ fn the_registry_declares_the_defaults_a_create_reads() {
 /// A vault every device of which reads field ops never logs a full-state
 /// entity op once it requires the feature, whatever command writes.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario, read top to bottom"
+)]
 fn no_full_state_op_is_emitted_once_field_ops_is_required() {
     let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
     let e = engine_seeded(ROOT, [1; 32], clock.clone());
@@ -478,7 +482,7 @@ fn no_full_state_op_is_emitted_once_field_ops_is_required() {
         },
     );
     let (rid, occ) = seed_routine(&e, &mut db);
-    set_clock(&clock, (occ[0].1 + 3_600_000) as u64);
+    set_clock(&clock, (occ[0].1 + 3_600_000).cast_unsigned());
     apply(&mut db, Command::CompleteTask(occ[0].0));
     let occurrence_key = routine_of(&e, &db, rid)
         .occurrence_key_of(&occ[1].0, ms_to_ts(occ[1].1))
@@ -607,6 +611,10 @@ fn no_full_state_op_is_emitted_once_field_ops_is_required() {
 /// The commands of the field-ops vault, each with the fields it writes on
 /// each entity: only those it changed.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario, read top to bottom"
+)]
 fn every_command_writes_only_the_fields_it_changed() {
     /// What each case starts from.
     struct Fixture {
@@ -826,7 +834,7 @@ fn every_command_writes_only_the_fields_it_changed() {
         (
             "complete an occurrence on time",
             |f| {
-                set_clock(&f.clock, (f.occ[0].1 + 3_600_000) as u64);
+                set_clock(&f.clock, (f.occ[0].1 + 3_600_000).cast_unsigned());
                 Command::CompleteTask(f.occ[0].0)
             },
             |f| {
@@ -1424,7 +1432,7 @@ fn a_focus_completion_and_its_streak_key_are_one_group() {
     let e = engine_seeded(ROOT, [1; 32], clock.clone());
     let mut db = db_root(ROOT);
     let (rid, occ) = seed_routine(&e, &mut db);
-    set_clock(&clock, (occ[0].1 + 600_000) as u64);
+    set_clock(&clock, (occ[0].1 + 600_000).cast_unsigned());
     let session = open_session(&e, &mut db, occ[0].0);
     let since = mark(&db);
     end_session(&e, &mut db, session, true);

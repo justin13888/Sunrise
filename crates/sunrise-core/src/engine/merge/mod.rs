@@ -535,7 +535,7 @@ fn project_and_write(
     let Some(value) = project(tx, spec, target, meta)? else {
         return Ok(());
     };
-    write_projection(tx, spec, target, value, &meta.head.lww())?;
+    write_projection(tx, spec, target, &value, &meta.head.lww())?;
     Ok(())
 }
 

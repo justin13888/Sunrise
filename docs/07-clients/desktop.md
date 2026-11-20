@@ -286,10 +286,11 @@ document's intent, not yet implemented).
   order: a row drop is `MoveTasks`, which writes `Task.sort_order`. Files drop onto a task's
   Attachments pane. Today and Search decline a reorder drop rather than
   accepting one that would snap back, because the core ranks those two lists.
-  The one gesture not built is **Calendar block → Task**, and what is missing is
-  two modifiers rather than a layout: `BlockChip` is not `.draggable`, and the
-  task row's drop destination only reorders. `TaskListModel.bind(_:to:)` exists
-  and is tested, so the write is ready and building the gesture is UI work.
+  **Calendar block → Task** is the grip on a block, dropped on a task row: it
+  binds the task to the block, or unbinds it when it is bound already. A block
+  move or resize is previewed by the core's planner as it is dragged, ghosts
+  and all, and committed as one undo step on drop
+  ([`../08-features/planner.md`](../08-features/planner.md)).
 - **built — `sunrise://` URL scheme**, registered in `Info.plist` and handled by
   `onOpenURL`, for notification deep links
   ([`interaction-patterns.md`](./interaction-patterns.md)). When no main window

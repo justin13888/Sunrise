@@ -69,6 +69,10 @@ async fn a_command_lowers_into_the_core_and_the_result_comes_back() {
         out.revocation_unwound.is_empty(),
         "nothing has been revoked in this vault, so nothing can have been unwound"
     );
+    assert!(
+        !out.revoked_by_authority && out.authority_awaits_update.is_empty(),
+        "a CreateTask revokes nothing, by authority or otherwise"
+    );
     // Empty and false is only half the guard, and it is the half a constant
     // satisfies: a `revocation_unwound` hardcoded to `Vec::new()` passes every
     // assertion above. The other half — that a *populated* value survives the
@@ -2336,6 +2340,46 @@ fn a_populated_disclosure_set_survives_the_lowering() {
     );
     assert_eq!(out.seq, 42);
     assert_eq!(out.op_id, "22".repeat(16), "op id is 16 bytes of hex");
+}
+
+/// **Whether a revocation carries the account's authority crosses the seam,
+/// in both of the shapes the core produces.**
+///
+/// ADR-0058 §7: the holder of the account's signing key signs a revocation
+/// when every device that is not revoked can read one, and otherwise emits an
+/// ordinary revocation and names the devices to update. The two results are
+/// built separately because the core never sets both: a signed revocation has
+/// nothing awaiting, and one with something awaiting was not signed. Each is
+/// the other's guard against a field mapped to a constant.
+#[test]
+fn whether_a_revocation_carries_the_accounts_authority_crosses_the_seam() {
+    let base = || {
+        CommandResult::new(
+            EntityRef::new(EntityKind::Device, [0x11; 16]),
+            None,
+            [0x22; 16],
+            7,
+        )
+    };
+
+    let signed = CommandOutcome::from(&base().with_revocation_authority(true, Vec::new()));
+    assert!(
+        signed.revoked_by_authority,
+        "a revocation nothing can unwind must not reach the client as an ordinary one"
+    );
+    assert!(signed.authority_awaits_update.is_empty());
+
+    let awaiting = vec!["b1".repeat(16), "b2".repeat(16)];
+    let withheld = CommandOutcome::from(&base().with_revocation_authority(false, awaiting.clone()));
+    assert!(
+        !withheld.revoked_by_authority,
+        "an ordinary revocation must not reach the client as one nothing can unwind"
+    );
+    assert_eq!(
+        withheld.authority_awaits_update, awaiting,
+        "the devices that kept this revocation ordinary must cross whole, so a \
+         client can say which builds to update"
+    );
 }
 
 // The lowering of a `DeviceRow` into a `DeviceListRow`, flag for flag, is in

@@ -19,8 +19,19 @@ struct CalendarView: View {
             if let error = model.errorMessage {
                 NoteBanner(text: error) { model.dismissError() }
             }
+            if let note = model.planner.note {
+                if model.planner.awaitingDecision {
+                    PlanDecisionBanner(text: note, planner: model.planner)
+                } else {
+                    NoteBanner(text: note) { model.planner.dismissNote() }
+                }
+            }
+            if let error = model.planner.errorMessage {
+                NoteBanner(text: error) { model.planner.dismissError() }
+            }
             Divider()
             grid
+                .overlay(alignment: .top) { PlanSummaryLine(summary: model.planner.summary) }
         }
         .task { await model.refresh() }
         .task { await model.follow() }
@@ -232,6 +243,13 @@ private struct DayColumn: View {
 
     @State private var dragFrom: CGFloat?
     @State private var dragTo: CGFloat?
+    /// The last snapped position a block drag previewed, so a pointer that
+    /// moves within one snap does not ask the planner again.
+    @State private var dragSnapped: Int64?
+    /// Esc pressed during a block drag: its drop commits nothing.
+    @State private var dragCancelled = false
+    /// The block with keyboard focus, which the planning keys act on.
+    @FocusState private var focusedBlock: String?
 
     private var dayStartMs: Int64 { model.dayStartMs(offset: dayOffset) }
 
@@ -274,8 +292,21 @@ private struct DayColumn: View {
                             }
                         },
                         resolve: resolveMenu(for: placed),
-                        drag: { mode, points in dragBlock(placed, mode: mode, byPoints: points) }
+                        isMoving: model.planner.moves(placed.blockId),
+                        drag: { mode, points, ended in
+                            dragBlock(placed, mode: mode, byPoints: points, ended: ended)
+                        }
                     )
+                    .modifier(PlanningKeys(focus: $focusedBlock, id: placed.id) { chord in
+                        planKey(chord, on: placed)
+                    })
+                }
+                ForEach(model.planner.ghosts(
+                    fromMs: dayStartMs,
+                    toMs: model.dayStartMs(offset: dayOffset + 1),
+                    timeZone: model.timeZone
+                )) { ghost in
+                    PlanGhostView(ghost: ghost, dayStartMs: dayStartMs, width: proxy.size.width)
                 }
                 if let ghost = ghostRect {
                     RoundedRectangle(cornerRadius: 4)
@@ -354,33 +385,71 @@ private struct DayColumn: View {
 
     /// **Moving or resizing a block by dragging it.**
     ///
-    /// The translation is turned into milliseconds here — points are the
-    /// view's unit and the grid's scale is the view's business — and every
-    /// decision after that is `BlockDrag`'s, so what happens at midnight and
-    /// what happens to a block dragged shorter than a snap step are both
-    /// testable without a window.
-    private func dragBlock(_ placed: PlacedBlock, mode: BlockDragMode, byPoints points: CGFloat) {
+    /// The translation is turned into the snapped instant the held edge is
+    /// over — points are the view's unit and the grid's scale is the view's
+    /// business — and that is the gesture the planner is sent. Where the
+    /// block lands, what moves out of its way and what it would break are
+    /// the core's answers, drawn as ghosts while the drag goes on and
+    /// committed exactly as drawn on release (`docs/08-features/planner.md`).
+    /// Released where it started, or after Esc, it writes nothing.
+    ///
+    /// One event of a repeating block is not planned: the planner reads the
+    /// series, not the event. It keeps asking how far the change reaches and
+    /// writes the edit on release.
+    private func dragBlock(
+        _ placed: PlacedBlock,
+        mode: BlockDragMode,
+        byPoints points: CGFloat,
+        ended: Bool
+    ) {
+        let row = placed.row
+        let zone = model.timeZone
+        let held = timeValueMs(value: mode == .move ? row.block.startsAt : row.block.endsAt, tz: zone)
         let deltaMs = Int64(points / CalendarMetrics.hourHeight * 3_600_000)
-        let bounds = BlockDrag.apply(
-            mode: mode,
-            startMs: placed.startMs,
-            endMs: placed.endMs,
-            deltaMs: deltaMs,
-            snapMinutes: model.snapMinutes,
-            dayStartMs: dayStartMs,
-            dayEndMs: dayStartMs + 24 * 3_600_000
-        )
-        guard bounds.startMs != placed.startMs || bounds.endMs != placed.endMs else { return }
-        reaching(placed.row, .move) { reach in
-            Task {
-                await model.moveBlock(
-                    placed.row,
-                    toStartMs: bounds.startMs,
-                    toEndMs: bounds.endMs,
-                    reach: reach
-                )
-            }
+        let toMs = model.snap(held + deltaMs, dayOffset: dayOffset)
+        let planner = model.planner
+        guard ended else {
+            guard !row.recurs, !dragCancelled, toMs != dragSnapped else { return }
+            if dragSnapped == nil { focusedBlock = placed.id }
+            dragSnapped = toMs
+            Task { await planner.previewDrag(row, mode: mode, toMs: toMs, timeZone: zone) }
+            return
         }
+        let cancelled = dragCancelled
+        dragSnapped = nil
+        dragCancelled = false
+        guard !cancelled else { return }
+        guard row.recurs else {
+            Task { await planner.dropDrag(row, mode: mode, toMs: toMs, timeZone: zone) }
+            return
+        }
+        guard toMs != held,
+              let span = CalendarPlanner.repeatingSpan(of: row, mode: mode, toMs: toMs, timeZone: zone)
+        else { return }
+        reaching(row, .move) { reach in
+            Task { await model.moveBlock(row, toStartMs: span.startMs, toEndMs: span.endMs, reach: reach) }
+        }
+    }
+
+    /// A planning key pressed on a block with focus (``Keymap/planning``).
+    /// Esc during a drag also cancels the drag's drop.
+    private func planKey(_ chord: KeyChord, on placed: PlacedBlock) -> Bool {
+        guard let key = Keymap.planKey(for: chord) else { return false }
+        let planner = model.planner
+        switch key {
+        case .cancel:
+            guard dragSnapped != nil || planner.plan != nil || planner.nudge != nil else { return false }
+            dragCancelled = dragSnapped != nil
+            planner.cancel()
+            return true
+        case .commit:
+            guard planner.plan != nil else { return false }
+        default:
+            guard !placed.row.recurs else { return false }
+        }
+        let (snap, zone) = (model.snapMinutes, model.timeZone)
+        Task { await planner.press(key, on: placed.row, snapMinutes: snap, timeZone: zone) }
+        return true
     }
 
     /// Make `change` now for a block that does not recur, which asks nothing,
@@ -402,15 +471,16 @@ private struct DayColumn: View {
     ///
     /// The payload is the task's `EntityRef`, which is its text form — the same
     /// string the CLI accepts. A drop of anything else is ignored rather than
-    /// guessed at.
+    /// guessed at. How long the block it makes is, is the core's answer
+    /// (``CalendarPlanner/dropTask(_:atMs:timeZone:)``).
     private func accept(items: [String], at y: CGFloat) -> Bool {
-        guard let raw = items.first, raw.hasPrefix("tsk_") else { return false }
+        guard let raw = DropPayload.taskIDs(items).first else { return false }
         let start = model.snap(
             CalendarMetrics.instant(at: y, dayStartMs: dayStartMs),
             dayOffset: dayOffset
         )
-        let end = start + Int64(max(model.snapMinutes, 30)) * 60_000
-        Task { await model.dropTask(raw, fromMs: start, toMs: end, kind: .zoned) }
+        let (planner, zone) = (model.planner, model.timeZone)
+        Task { await planner.dropTask(raw, atMs: start, timeZone: zone) }
         return true
     }
 

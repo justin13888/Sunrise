@@ -2278,6 +2278,17 @@
         }
       }
     },
+    "apple.calendar.bind_grip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag onto a task to bind it to this block, or onto a bound task to unbind it"
+          }
+        }
+      }
+    },
     "apple.calendar.block_fixed": {
       "extractionState": "manual",
       "localizations": {
@@ -2454,6 +2465,28 @@
         }
       }
     },
+    "apple.calendar.note_plan_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The plan changed while you dropped. Move to commit the new plan, or cancel."
+          }
+        }
+      }
+    },
+    "apple.calendar.note_plan_refused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not moved: that drop breaks a rule the block cannot break."
+          }
+        }
+      }
+    },
     "apple.calendar.overlaps": {
       "extractionState": "manual",
       "localizations": {
@@ -2461,6 +2494,226 @@
           "stringUnit": {
             "state": "translated",
             "value": "Overlaps %1$@"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_commit_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_keys_hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move or resize with %1$@"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_moves": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Moves %arg"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Moves %arg"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_refused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can’t drop here"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_after_hard_deadline": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "misses its hard deadline"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_after_target": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "misses its target"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_before_blocker": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "starts before what blocks it"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_in_past": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "in the past"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_invalid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "not a time this block can have"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_outside_date_range": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "outside its date range"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_outside_day": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "outside your day"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_outside_time_of_day": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "outside its time of day"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_overlaps": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "overlaps another block"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_overlaps_fixed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "overlaps something fixed"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_wrong_day_of_week": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "on a day of the week it does not allow"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_unscheduled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg unscheduled"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg unscheduled"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -2703,6 +2956,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "move a block"
+          }
+        }
+      }
+    },
+    "apple.calendar.undo_plan_move": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "move ‘%1$@’ (moved %2$lld)"
+          }
+        }
+      }
+    },
+    "apple.calendar.undo_plan_resize": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "resize ‘%1$@’ (moved %2$lld)"
           }
         }
       }
@@ -3081,6 +3356,61 @@
         }
       }
     },
+    "apple.devices.authority_awaits_update": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "The account identity did NOT sign this removal, because one device runs a version of Sunrise too old to read a signed one. Until it is signed, a later change on the account can take it back off the list. Update Sunrise on that device; removals after that are signed."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "The account identity did NOT sign this removal, because %arg devices run a version of Sunrise too old to read a signed one. Until it is signed, a later change on the account can take it back off the list. Update Sunrise on those devices; removals after that are signed."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.devices.authority_ordinary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This removal comes from this %1$@, not the account identity, so a later change on the account can take it back off the list. The device would still receive no keys."
+          }
+        }
+      }
+    },
+    "apple.devices.authority_signed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The account identity signed this removal, so nothing can take it back."
+          }
+        }
+      }
+    },
     "apple.devices.cancel": {
       "extractionState": "manual",
       "localizations": {
@@ -3197,7 +3527,18 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Removed. It reads nothing written since."
+            "value": "Removed by a device. It reads nothing written since. A later change on the account can take this removal back off the list, though the device would still receive no keys."
+          }
+        }
+      }
+    },
+    "apple.devices.mark_removed_by_authority": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removed by the account identity. It reads nothing written since, and nothing can take this removal back."
           }
         }
       }
@@ -5354,6 +5695,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Undo"
+          }
+        }
+      }
+    },
+    "apple.keyboard.command.upcoming": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go to Upcoming"
           }
         }
       }
@@ -12071,6 +12423,17 @@
         }
       }
     },
+    "apple.undo.restored_some": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restored %1$lld of %2$lld; the rest were changed since"
+          }
+        }
+      }
+    },
     "apple.undo.resume_stream": {
       "extractionState": "manual",
       "localizations": {
@@ -12133,6 +12496,292 @@
           "stringUnit": {
             "state": "translated",
             "value": "Undo %1$@"
+          }
+        }
+      }
+    },
+    "apple.upcoming.due": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Due"
+          }
+        }
+      }
+    },
+    "apple.upcoming.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing coming up in the next %1$@ days, and nothing undated."
+          }
+        }
+      }
+    },
+    "apple.upcoming.more": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg more"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg more"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.upcoming.no_date": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No date"
+          }
+        }
+      }
+    },
+    "apple.upcoming.no_stream": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No stream"
+          }
+        }
+      }
+    },
+    "apple.upcoming.note_plan_refused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not moved: that day breaks a rule the task cannot break."
+          }
+        }
+      }
+    },
+    "apple.upcoming.nothing_planned": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing planned"
+          }
+        }
+      }
+    },
+    "apple.upcoming.only_undated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing scheduled in the next %1$@ days. Your undated tasks are below."
+          }
+        }
+      }
+    },
+    "apple.upcoming.span": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Days to show"
+          }
+        }
+      }
+    },
+    "apple.upcoming.span_days": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg day"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg days"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.upcoming.target": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Target"
+          }
+        }
+      }
+    },
+    "apple.upcoming.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Upcoming"
+          }
+        }
+      }
+    },
+    "apple.upcoming.today": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Today"
+          }
+        }
+      }
+    },
+    "apple.upcoming.tomorrow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tomorrow"
+          }
+        }
+      }
+    },
+    "apple.upcoming.undo_move": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "reschedule ‘%1$@’"
+          }
+        }
+      }
+    },
+    "apple.upcoming.undo_move_many": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "reschedule %arg task"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "reschedule %arg tasks"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.upcoming.undo_unschedule": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "clear the date of ‘%1$@’"
+          }
+        }
+      }
+    },
+    "apple.upcoming.undo_unschedule_many": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "clear the date of %arg task"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "clear the date of %arg tasks"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

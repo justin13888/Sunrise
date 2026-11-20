@@ -264,6 +264,10 @@ impl Engine {
     }
 
     /// [`Self::apply_remote_all`], without the tests' rebuild check.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     fn apply_remote_all_unchecked(
         &self,
         db: &mut Db,
@@ -294,7 +298,7 @@ impl Engine {
         //    bounded in `apply_control_op`, where the effect is a register this
         //    engine re-derives rather than a row it could never un-write;
         //    ADR-0041 (`docs/11-adr/0041-peer-side-revocation-is-a-fold.md`).
-        let d_s_pub = match self.lookup_device_cert(db, &env.device_id)? {
+        let d_s_pub = match Self::lookup_device_cert(db, &env.device_id)? {
             Some(cert_blob) => {
                 let cert = DeviceCert::from_cbor(&cert_blob)
                     .map_err(|e| EngineError::RemoteOpInvalid(format!("stored cert: {e}")))?;
@@ -784,6 +788,10 @@ impl Engine {
     /// `emit_key_envelopes`' anti-join excludes that device from every epoch
     /// minted in the same transaction. It therefore holds no key above the one
     /// it was cut at, and anything it seals sorts below every honest rotation.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per control op kind; the length is the number of kinds"
+    )]
     pub(super) fn apply_control_op(
         &self,
         tx: &Transaction<'_>,
@@ -987,11 +995,11 @@ impl Engine {
             // The feature folds (ADR-0045 §7). Neither refuses: a malformed id
             // is skipped and logged, and the rest of the op still counts.
             InnerOp::VaultRequires(p) => {
-                self.apply_vault_requires(tx, p, now_ms)?;
+                Self::apply_vault_requires(tx, p, now_ms)?;
                 Ok(Vec::new())
             }
             InnerOp::DeviceFeatures(p) => {
-                self.apply_device_features(tx, p, sender, hlc, now_ms)?;
+                Self::apply_device_features(tx, p, sender, hlc, now_ms)?;
                 Ok(Vec::new())
             }
             InnerOp::DeviceCertPublish(cert_cbor) => {
@@ -1467,7 +1475,7 @@ impl Engine {
                     // established between two deliveries can be holding rows
                     // admitted while it was unknown, and those places are what
                     // the row about to be judged needs.
-                    self.purge_unverifiable_siblings(tx, &p.from_identity_id, from_pub)?;
+                    Self::purge_unverifiable_siblings(tx, &p.from_identity_id, from_pub)?;
                 }
 
                 // Which rows one predecessor keeps. A place is taken by rank
@@ -1482,7 +1490,7 @@ impl Engine {
                     emitter_device_id: sender.to_vec(),
                     to_identity_id: p.to_identity_id.to_vec(),
                 };
-                if !self.admit_sibling(tx, &p.from_identity_id, &rank)? {
+                if !Self::admit_sibling(tx, &p.from_identity_id, &rank)? {
                     tracing::warn!(
                         ev = "core.identity.transition_rejected",
                         reason = "siblings",
@@ -1569,7 +1577,7 @@ impl Engine {
                 // establishment.
                 let reached = self.chain_identities(tx)?;
                 for (id, id_s_pub) in reached.iter().filter(|(id, _)| !established.contains(id)) {
-                    self.purge_unverifiable_siblings(tx, id, id_s_pub)?;
+                    Self::purge_unverifiable_siblings(tx, id, id_s_pub)?;
                 }
                 self.recompute_identity_head(tx)?;
                 // A moved head changes which ledger rows are authority rows,
@@ -1582,7 +1590,7 @@ impl Engine {
                 // for a membership the account did not adopt, and writing it
                 // would let the loser decide who is current.
                 if self.current_identity(tx)?.identity_id == p.to_identity_id {
-                    self.apply_roster(tx, &p.roster, &p.to_identity_id)?;
+                    Self::apply_roster(tx, &p.roster, &p.to_identity_id)?;
                 }
                 Ok(Vec::new())
             }
@@ -1610,7 +1618,6 @@ impl Engine {
     /// will not hand one its keys back, which together are what stop it reading
     /// anything written after the cut.
     pub(super) fn lookup_device_cert(
-        &self,
         db: &Db,
         device_id: &[u8; 16],
     ) -> Result<Option<Vec<u8>>, EngineError> {

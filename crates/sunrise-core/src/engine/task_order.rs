@@ -74,7 +74,7 @@ impl Engine {
         for (id, key) in ids.into_iter().zip(keys) {
             let mut task = live_task(conn, id)?;
             task.sort_order = Some(key);
-            task.updated_at = super::ids::ms_to_ts(now_ms as i64);
+            task.updated_at = super::ids::ms_to_ts(now_ms.cast_signed());
             writes.push(TaskWrite::plain(task));
         }
         if let [write] = writes.as_slice() {

@@ -145,7 +145,7 @@ fn security_events_are_what_happened_after_this_device_joined() {
 fn deadlines_are_the_open_tasks_with_a_hard_one_and_routines_plan_as_routines() {
     let e = engine();
     let mut db = db();
-    let due = SunriseTime::instant(ms_to_ts(T0 as i64 + 3_600_000));
+    let due = SunriseTime::instant(ms_to_ts(T0.cast_signed() + 3_600_000));
     let hard = new_task(&e, &mut db, "file taxes");
     let soft = new_task(&e, &mut db, "tidy desk");
     let done = new_task(&e, &mut db, "paid rent");
@@ -183,7 +183,7 @@ fn deadlines_are_the_open_tasks_with_a_hard_one_and_routines_plan_as_routines() 
     );
 
     // A routine occurrence's reminder is the routine's, never also a task's.
-    let soon_ms = T0 as i64 + 600_000;
+    let soon_ms = T0.cast_signed() + 600_000;
     let patch = TaskPatch {
         planned_at: Some(Some(SunriseTime::instant(ms_to_ts(soon_ms)))),
         ..TaskPatch::default()

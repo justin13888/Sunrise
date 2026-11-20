@@ -1212,27 +1212,24 @@ impl Compiler<'_> {
         let mut out = HashSet::new();
         for name in names {
             let mut unresolved = Vec::new();
-            match resolve_named(name, &refs, &mut unresolved, kind) {
-                Some(id) => {
-                    out.insert(*id.bytes());
-                }
-                None => {
-                    let ambiguous = unresolved.iter().any(|u| {
-                        matches!(
-                            u,
-                            sunrise_domain::capture::Unresolved::AmbiguousStream { .. }
-                                | sunrise_domain::capture::Unresolved::AmbiguousContext { .. }
-                        )
-                    });
-                    self.pending.push(Pending {
-                        kind: if ambiguous {
-                            NoticeKind::AmbiguousName
-                        } else {
-                            NoticeKind::UnknownName
-                        },
-                        detail: name.clone(),
-                    });
-                }
+            if let Some(id) = resolve_named(name, &refs, &mut unresolved, kind) {
+                out.insert(*id.bytes());
+            } else {
+                let ambiguous = unresolved.iter().any(|u| {
+                    matches!(
+                        u,
+                        sunrise_domain::capture::Unresolved::AmbiguousStream { .. }
+                            | sunrise_domain::capture::Unresolved::AmbiguousContext { .. }
+                    )
+                });
+                self.pending.push(Pending {
+                    kind: if ambiguous {
+                        NoticeKind::AmbiguousName
+                    } else {
+                        NoticeKind::UnknownName
+                    },
+                    detail: name.clone(),
+                });
             }
         }
         out

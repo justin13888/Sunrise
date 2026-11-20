@@ -80,7 +80,7 @@ impl Engine {
         db: &Db,
         now_ms: u64,
     ) -> Result<LatenessReader, EngineError> {
-        let schedule = self.day_schedule(db)?;
+        let schedule = Self::day_schedule(db)?;
         let (today, _, _) = self.planner_day_at(&schedule, now_ms)?;
         Ok(LatenessReader {
             tz: self.device_zone(),

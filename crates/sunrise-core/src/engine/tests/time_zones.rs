@@ -389,7 +389,7 @@ fn new_york_to_kolkata_recomputes_today_and_lateness_and_rewrites_nothing() {
     assert_eq!(stored(&e, &db), before, "a zone change is not an edit");
     assert_eq!(
         floating.resolve_in(&e.device_zone()),
-        Some(ms("2026-06-02T03:30:00Z")).map(|m| ms_to_ts(m as i64))
+        Some(ms("2026-06-02T03:30:00Z")).map(|m| ms_to_ts(m.cast_signed()))
     );
     assert_eq!(
         pinned.resolve_in(&e.device_zone()),
@@ -426,8 +426,16 @@ fn a_zone_change_replans_the_floating_reminder_and_keeps_the_zoned_one() {
         Some(SunriseTime::zoned(nine, "America/New_York")),
         None,
     );
-    let horizon = now as i64 + 3 * 86_400_000;
-    let plan = |e: &Engine| reminders(e, &db, now as i64, horizon, ReminderSettings::default());
+    let horizon = now.cast_signed() + 3 * 86_400_000;
+    let plan = |e: &Engine| {
+        reminders(
+            e,
+            &db,
+            now.cast_signed(),
+            horizon,
+            ReminderSettings::default(),
+        )
+    };
     let fire = |plan: &[sunrise_domain::ReminderIntent], id: EntityRef| {
         plan.iter().find(|i| i.entity == id).unwrap().clone()
     };
@@ -446,7 +454,7 @@ fn a_zone_change_replans_the_floating_reminder_and_keeps_the_zoned_one() {
     );
     assert_eq!(
         fire(&in_berlin, pinned).fire_at,
-        ms_to_ts(ms("2026-06-02T13:00:00Z") as i64)
+        ms_to_ts(ms("2026-06-02T13:00:00Z").cast_signed())
     );
     for id in [floating, pinned] {
         assert_eq!(fire(&in_ny, id).identity(), fire(&in_berlin, id).identity());
@@ -557,7 +565,7 @@ fn the_millisecond_defer_still_writes_an_instant() {
     let t = task_of(&e, &db, id);
     assert_eq!(
         t.planned_at,
-        Some(SunriseTime::instant(ms_to_ts(to_ms as i64)))
+        Some(SunriseTime::instant(ms_to_ts(to_ms.cast_signed())))
     );
     assert_eq!(t.deferred_count, 1);
 }

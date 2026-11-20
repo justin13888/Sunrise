@@ -734,8 +734,8 @@ fn a_re_import_preserves_created_at_and_moves_updated_at() {
     .unwrap();
 
     let b = read_block(db.conn(), id.bytes()).unwrap().unwrap();
-    assert_eq!(b.created_at.as_millisecond(), T0 as i64);
-    assert_eq!(b.updated_at.as_millisecond(), (T0 + 60_000) as i64);
+    assert_eq!(b.created_at.as_millisecond(), T0.cast_signed());
+    assert_eq!(b.updated_at.as_millisecond(), (T0 + 60_000).cast_signed());
 }
 
 /// A task the user bound to an imported Block is theirs. A re-import
@@ -987,7 +987,8 @@ pub(super) fn march(day: i8) -> u64 {
     SunriseTime::floating(jiff::civil::date(2026, 3, day).at(12, 0, 0, 0))
         .to_instant(&jiff::tz::TimeZone::UTC)
         .unwrap()
-        .as_millisecond() as u64
+        .as_millisecond()
+        .cast_unsigned()
 }
 
 /// 2026-03-`day` at `hour`:00, floating.
@@ -1034,7 +1035,7 @@ fn a_weekly_block_is_one_row_per_week_in_the_window_with_its_key() {
     assert_eq!(rows[0].block.ends_at, at(11, 10));
     assert!(day(&e, &db, 12).is_empty(), "a Thursday has no standup");
 
-    let from = march(1) as i64;
+    let from = march(1).cast_signed();
     let to = from + 28 * 86_400_000;
     let QueryResult::Blocks(rows) = e.query_blocks_between(&db, from, to).unwrap() else {
         panic!("expected blocks");
@@ -1679,8 +1680,8 @@ fn a_series_that_cannot_be_expanded_yields_no_rows_and_no_anchor() {
         .series()
         .expect("a recurring block");
     let window = (
-        jiff::Timestamp::from_millisecond(march(1) as i64).unwrap(),
-        jiff::Timestamp::from_millisecond(march(28) as i64).unwrap(),
+        jiff::Timestamp::from_millisecond(march(1).cast_signed()).unwrap(),
+        jiff::Timestamp::from_millisecond(march(28).cast_signed()).unwrap(),
     );
     assert!(sunrise_domain::expand_block(&series, window, &utc).is_err());
 

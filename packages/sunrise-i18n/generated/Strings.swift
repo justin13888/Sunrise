@@ -52,7 +52,9 @@ enum L10n {
         static func markThisDevice(device: String) -> String {
             L10n.tr("apple.devices.mark_this_device", device)
         }
-        /// Removed. It reads nothing written since.
+        /// Removed by the account identity. It reads nothing written since, and nothing can take this removal back.
+        static var markRemovedByAuthority: String { L10n.tr("apple.devices.mark_removed_by_authority") }
+        /// Removed by a device. It reads nothing written since. A later change on the account can take this removal back off the list, though the device would still receive no keys.
         static var markRemoved: String { L10n.tr("apple.devices.mark_removed") }
         /// Removed earlier. The account no longer records that, so it shows as current — but it still receives no keys and reads nothing written since. Remove it again from a device you still trust.
         static var markReadBounded: String { L10n.tr("apple.devices.mark_read_bounded") }
@@ -88,6 +90,16 @@ enum L10n {
         static var relayPending: String { L10n.tr("apple.devices.relay_pending") }
         /// The relay has been told.
         static var relayTold: String { L10n.tr("apple.devices.relay_told") }
+        /// The account identity signed this removal, so nothing can take it back.
+        static var authoritySigned: String { L10n.tr("apple.devices.authority_signed") }
+        /// This removal comes from this {device}, not the account identity, so a later change on the account can take it back off the list. The device would still receive no keys.
+        static func authorityOrdinary(device: String) -> String {
+            L10n.tr("apple.devices.authority_ordinary", device)
+        }
+        /// {count, plural, one {The account identity did NOT sign this removal, because one device runs a version of Sunrise too old to read a signed one. Until it is signed, a later change on the account can take it back off the list. Update Sunrise on that device; removals after that are signed.} other {The account identity did NOT sign this removal, because # devices run a version of Sunrise too old to read a signed one. Until it is signed, a later change on the account can take it back off the list. Update Sunrise on those devices; removals after that are signed.}}
+        static func authorityAwaitsUpdate(count: Int) -> String {
+            L10n.tr("apple.devices.authority_awaits_update", count)
+        }
         /// {count, plural, one {The account no longer records a removal of one other device, because the device that removed it was itself removed. It is not back in — it receives no keys and reads nothing written since — but the account does not say it was removed. Remove it again from a device you still trust.} other {The account no longer records a removal of # other devices, because the device that removed them was itself removed. They are not back in — they receive no keys and read nothing written since — but the account does not say they were removed. Remove each of them again from a device you still trust.}}
         static func unwound(count: Int) -> String {
             L10n.tr("apple.devices.unwound", count)
@@ -1016,6 +1028,58 @@ enum L10n {
         static var undoDeleteBlock: String { L10n.tr("apple.calendar.undo_delete_block") }
         /// edit a block
         static var undoEditBlock: String { L10n.tr("apple.calendar.undo_edit_block") }
+        /// move ‘{title}’ (moved {count, number})
+        static func undoPlanMove(title: String, count: Int) -> String {
+            L10n.tr("apple.calendar.undo_plan_move", title, count)
+        }
+        /// resize ‘{title}’ (moved {count, number})
+        static func undoPlanResize(title: String, count: Int) -> String {
+            L10n.tr("apple.calendar.undo_plan_resize", title, count)
+        }
+        /// {count, plural, one {Moves #} other {Moves #}}
+        static func planMoves(count: Int) -> String {
+            L10n.tr("apple.calendar.plan_moves", count)
+        }
+        /// {count, plural, one {# unscheduled} other {# unscheduled}}
+        static func planUnscheduled(count: Int) -> String {
+            L10n.tr("apple.calendar.plan_unscheduled", count)
+        }
+        /// overlaps something fixed
+        static var planRuleOverlapsFixed: String { L10n.tr("apple.calendar.plan_rule_overlaps_fixed") }
+        /// overlaps another block
+        static var planRuleOverlaps: String { L10n.tr("apple.calendar.plan_rule_overlaps") }
+        /// misses its hard deadline
+        static var planRuleAfterHardDeadline: String { L10n.tr("apple.calendar.plan_rule_after_hard_deadline") }
+        /// misses its target
+        static var planRuleAfterTarget: String { L10n.tr("apple.calendar.plan_rule_after_target") }
+        /// starts before what blocks it
+        static var planRuleBeforeBlocker: String { L10n.tr("apple.calendar.plan_rule_before_blocker") }
+        /// outside its time of day
+        static var planRuleOutsideTimeOfDay: String { L10n.tr("apple.calendar.plan_rule_outside_time_of_day") }
+        /// on a day of the week it does not allow
+        static var planRuleWrongDayOfWeek: String { L10n.tr("apple.calendar.plan_rule_wrong_day_of_week") }
+        /// outside its date range
+        static var planRuleOutsideDateRange: String { L10n.tr("apple.calendar.plan_rule_outside_date_range") }
+        /// outside your day
+        static var planRuleOutsideDay: String { L10n.tr("apple.calendar.plan_rule_outside_day") }
+        /// in the past
+        static var planRuleInPast: String { L10n.tr("apple.calendar.plan_rule_in_past") }
+        /// not a time this block can have
+        static var planRuleInvalid: String { L10n.tr("apple.calendar.plan_rule_invalid") }
+        /// Can’t drop here
+        static var planRefused: String { L10n.tr("apple.calendar.plan_refused") }
+        /// Not moved: that drop breaks a rule the block cannot break.
+        static var notePlanRefused: String { L10n.tr("apple.calendar.note_plan_refused") }
+        /// The plan changed while you dropped. Move to commit the new plan, or cancel.
+        static var notePlanChanged: String { L10n.tr("apple.calendar.note_plan_changed") }
+        /// Move
+        static var planCommitChanged: String { L10n.tr("apple.calendar.plan_commit_changed") }
+        /// Drag onto a task to bind it to this block, or onto a bound task to unbind it
+        static var bindGrip: String { L10n.tr("apple.calendar.bind_grip") }
+        /// Move or resize with {keys}
+        static func planKeysHint(keys: String) -> String {
+            L10n.tr("apple.calendar.plan_keys_hint", keys)
+        }
         /// Move a repeating block
         static var reachTitleMove: String { L10n.tr("apple.calendar.reach_title_move") }
         /// Change a repeating block
@@ -1395,6 +1459,61 @@ enum L10n {
             /// Unknown
             static var unknown: String { L10n.tr("apple.browse.color.unknown") }
         }
+    }
+
+    enum Upcoming {
+        /// Upcoming
+        static var title: String { L10n.tr("apple.upcoming.title") }
+        /// Days to show
+        static var span: String { L10n.tr("apple.upcoming.span") }
+        /// {count, plural, one {# day} other {# days}}
+        static func spanDays(count: Int) -> String {
+            L10n.tr("apple.upcoming.span_days", count)
+        }
+        /// Today
+        static var today: String { L10n.tr("apple.upcoming.today") }
+        /// Tomorrow
+        static var tomorrow: String { L10n.tr("apple.upcoming.tomorrow") }
+        /// Nothing planned
+        static var nothingPlanned: String { L10n.tr("apple.upcoming.nothing_planned") }
+        /// Due
+        static var due: String { L10n.tr("apple.upcoming.due") }
+        /// Target
+        static var target: String { L10n.tr("apple.upcoming.target") }
+        /// No date
+        static var noDate: String { L10n.tr("apple.upcoming.no_date") }
+        /// No stream
+        static var noStream: String { L10n.tr("apple.upcoming.no_stream") }
+        /// {count, plural, one {# more} other {# more}}
+        static func more(count: Int) -> String {
+            L10n.tr("apple.upcoming.more", count)
+        }
+        /// Nothing coming up in the next {span} days, and nothing undated.
+        static func empty(span: String) -> String {
+            L10n.tr("apple.upcoming.empty", span)
+        }
+        /// Nothing scheduled in the next {span} days. Your undated tasks are below.
+        static func onlyUndated(span: String) -> String {
+            L10n.tr("apple.upcoming.only_undated", span)
+        }
+        /// reschedule ‘{title}’
+        static func undoMove(title: String) -> String {
+            L10n.tr("apple.upcoming.undo_move", title)
+        }
+        /// {count, plural, one {reschedule # task} other {reschedule # tasks}}
+        static func undoMoveMany(count: Int) -> String {
+            L10n.tr("apple.upcoming.undo_move_many", count)
+        }
+        /// clear the date of ‘{title}’
+        static func undoUnschedule(title: String) -> String {
+            L10n.tr("apple.upcoming.undo_unschedule", title)
+        }
+        /// {count, plural, one {clear the date of # task} other {clear the date of # tasks}}
+        static func undoUnscheduleMany(count: Int) -> String {
+            L10n.tr("apple.upcoming.undo_unschedule_many", count)
+        }
+        /// Not moved: that day breaks a rule the task cannot break.
+        static var notePlanRefused: String { L10n.tr("apple.upcoming.note_plan_refused") }
     }
 
     enum Tasks {
@@ -1850,6 +1969,8 @@ enum L10n {
             static var quickCapture: String { L10n.tr("apple.keyboard.command.quick_capture") }
             /// Go to Today
             static var today: String { L10n.tr("apple.keyboard.command.today") }
+            /// Go to Upcoming
+            static var upcoming: String { L10n.tr("apple.keyboard.command.upcoming") }
             /// Go to Inbox
             static var inbox: String { L10n.tr("apple.keyboard.command.inbox") }
             /// Find in This List
@@ -2070,6 +2191,10 @@ enum L10n {
         static var moveToStream: String { L10n.tr("apple.undo.move_to_stream") }
         /// add a context
         static var addContext: String { L10n.tr("apple.undo.add_context") }
+        /// Restored {restored, number} of {total, number}; the rest were changed since
+        static func restoredSome(restored: Int, total: Int) -> String {
+            L10n.tr("apple.undo.restored_some", restored, total)
+        }
     }
 
     enum Menu {

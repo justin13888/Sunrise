@@ -112,7 +112,14 @@ struct DeviceListSection: View {
     private func marks(_ row: DeviceListModel.DeviceRow) -> [String] {
         var out: [String] = []
         if row.isThisDevice { out.append(L10n.Devices.markThisDevice(device: Platform.deviceName)) }
-        if row.revoked { out.append(L10n.Devices.markRemoved) }
+        // ADR-0058 §7: a removal nothing can take back, beside one a later
+        // change can. Both say "removed"; only the signed one says it is for
+        // good, and the ordinary one says what taking it back would leave.
+        if row.revoked {
+            out.append(
+                row.revokedByAuthority ? L10n.Devices.markRemovedByAuthority : L10n.Devices.markRemoved
+            )
+        }
         if !row.revoked, row.readBounded {
             // The two removal facts have come apart. Since ADR-0041 the
             // register is a fold, so a removal stops being recorded once the
@@ -183,12 +190,37 @@ struct DeviceListSection: View {
                         Text(id).monospaced()
                     }
                 }
+                authorityNotice(done)
                 Text(done.relayPending ? L10n.Devices.relayPending : L10n.Devices.relayTold)
                 unwoundNotice(done)
                 Button(L10n.Devices.done) { model.dismissRevocation() }
             }
             .font(.caption)
             .accessibilityIdentifier("devices.revocationResult")
+        }
+    }
+
+    /// Which kind of removal went through (ADR-0058 §7).
+    ///
+    /// On the effective branch only: a signed removal is never gated, so a
+    /// gated one is ordinary, and the gated report already says nothing was
+    /// removed. When only out-of-date builds kept it ordinary, those devices
+    /// are listed, because updating them is the remedy.
+    @ViewBuilder
+    private func authorityNotice(_ done: DeviceListModel.Revocation) -> some View {
+        switch done.authority {
+        case .signed:
+            Text(L10n.Devices.authoritySigned)
+                .accessibilityIdentifier("devices.authoritySigned")
+        case .ordinary:
+            Text(L10n.Devices.authorityOrdinary(device: Platform.deviceName))
+                .accessibilityIdentifier("devices.authorityOrdinary")
+        case let .awaitsUpdate(ids):
+            Text(L10n.Devices.authorityAwaitsUpdate(count: ids.count))
+                .accessibilityIdentifier("devices.authorityAwaitsUpdate")
+            ForEach(ids, id: \.self) { id in
+                Text(id).monospaced()
+            }
         }
     }
 

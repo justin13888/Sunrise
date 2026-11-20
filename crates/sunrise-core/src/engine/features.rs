@@ -119,7 +119,7 @@ fn record_required(tx: &Transaction<'_>, ids: &[String], now_ms: u64) -> rusqlit
         added += tx.execute(
             "INSERT OR IGNORE INTO vault_required_features (feature, recorded_at_ms) \
              VALUES (?, ?)",
-            params![id, now_ms as i64],
+            params![id, now_ms.cast_signed()],
         )?;
     }
     Ok(added)
@@ -153,9 +153,9 @@ fn record_device_features(
         params![
             &device[..],
             list,
-            hlc.physical_ms as i64,
+            hlc.physical_ms.cast_signed(),
             i64::from(hlc.logical),
-            now_ms as i64
+            now_ms.cast_signed()
         ],
     )?;
     Ok(())
@@ -252,7 +252,6 @@ impl Engine {
     /// Apply a received `VaultRequires`: add its well-formed ids to the
     /// required set. Never refuses; a malformed id is skipped and logged.
     pub(super) fn apply_vault_requires(
-        &self,
         tx: &Transaction<'_>,
         p: &VaultRequiresPayload,
         now_ms: u64,
@@ -263,7 +262,6 @@ impl Engine {
     /// Apply a received `DeviceFeatures` from `sender`: keep it when its
     /// stamp is the sender's newest.
     pub(super) fn apply_device_features(
-        &self,
         tx: &Transaction<'_>,
         p: &DeviceFeaturesPayload,
         sender: &[u8; 16],
@@ -322,6 +320,12 @@ impl Engine {
     }
 
     /// Whether the vault's required set holds feature `id`.
+    #[allow(
+        clippy::unused_self,
+        reason = "the write path reaches it through the `&Engine` it carries (`write::current`, \
+                  `write::as_patch`, `TaskWrite::op_in`); a receiver-free form would strip that \
+                  parameter from three layers that hold it for this read"
+    )]
     pub(super) fn vault_requires(&self, conn: &Connection, id: &str) -> rusqlite::Result<bool> {
         conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM vault_required_features WHERE feature = ?)",

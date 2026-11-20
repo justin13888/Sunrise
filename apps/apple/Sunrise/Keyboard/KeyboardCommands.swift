@@ -42,13 +42,19 @@ extension View {
     /// The view's whole share of the keyboard is this modifier: matching is
     /// `Keymap`'s, and what an action *does* is the caller's. Neither is in a
     /// view body, which is what makes both testable.
+    ///
+    /// `intercept` sees each press first and claims it by returning `true`:
+    /// the planning keys a list answers while a plan is on screen, which are
+    /// not app actions (``PlanKey``).
     func onKeyChord(
         scope: KeyScope,
         vim: VimNormalMode? = nil,
+        intercept: ((KeyChord) -> Bool)? = nil,
         perform: @escaping (AppAction) -> Bool
     ) -> some View {
         onKeyPress(phases: .down) { press in
             let chord = KeyChord(press)
+            if let intercept, intercept(chord) { return .handled }
             if let vim {
                 switch vim.resolve(chord) {
                 case let .run(action):
@@ -100,8 +106,8 @@ enum CommandMenus {
     static let printing: [AppAction] = [.printView, .exportPDF]
     /// The app menu: capture from anywhere, and the two daily briefs.
     static let app: [AppAction] = [.quickCaptureGlobal, .morningSummary, .endOfDay]
-    /// View: the two fixed lists, both searches, and the palette.
-    static let go: [AppAction] = [.today, .inbox, .searchInView, .searchGlobal, .commandPalette]
+    /// View: the three fixed lists, both searches, and the palette.
+    static let go: [AppAction] = [.today, .inbox, .upcoming, .searchInView, .searchGlobal, .commandPalette]
     /// Help: the cheat sheet, on ⌘/ because `?` cannot be a menu key.
     static let help: [AppAction] = [.cheatSheet]
     /// Undo and Redo. On the Mac they are ``UndoMenu``'s two toolbar buttons,

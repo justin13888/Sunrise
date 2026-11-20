@@ -303,7 +303,7 @@ fn the_inbox_is_a_view_nothing_has_to_clear() {
     let work = stream(&e, &mut db, "Work");
     let t = task_in(&e, &mut db, "capture", None);
     assert_eq!(inbox(&e, &db), vec![t]);
-    let plan = SunriseTime::instant(ms_to_ts(NOW + DAY_MS as i64));
+    let plan = SunriseTime::instant(ms_to_ts(NOW + DAY_MS));
     update(
         &e,
         &mut db,

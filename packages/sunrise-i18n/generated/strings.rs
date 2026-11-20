@@ -3819,6 +3819,14 @@ pub mod devices {
         out
     }
 
+    /// revoked by the account identity; nothing can undo it
+    #[must_use]
+    pub fn mark_revoked_by_authority() -> String {
+        let mut out = String::new();
+        out.push_str("revoked by the account identity; nothing can undo it");
+        out
+    }
+
     /// removed earlier; the account no longer records that, but it still receives no keys -- remove it again from a device you trust
     #[must_use]
     pub fn mark_read_bounded() -> String {
@@ -3989,6 +3997,46 @@ pub mod devices {
     pub fn irreversible() -> String {
         let mut out = String::new();
         out.push_str("this cannot be undone: to use that device again, pair it as a new device");
+        out
+    }
+
+    /// signed by the account identity: no op from any device can undo this revocation
+    #[must_use]
+    pub fn authority_signed() -> String {
+        let mut out = String::new();
+        out.push_str("signed by the account identity: no op from any device can undo this revocation");
+        out
+    }
+
+    /// an ordinary revocation: this device does not hold the account's signing key, so a later op can take it back off the list (the device would still receive no keys)
+    #[must_use]
+    pub fn authority_ordinary() -> String {
+        let mut out = String::new();
+        out.push_str("an ordinary revocation: this device does not hold the account's signing key, so a later op can take it back off the list (the device would still receive no keys)");
+        out
+    }
+
+    /// NOT signed by the account identity, because these devices run a build that cannot read a signed revocation:
+    #[must_use]
+    pub fn authority_awaits_update() -> String {
+        let mut out = String::new();
+        out.push_str("NOT signed by the account identity, because these devices run a build that cannot read a signed revocation:");
+        out
+    }
+
+    /// (update Sunrise on it)
+    #[must_use]
+    pub fn authority_awaits_update_row() -> String {
+        let mut out = String::new();
+        out.push_str("(update Sunrise on it)");
+        out
+    }
+
+    /// Until then this is an ordinary revocation, and a later op can take it back off the list. Once they are updated, run this command again to sign it.
+    #[must_use]
+    pub fn authority_awaits_update_note() -> String {
+        let mut out = String::new();
+        out.push_str("Until then this is an ordinary revocation, and a later op can take it back off the list. Once they are updated, run this command again to sign it.");
         out
     }
 

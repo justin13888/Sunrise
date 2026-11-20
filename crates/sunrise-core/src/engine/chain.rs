@@ -305,6 +305,10 @@ fn expect(
 /// `op_id` and `envelope_bytes` are the row just inserted; `env` is their
 /// decoding. Never refuses: every outcome is a row of evidence or of
 /// expectation, and the caller applies the op either way.
+#[allow(
+    clippy::too_many_lines,
+    reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+)]
 pub(super) fn check_links(
     tx: &Transaction<'_>,
     op_id: &[u8; 16],
@@ -792,16 +796,15 @@ pub(super) fn frontier(
         else {
             continue;
         };
-        let root = match root_at(tx, stream_id, &device_id, seq)? {
-            Some(r) => r,
+        let root = if let Some(r) = root_at(tx, stream_id, &device_id, seq)? {
+            r
+        } else {
             // A cursor written before migration 0034 and not moved since.
-            None => {
-                fold_chain(tx, stream_id, &device_id, seq, now_ms)?;
-                match root_at(tx, stream_id, &device_id, seq)? {
-                    Some(r) => r,
-                    None => continue,
-                }
-            }
+            fold_chain(tx, stream_id, &device_id, seq, now_ms)?;
+            let Some(r) = root_at(tx, stream_id, &device_id, seq)? else {
+                continue;
+            };
+            r
         };
         out.push(FrontierEntry {
             device_id,

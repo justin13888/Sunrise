@@ -27,6 +27,11 @@ actor CoreBridge {
     /// Where the one feed becomes as many feeds as there are screens.
     private let broadcast = ChangeBroadcast()
     private var isShutDown = false
+    /// The order of the undo steps across the command stack and the
+    /// planner's commits. Here, beside the handle, because every write that
+    /// records a step passes through this actor.
+    /// Internal only so `CoreBridge+Planner.swift` can reach it.
+    var journal = UndoJournal()
 
     /// Open — or create — the vault at `directory`, keyed by a 32-byte root.
     ///
@@ -128,18 +133,10 @@ actor CoreBridge {
     /// a delete, most of all — and callers are expected to show that rather
     /// than leave an Undo item that would do nothing.
     func submitUndoable(_ command: CoreCommand, label: String) async throws -> UndoableOutcome {
-        try await core.submitUndoable(cmd: command, label: label)
+        let outcome = try await core.submitUndoable(cmd: command, label: label)
+        if outcome.notUndoable == nil { journal.recordCommand() }
+        return outcome
     }
-
-    /// Reverse the most recent recorded step; the label of what was undone,
-    /// or `nil` when there is nothing.
-    func undo() async throws -> String? { try await core.undo() }
-
-    /// Replay the most recently undone step.
-    func redo() async throws -> String? { try await core.redo() }
-
-    /// What the Undo and Redo menu items should say right now.
-    func undoState() -> UndoState { core.undoState() }
 
     /// What this build may edit in this vault: whether to show "Update
     /// Sunrise to edit", and which edit actions to disable (ADR-0045 §8).

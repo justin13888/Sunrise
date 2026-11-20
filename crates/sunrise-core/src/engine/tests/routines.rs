@@ -417,26 +417,26 @@ fn streak_survives_a_gap_inside_grace_and_resets_outside_it() {
     assert_eq!(routine_of(&e, &db, rid).streak_counter, 0);
 
     // 1. On time.
-    set_clock(&clock, (occ[0].1 + 3_600_000) as u64);
+    set_clock(&clock, (occ[0].1 + 3_600_000).cast_unsigned());
     e.apply(&mut db, Command::CompleteTask(occ[0].0)).unwrap();
     assert_eq!(routine_of(&e, &db, rid).streak_counter, 1);
 
     // 2. 23h late — inside the 24h default grace window, streak survives.
-    set_clock(&clock, (occ[1].1 + 23 * 3_600_000) as u64);
+    set_clock(&clock, (occ[1].1 + 23 * 3_600_000).cast_unsigned());
     e.apply(&mut db, Command::CompleteTask(occ[1].0)).unwrap();
     let r = routine_of(&e, &db, rid);
     assert_eq!(r.streak_counter, 2, "a gap inside grace keeps the streak");
     assert_eq!(r.forgivenesses_in_window, 0);
 
     // 3. 25h late — outside grace. Forgiveness absorbs the first miss.
-    set_clock(&clock, (occ[2].1 + 25 * 3_600_000) as u64);
+    set_clock(&clock, (occ[2].1 + 25 * 3_600_000).cast_unsigned());
     e.apply(&mut db, Command::CompleteTask(occ[2].0)).unwrap();
     let r = routine_of(&e, &db, rid);
     assert_eq!(r.streak_counter, 2, "forgiven, not advanced, not reset");
     assert_eq!(r.forgivenesses_in_window, 1);
 
     // 4. A second miss in the same 30-day window resets.
-    set_clock(&clock, (occ[3].1 + 25 * 3_600_000) as u64);
+    set_clock(&clock, (occ[3].1 + 25 * 3_600_000).cast_unsigned());
     e.apply(&mut db, Command::CompleteTask(occ[3].0)).unwrap();
     let r = routine_of(&e, &db, rid);
     assert_eq!(r.streak_counter, 0, "a gap outside grace resets the streak");
@@ -450,7 +450,7 @@ fn re_completing_an_occurrence_never_moves_the_streak() {
     let mut db = db();
     let (rid, occ) = seed_routine(&e, &mut db);
 
-    set_clock(&clock, (occ[0].1 + 3_600_000) as u64);
+    set_clock(&clock, (occ[0].1 + 3_600_000).cast_unsigned());
     e.apply(&mut db, Command::CompleteTask(occ[0].0)).unwrap();
     let after_first = routine_of(&e, &db, rid);
     assert_eq!(after_first.streak_counter, 1);
@@ -459,7 +459,7 @@ fn re_completing_an_occurrence_never_moves_the_streak() {
 
     // Resurrect and re-complete, well outside grace. The idempotency key
     // makes it a no-op — and emits no routine op at all.
-    set_clock(&clock, (occ[0].1 + 10 * DAY_MS) as u64);
+    set_clock(&clock, (occ[0].1 + 10 * DAY_MS).cast_unsigned());
     e.apply(
         &mut db,
         Command::UpdateTask {
@@ -524,8 +524,8 @@ fn the_streak_advance_converges_to_the_other_replica() {
     // Both replicas move together. An hour of real skew between two peers
     // is outside the HLC drift window on purpose; this test is about
     // convergence, not about clock abuse.
-    set_clock(&ca, (occ[0].1 + 3_600_000) as u64);
-    set_clock(&cb, (occ[0].1 + 3_600_000) as u64);
+    set_clock(&ca, (occ[0].1 + 3_600_000).cast_unsigned());
+    set_clock(&cb, (occ[0].1 + 3_600_000).cast_unsigned());
     ea.apply(&mut dba, Command::CompleteTask(occ[0].0)).unwrap();
     eb.apply_remote(
         &mut dbb,

@@ -24,7 +24,7 @@ impl Engine {
     pub(super) fn create_context(
         &self,
         db: &mut Db,
-        d: ContextDraft,
+        d: &ContextDraft,
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
         let name = Context::validate_name(&d.name)?;
@@ -41,8 +41,8 @@ impl Engine {
         let ctx_id = self.fresh_id(EntityKind::Context, now_ms);
         let ctx = Context {
             id: ctx_id,
-            created_at: ms_to_ts(now_ms as i64),
-            updated_at: ms_to_ts(now_ms as i64),
+            created_at: ms_to_ts(now_ms.cast_signed()),
+            updated_at: ms_to_ts(now_ms.cast_signed()),
             name,
             description,
             archived: false,
@@ -85,7 +85,7 @@ impl Engine {
         if let Some(a) = patch.archived {
             ctx.archived = a;
         }
-        ctx.updated_at = ms_to_ts(now_ms as i64);
+        ctx.updated_at = ms_to_ts(now_ms.cast_signed());
 
         let op = InnerOp::ContextUpdate(ctx);
         let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
@@ -112,7 +112,7 @@ impl Engine {
         let mut ctx = read_context(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("context {id}")))?;
         ctx.deleted = true;
-        ctx.updated_at = ms_to_ts(now_ms as i64);
+        ctx.updated_at = ms_to_ts(now_ms.cast_signed());
 
         let op = InnerOp::ContextDelete(ctx);
         let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
@@ -161,7 +161,7 @@ impl Engine {
     /// Archived contexts are still listed (with `archived = true`) — archiving
     /// hides a Context from pickers, and that is the caller's filter to apply;
     /// only the tombstone removes it from the list.
-    pub(super) fn query_contexts(&self, db: &Db) -> Result<QueryResult, EngineError> {
+    pub(super) fn query_contexts(db: &Db) -> Result<QueryResult, EngineError> {
         let mut stmt = db.conn().prepare(
             "SELECT c.id, c.name, c.description, c.archived,
                     (SELECT COUNT(*) FROM task_contexts tc
