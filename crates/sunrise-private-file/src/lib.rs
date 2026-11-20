@@ -113,12 +113,14 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = staging_path(path);
-    let mut f = create_owner_only(&tmp)?;
-    let staged = (|| -> io::Result<()> {
-        f.write_all(bytes)?;
-        f.sync_all()
-    })();
-    drop(f);
+    // Closed before the rename by leaving scope. Not `drop(f)`: on
+    // wasm32-unknown-unknown `File` has no `Drop` impl, and clippy's
+    // `drop_non_drop` rejects the call when the web core, which reaches this
+    // crate through `sunrise-storage`'s `BlobStore`, is linted.
+    let staged = {
+        let mut f = create_owner_only(&tmp)?;
+        f.write_all(bytes).and_then(|()| f.sync_all())
+    };
     let result = staged.and_then(|()| std::fs::rename(&tmp, path));
     if result.is_err() {
         // Best effort: the error being returned is the one worth reporting,
