@@ -96,7 +96,7 @@ When the user contacts support:
 
 ## Tagged types for content
 
-In Rust core code, plaintext content fields are wrapped in `Plain<T>`:
+The control that keeps plaintext content out of logs is the `RedactionLayer` field-name allowlist in `crates/sunrise-log`, not this wrapper ([`logging.md` §6.3](./logging.md#63-ci-enforcement)). `Plain<T>` is an optional guard a crate may wrap a content value in, so the type system keeps it off the value path; no crate outside `sunrise-log` does so today:
 
 ```rust
 struct Plain<T>(T);
@@ -106,7 +106,7 @@ struct Plain<T>(T);
 
 To reach the value, code must call `.expose()` explicitly. What enforces that is not a clippy lint but a grep gate: `.github/scripts/grep-gate.sh` run as `log-redaction`, matching `\bplain[a-z_]*\.expose[[:space:]]*\(` — a POSIX ERE, exactly as the `log-redaction` job in `.github/workflows/ci.yml` spells it — across a fixed list of source directories, and failing the build on any hit. The gate and its directory list are specified in [`logging.md` §6.3](./logging.md#63-ci-enforcement); the message is the gate's own.
 
-This is the structural enforcement that prevents accidental telemetry of content.
+The wrapper protects only a value someone chose to wrap. A value that was never wrapped, or was `.expose()`d, is the `RedactionLayer` allowlist's to catch: it vetoes any event carrying a field name outside it, whatever the value ([`logging.md` §6](./logging.md#how-this-is-enforced)).
 
 ## Third-party SDKs
 

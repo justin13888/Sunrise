@@ -59,5 +59,5 @@ Sunrise commits to the seven principles described in Kleppmann et al.'s "Local-f
 - **Tenets 2/7:** integration tests with simulated multi-device divergence (3-way splits, week-long offline windows).
 - **Tenet 3:** "airplane mode setup" smoke test for every release.
 - **Tenet 4:** export round-trip test — export, then re-import into a fresh install, must produce equivalent state. Partially in place: `exporting_and_re_importing_is_the_identity` covers the iCalendar path across the vault and the seam, not a whole-vault archive.
-- **Tenet 5:** a CI check rejects any code path that logs or transmits anything from the `Plain<T>` typed wrapper outside the local process.
+- **Tenet 5:** the control on the log path is the `RedactionLayer` field-name allowlist in `crates/sunrise-log`. It vetoes any event that carries a field name outside the allowlist, and panics in debug builds, so an unvetted name fails the test run; the `event_catalog` test (`mise run log-fields`) fails on one in shipped source. `Plain<T>` is an optional guard on the value for a crate that chooses to wrap one, and the `log-redaction` CI grep polices its `.expose()` escape hatch. See [`logging.md` §6.3](../10-cross-cutting/logging.md#63-ci-enforcement).
 - **Tenet 6:** tested via tenet 4.
