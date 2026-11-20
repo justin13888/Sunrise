@@ -116,7 +116,7 @@ pub fn time_value_ms(value: &SunriseTime, tz: &str) -> i64 {
 /// routine fires at its wall-clock time in `reader`; a zoned one in its zone.
 #[must_use]
 pub fn next_occurrence_ms(routine: Routine, now_ms: u64, reader: &str) -> Option<i64> {
-    let now = Timestamp::from_millisecond(i64::try_from(now_ms).ok()?).ok()?;
+    let now = sunrise_domain::time::timestamp_at_ms(i64::try_from(now_ms).ok()?)?;
     sunrise_domain::routine_rows(&[routine], now, &zone_or_utc(reader))
         .first()
         .and_then(|r| r.next)
@@ -482,6 +482,9 @@ mod tests {
             next(u64::try_from(Timestamp::MAX.as_millisecond()).unwrap()),
             None
         );
+        // #1204: the range's last second now reads as an instant, and is
+        // still `None`, because the horizon cannot be added to it.
+        assert_eq!(next(253_402_207_200_500), None);
     }
 
     fn block(n: u8, from_ms: u64, to_ms: u64) -> Block {

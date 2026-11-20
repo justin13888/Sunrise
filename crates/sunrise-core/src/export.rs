@@ -263,7 +263,7 @@ impl Manifest {
         use sunrise_cbor::version::{doc_schema_fingerprint, DOC_SCHEMA_V, STORAGE_V};
         let at = i64::try_from(exported_at_ms)
             .ok()
-            .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
+            .and_then(sunrise_domain::time::timestamp_at_ms)
             .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
         Self {
             format: EXPORT_FORMAT.to_owned(),

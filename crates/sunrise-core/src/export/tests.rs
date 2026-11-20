@@ -49,6 +49,16 @@ fn a_filename_cannot_leave_its_directory() {
     assert!(cut.len() <= 200 && cut.chars().all(|c| c == 'é'));
 }
 
+/// #1204: an export stamped in the range's last second says so, rather than
+/// the epoch; only a stamp past the range reads as the epoch.
+#[test]
+fn a_manifest_stamped_in_the_ranges_last_second_keeps_its_stamp() {
+    let last = Manifest::new(253_402_207_200_500, "UTC");
+    assert_eq!(last.exported_at, "9999-12-30T22:00:00.5Z");
+    let past = Manifest::new(u64::MAX, "UTC");
+    assert_eq!(past.exported_at, "1970-01-01T00:00:00Z");
+}
+
 #[test]
 fn the_manifest_reads_back_and_its_bytes_do_not_depend_on_insertion_order() {
     let mut a = Manifest::new(1_767_225_600_000, "America/New_York");

@@ -219,10 +219,7 @@ pub fn review_snapshot_draft(report: WeeklyReviewReport, note: Option<String>) -
 /// does not know — never a key derived in a stand-in zone.
 #[uniffi::export]
 pub fn occurrence_key_at(tz: String, at_ms: i64) -> Result<String, BindingError> {
-    let at = jiff::Timestamp::from_millisecond(at_ms).map_err(|e| BindingError::BadTime {
-        value: at_ms.to_string(),
-        cause: e.to_string(),
-    })?;
+    let at = crate::types::timestamp_of_ms(at_ms)?;
     sunrise_client_core::vocab::occurrence_key_at(&tz, at).map_err(|e| BindingError::BadTime {
         value: tz,
         cause: e.to_string(),
@@ -261,6 +258,18 @@ mod tests {
             1_780_272_000_000
         );
         assert!(occurrence_key_at("UTC".into(), 1_780_272_000_000).is_ok());
+    }
+
+    /// #1204: an instant in the range's last second is an instant, not a
+    /// `BadTime`; only one past the end is refused.
+    #[test]
+    fn the_occurrence_key_reads_the_ranges_last_second() {
+        assert!(occurrence_key_at("UTC".into(), 253_402_207_200_500).is_ok());
+        let past = jiff::Timestamp::MAX.as_millisecond() + 1;
+        assert!(matches!(
+            occurrence_key_at("UTC".into(), past),
+            Err(BindingError::BadTime { .. })
+        ));
     }
 
     #[test]

@@ -781,7 +781,7 @@ fn drift_window(
     let to_ts = |ms: u64| {
         i64::try_from(ms)
             .ok()
-            .and_then(|v| jiff::Timestamp::from_millisecond(v).ok())
+            .and_then(sunrise_domain::time::timestamp_at_ms)
             .ok_or_else(|| EngineError::Invalid(format!("timestamp out of range: {ms}")))
     };
     Ok((to_ts(start)?, to_ts(window.end_ms)?))
@@ -836,4 +836,27 @@ pub(super) fn insert_review_snapshot_row(
         ],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1204: a window ending in the range's last second is a window, not
+    /// "timestamp out of range"; only one past the range is refused.
+    #[test]
+    fn a_drift_window_ending_in_the_ranges_last_second_is_read() {
+        let end = 253_402_207_200_500;
+        let window = ReviewWindow::new(end - 7 * 86_400_000, end);
+        let (_, to) = drift_window(window, 1).unwrap();
+        assert_eq!(
+            to,
+            "9999-12-30T22:00:00.5Z".parse::<jiff::Timestamp>().unwrap()
+        );
+        let past = ReviewWindow::new(0, u64::MAX);
+        assert!(matches!(
+            drift_window(past, 1),
+            Err(EngineError::Invalid(_))
+        ));
+    }
 }

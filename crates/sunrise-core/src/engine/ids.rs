@@ -293,7 +293,8 @@ pub(super) fn parse_energy(s: &str) -> sunrise_domain::Energy {
 pub(super) fn ms_to_ts(ms: i64) -> jiff::Timestamp {
     // Determinism: never read a wall clock on failure. Out-of-range epoch-ms
     // (corrupt row) clamps to the Unix epoch rather than `Timestamp::now()`.
-    jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+    // The range's last second is in range (#1204).
+    sunrise_domain::time::timestamp_at_ms(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
 }
 
 /// An unsigned count or stamp as the `INTEGER` SQLite stores, clamped to
@@ -325,4 +326,18 @@ pub(super) fn blob32(raw: &[u8]) -> [u8; 32] {
     let take = raw.len().min(32);
     a[..take].copy_from_slice(&raw[..take]);
     a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1204: a stored stamp in the range's last second reads as itself, not
+    /// the epoch; only one past the range takes the epoch fallback.
+    #[test]
+    fn a_stamp_in_the_ranges_last_second_reads_as_itself() {
+        let last: jiff::Timestamp = "9999-12-30T22:00:00.5Z".parse().unwrap();
+        assert_eq!(ms_to_ts(253_402_207_200_500), last);
+        assert_eq!(ms_to_ts(i64::MAX), jiff::Timestamp::UNIX_EPOCH);
+    }
 }

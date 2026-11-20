@@ -384,7 +384,7 @@ pub enum RestoreError {
 /// " on 2026-10-24", or nothing, for [`RestoreError::CodeRetired`].
 fn retired_on(at_ms: Option<u64>) -> String {
     at_ms
-        .and_then(|ms| jiff::Timestamp::from_millisecond(i64::try_from(ms).ok()?).ok())
+        .and_then(|ms| sunrise_domain::time::timestamp_at_ms(i64::try_from(ms).ok()?))
         .map(|t| format!(" on {}", t.strftime("%Y-%m-%d")))
         .unwrap_or_default()
 }

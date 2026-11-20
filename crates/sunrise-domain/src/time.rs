@@ -508,8 +508,11 @@ impl SunriseTime {
 ///
 /// Not [`Timestamp::from_millisecond`]: that refuses the last second of the
 /// range, whose keys `Timestamp::MAX.as_millisecond()` and its neighbours are
-/// (#898). Every epoch-millisecond reader in this crate goes through here.
-pub(crate) fn timestamp_at_ms(ms: i64) -> Option<Timestamp> {
+/// (#898). An epoch-millisecond reader that must accept the whole range reads
+/// through here: [`crate::epoch_ms`], the index key, and the stored-row,
+/// export, review, binding and client readers above this crate (#1204).
+#[must_use]
+pub fn timestamp_at_ms(ms: i64) -> Option<Timestamp> {
     Timestamp::from_duration(jiff::SignedDuration::from_millis(ms)).ok()
 }
 

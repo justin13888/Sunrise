@@ -283,6 +283,31 @@ fn an_index_key_reads_back_as_its_millisecond_or_the_nearer_end() {
     );
 }
 
+/// The public epoch-ms reader the crates above this one share (#1204): every
+/// millisecond of the range reads as itself, the last second included, and
+/// only one genuinely past either end is `None`.
+#[test]
+fn timestamp_at_ms_reads_the_whole_range_and_nothing_past_it() {
+    let last: Timestamp = "9999-12-30T22:00:00.5Z".parse().unwrap();
+    assert_eq!(last.as_millisecond(), 253_402_207_200_500);
+    assert_eq!(timestamp_at_ms(253_402_207_200_500), Some(last));
+    let max_ms = Timestamp::MAX.as_millisecond();
+    let min_ms = Timestamp::MIN.as_millisecond();
+    assert_eq!(
+        timestamp_at_ms(max_ms).map(Timestamp::as_millisecond),
+        Some(max_ms)
+    );
+    assert_eq!(
+        timestamp_at_ms(min_ms).map(Timestamp::as_millisecond),
+        Some(min_ms)
+    );
+    assert_eq!(timestamp_at_ms(0), Some(Timestamp::UNIX_EPOCH));
+    assert_eq!(timestamp_at_ms(max_ms + 1), None);
+    assert_eq!(timestamp_at_ms(min_ms - 1), None);
+    assert_eq!(timestamp_at_ms(i64::MAX), None);
+    assert_eq!(timestamp_at_ms(i64::MIN), None);
+}
+
 /// The index key must not move when the device's zone does — an index
 /// built on one device has to stay valid on another.
 #[test]
@@ -420,7 +445,7 @@ fn any_ms_instant() -> impl Strategy<Value = Timestamp> {
 /// The instant at `ms`. Not `Timestamp::from_millisecond`, which refuses the
 /// last second of the range.
 fn ms_instant(ms: i64) -> Timestamp {
-    Timestamp::from_duration(jiff::SignedDuration::from_millis(ms)).expect("in range")
+    timestamp_at_ms(ms).expect("in range")
 }
 
 /// An instant at the full nanosecond resolution the wire carries, over the

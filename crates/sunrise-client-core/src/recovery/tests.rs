@@ -98,6 +98,15 @@ fn a_replay_reports_a_total_only_where_the_relay_states_one() {
     );
 }
 
+/// #1204: a code retired in the range's last second names that day; only a
+/// stamp past the range names none.
+#[test]
+fn a_code_retired_in_the_ranges_last_second_names_its_day() {
+    assert_eq!(retired_on(Some(253_402_207_200_500)), " on 9999-12-30");
+    assert_eq!(retired_on(Some(u64::MAX)), "");
+    assert_eq!(retired_on(None), "");
+}
+
 #[test]
 fn round_trip() {
     let mut rng = ChaCha20Rng::seed_from_u64(7);
