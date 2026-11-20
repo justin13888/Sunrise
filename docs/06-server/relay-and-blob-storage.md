@@ -291,9 +291,10 @@ step 3b before any commit.
 - Blob chunks are written to a `.bin.tmp`, `sync_all`'d, then renamed into
   place, and the manifest is written last (unsynced), so an interrupted
   finalize leaves an invisible partial rather than a short read.
-- The Postgres/S3 durability rules below apply to the unbuilt managed
-  deployment: S3 PUT confirmed before ack (no async fire-and-forget); object
-  store SHOULD be configured for cross-AZ replication.
+- On an object store (`[blobs] backend = "s3"`) a chunk `PUT` is confirmed by
+  the store before the relay answers (no async fire-and-forget), and the
+  manifest is written last, as on the filesystem. The store SHOULD be
+  configured for cross-AZ replication.
 
 ## Retention
 
@@ -355,7 +356,7 @@ The server sees: blob IDs, sizes, upload/download times, per-device access patte
 
 ## Failure modes
 
-Rows naming S3 or a push provider describe the unbuilt managed deployment. On
+Rows naming a push provider describe the unbuilt managed deployment. On
 Postgres a failed statement or an exhausted pool is the retryable
 `503 RELAY_STORAGE_UNAVAILABLE` on a request and a retryable `closed` on a
 stream, and a node that loses its notice listener reconnects and re-reads every
@@ -367,8 +368,8 @@ underlying error deliberately not reflected to the caller.
 
 | Failure | Behavior |
 |---|---|
-| S3 outage during write | Op rejected with `RETRY_AFTER`; client retries via outbox |
-| S3 outage during read | Server returns a transient error to the relay subscriber; client retries |
+| S3 outage during write | The blob request answers `503 RELAY_STORAGE_UNAVAILABLE` after at most 30 s per store request; the client retries the chunk or the finalize |
+| S3 outage during read | The blob download answers the same retryable `503`; `?deep=1` readiness fails its probe |
 | Postgres outage | Requests answer `503 RELAY_STORAGE_UNAVAILABLE`, which clients retry; open streams end with a retryable `closed` at their next store read; rate limits admit untracked and log `srv.store.failed` |
 | Push provider outage | Push degrades; clients still pull on next foreground |
 

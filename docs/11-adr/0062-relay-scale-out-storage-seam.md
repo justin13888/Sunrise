@@ -21,6 +21,10 @@ SQLite backend's at-rest story; a Postgres backend's is the operator's.
 the accepting node no longer also publishes locally. The amendment note in §2
 holds the ordering argument.
 
+**Amended (2026-11, #482):** finalize on an object store writes the re-hashed
+bytes to each committed key rather than copying the pending object
+server-side. The amendment note in §7 holds the reason.
+
 ## Context
 
 Every piece of relay state is process-local, so exactly one process can serve
@@ -265,11 +269,20 @@ blobs/<account_h>/committed/manifests/<blob_key>
 Each chunk is its own object of at most 1 MiB, so no multipart upload is ever
 started and none can be left half-finished. Finalize re-reads every pending
 chunk and re-hashes it with BLAKE3 against the client's per-chunk hashes and
-`content_hash`, never trusting an ETag; copies each chunk to its committed key
-server-side; and writes the manifest **last**. As on the filesystem, the
-manifest is what makes a blob readable, so an interrupted finalize leaves an
-invisible partial that the maintenance pass sweeps. A chunk `PUT` is confirmed
-by the store before the relay answers.
+`content_hash`, never trusting an ETag; writes each chunk to its committed key
+with a plain `PUT` of the bytes it re-hashed; and writes the manifest **last**.
+As on the filesystem, the manifest is what makes a blob readable, so an
+interrupted finalize leaves an invisible partial that the maintenance pass
+sweeps. A chunk `PUT` is confirmed by the store before the relay answers.
+
+**Amended (2026-11, #482):** this section first said finalize copies each
+chunk to its committed key server-side. It does not: a server-side
+`CopyObject` from the pending key commits whatever that key holds when the
+copy runs, and a chunk re-sent after the hash check can replace it, so the
+bytes committed would not be the bytes verified. Finalize already holds the
+re-hashed bytes, so it writes those, through the same
+`BlobBackend::put_committed` the filesystem backend implements; the cost is
+one upload of each chunk where a copy would have moved it inside the store.
 
 ### 8. The single-binary deployment does not change
 
