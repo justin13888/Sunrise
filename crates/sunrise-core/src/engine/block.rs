@@ -293,12 +293,10 @@ impl Engine {
         let anchor = block.starts_at.clone();
         let was = block.series();
         apply_block_patch(&mut block, patch)?;
-        // Moving a series' anchor moves its occurrence keys, and each
-        // occurrence binding moves with the occurrence it named.
-        block.shift_bindings(&anchor);
         block.updated_at = ms_to_ts(now_ms.cast_signed());
-        block.validate_invariants(&self.device_zone())?;
-        follow_anchor(&mut block, was)?;
+        // Moving a series' anchor moves its occurrence keys, and each
+        // binding and exception moves with the occurrence it named.
+        move_anchor(&mut block, &anchor, was, &self.device_zone())?;
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
         Ok(CommandResult::new(id, None, done.op_id, done.seq))
     }
@@ -441,9 +439,7 @@ impl Engine {
         apply_block_patch(&mut next, patch)?;
         // An edit that moves the continuation moves its occurrence keys, and
         // each binding and exception moves with the occurrence it named.
-        next.shift_bindings(&anchor);
-        next.validate_invariants(&tz)?;
-        follow_anchor(&mut next, was)?;
+        move_anchor(&mut next, &anchor, was, &tz)?;
         let create = if existing.is_some() {
             InnerOp::BlockUpdate(Box::new(next.clone()))
         } else {
@@ -830,6 +826,28 @@ fn recurring_block(
         .series()
         .ok_or_else(|| EngineError::Invalid(format!("block {id} does not recur")))?;
     Ok((block, series))
+}
+
+/// Carry a block's occurrence bindings and exceptions with a write that
+/// moved its anchor from `anchor`, `was` being its series before the write,
+/// then check the block: each binding and exception moves with the
+/// occurrence it named. Every write that moves a block's anchor goes through
+/// here: an edit of the whole block, a split's continuation, and the
+/// planner's move and its undo.
+///
+/// # Errors
+/// [`EngineError::Validation`] for a block whose invariants fail, and
+/// [`EngineError::Invalid`] for a move that would strand an exception
+/// ([`follow_anchor`]).
+pub(super) fn move_anchor(
+    block: &mut Block,
+    anchor: &SunriseTime,
+    was: Option<BlockSeries>,
+    tz: &jiff::tz::TimeZone,
+) -> Result<(), EngineError> {
+    block.shift_bindings(anchor);
+    block.validate_invariants(tz)?;
+    follow_anchor(block, was)
 }
 
 /// Move the exceptions of a recurring block whose edit moved its anchor

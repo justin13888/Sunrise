@@ -420,7 +420,12 @@ by one snap re-solves one day's movable set and no more.
    `Command::Triage` with `Defer` writes
    ([ADR-0047](../11-adr/0047-deadlines-and-lateness.md) §4). Rippled items get
    positions only. Nothing else is written, and `target_at` and `hard_due_at`
-   are never written.
+   are never written. A recurring block is planned by its series anchor, and
+   a move of the anchor carries its exceptions and occurrence bindings with
+   the occurrences they named, through the same path an edit of the whole
+   block takes (`time-blocks.md` §Recurring blocks). A move that would leave
+   an exception applying to nothing is refused as `PLAN_INVALID`, and
+   nothing is written.
 5. Stores the inverse (each written field's prior value, and the stamp this
    commit wrote) with a commit record in the local database, and returns the
    commit's id.
@@ -441,7 +446,11 @@ inverse **per field**, in one local transaction:
   ‘Standup’ was changed since"). The inverse-command undo
   (`crates/sunrise-client-core/src/undo/mod.rs`) has no such rule: it writes
   the prior value back as a new write, whatever has changed since;
-- a restored deferral writes `-1` on `deferred_count`.
+- a restored deferral writes `-1` on `deferred_count`;
+- a recurring block's restored anchor carries its exceptions and occurrence
+  bindings back with it, as the commit carried them; one it would leave
+  applying to nothing skips the block whole, like a restore that would leave
+  it invalid.
 
 Undos of successive commits on one item restore newest-first. Undoing the
 newer commit writes the field back to the older commit's value, and the older

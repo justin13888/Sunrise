@@ -6,7 +6,7 @@
 //! Nothing here decides a position. [`sunrise_domain::planner::solve`] does,
 //! and this module only reads rows into its inputs and writes its answer.
 
-use super::block::read_block;
+use super::block::{move_anchor, read_block};
 use super::day_schedule::schedule_in;
 use super::ids::{blob16, domain_bytes, ms_to_ts, time_from_parts, time_to_parts};
 use super::snapshot::in_tx;
@@ -273,12 +273,21 @@ impl Engine {
                             undefer: false,
                         });
                     }
+                    let anchor = block.starts_at.clone();
+                    let was = block.series();
                     block.starts_at = start;
                     block.ends_at = end;
                     block.updated_at = ms_to_ts(write_ms.cast_signed());
-                    block
-                        .validate_invariants(&self.device_zone())
-                        .map_err(EngineError::from)?;
+                    // A recurring block's bindings and exceptions move with
+                    // the occurrences they named, as an edit of the whole
+                    // block moves them; a move that would strand one is
+                    // refused, and nothing is written.
+                    move_anchor(&mut block, &anchor, was, &self.device_zone()).map_err(
+                        |e| match e {
+                            EngineError::Invalid(why) => PlanError::Invalid(why),
+                            other => PlanError::Engine(other),
+                        },
+                    )?;
                     blocks.push(block);
                 }
                 _ => return Err(PlanError::Invalid(format!("{item} cannot be planned"))),
@@ -374,6 +383,8 @@ impl Engine {
                     EntityKind::Block => {
                         let block = read_block(tx, item.bytes())?.filter(|b| !b.deleted);
                         block.and_then(|mut block| {
+                            let anchor = block.starts_at.clone();
+                            let was = block.series();
                             for row in &fields {
                                 match (row.field, &row.prior, row.restorable()) {
                                     (PlanField::StartsAt, Some(v), true) => {
@@ -393,7 +404,10 @@ impl Engine {
                                 restored += 1;
                             }
                             block.updated_at = ms_to_ts(write_ms.cast_signed());
-                            block.validate_invariants(&tz).ok()?;
+                            // The restored anchor carries the bindings and
+                            // exceptions back to the occurrences they named;
+                            // one it would strand leaves the block as it is.
+                            move_anchor(&mut block, &anchor, was, &tz).ok()?;
                             let stream = domain_bytes(block.stream_id);
                             Some((InnerOp::BlockUpdate(Box::new(block)), stream))
                         })
