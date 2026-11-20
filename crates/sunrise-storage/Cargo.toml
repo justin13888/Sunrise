@@ -13,7 +13,9 @@ description = "SQLite + SQLCipher storage layer (op log, materialized state, blo
 workspace = true
 
 [dependencies]
-rusqlite = { workspace = true }
+# `backup` for `Db::open_memory_copy`: it adds rusqlite's wrapper over
+# SQLite's backup API, which the bundled SQLCipher already compiles in.
+rusqlite = { workspace = true, features = ["backup"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sunrise-cbor = { workspace = true }
