@@ -1449,6 +1449,13 @@ mkdir -p out/shots
 cd apps/apple
 xcodegen generate --quiet
 
+# A walk that records an assertion failure still finishes (it sets
+# `continueAfterFailure`), and its images are what show the failure. So a
+# non-zero `xcodebuild` is noted rather than allowed to end the task: the other
+# platform still runs, every result bundle that was written is exported, and
+# the task exits non-zero at the end, naming the walks that failed.
+failed=""
+
 # `SunriseUITests` has a scheme of its own because the target is
 # `skipped: true` in `Sunrise` — see the note on `macos-uitest`.
 xcodebuild test \\
@@ -1457,7 +1464,7 @@ xcodebuild test \\
   -destination 'platform=macOS,arch=arm64' \\
   -only-testing:SunriseUITests/ScreenshotWalkTests \\
   -resultBundlePath "$root/out/shots/macos.xcresult" \\
-  -quiet
+  -quiet || failed="$failed macos"
 
 # `ios_sim_udid`, when the caller sets it, names the one device to test on:
 # `tools/screenshots/readme.sh` pins a device's status bar and appearance
@@ -1474,18 +1481,27 @@ xcodebuild test \\
   -only-testing:SunriseiOSUITests/ScreenshotWalkTests \\
   -resultBundlePath "$root/out/shots/ios.xcresult" \\
   -quiet \\
-  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=-
+  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- || failed="$failed ios"
 
 cd "$root"
 # The attachments come out under generated filenames; the manifest carries the
 # names the tests set. A directory of UUIDs is not a design review.
+# A build failure writes no result bundle, so there is nothing to export.
 for platform in macos ios; do
+  if [ ! -d "out/shots/$platform.xcresult" ]; then
+    echo "no result bundle for $platform; nothing to export" >&2
+    continue
+  fi
   xcrun xcresulttool export attachments \\
     --path "out/shots/$platform.xcresult" \\
     --output-path "out/shots/$platform" >/dev/null
   .github/scripts/name-shots.py "out/shots/$platform"
 done
 echo "out/shots/macos/*.png and out/shots/ios/*.png"
+if [ -n "$failed" ]; then
+  echo "the walk failed on:$failed; see out/shots/<platform>.xcresult" >&2
+  exit 1
+fi
 """
 
 # --- Mutation testing ---
