@@ -332,7 +332,8 @@ The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross
 
 ### 7. Privacy / safety tests
 
-- Static checks: any code path under `telemetry/` or `logging/` that calls `.expose()` on a `Plain<T>` fails the build.
+- Redaction allowlist, the control: `RedactionLayer` panics in debug builds on an event field name outside the allowlist in `crates/sunrise-log/src/field.rs`, so any test that emits one fails, and the `event_catalog` test (`mise run log-fields`) fails on one in shipped source ([`logging.md` §6.3](./logging.md#63-ci-enforcement)).
+- `Plain<T>`, an optional guard: the `log-redaction` CI grep fails the build on a `.expose()` call on a `plain*` binding in the crates and modules `logging.md` §6.3 lists. It protects only values a crate chose to wrap.
 - Server-side: no log statement contains task IDs from a fixture vault (regex check on test logs).
 
 ## Running the suite under nextest

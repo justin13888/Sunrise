@@ -2,9 +2,11 @@
 //!
 //! `docs/10-cross-cutting/logging.md` §6 lists what may never reach a log
 //! surface, and a span is one: its name, its attributes and its events leave
-//! the process for a collector the operator runs. The log path enforces that
-//! rule twice over, with `Plain<T>` on the value and `RedactionLayer` on the
-//! field name. A span has no layer to veto it, so the rule is held here by
+//! the process for a collector the operator runs. On the log path the control
+//! is `RedactionLayer`, which vetoes any event carrying a field name outside
+//! `sunrise_log`'s allowlist; `Plain<T>` is an optional guard on the value,
+//! for a crate that chooses to wrap one (logging.md §6.3). A span has no
+//! layer to veto it, so the rule is held here by
 //! construction instead: [`Attr`] has no public constructor that takes a key,
 //! every key it can produce is one of [`KEYS`], and every one of those is on
 //! `sunrise_log`'s allowlist (`every_key_is_on_the_log_allowlist` below).
