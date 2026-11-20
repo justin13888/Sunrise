@@ -13,10 +13,10 @@ beneath the table. Nothing else in this ADR changes. See the **Amendment** at
 the end of this file.
 
 **Amended (2026-11):** the `Transport` trait is no longer the three-method
-pipe the Consequences describe, and the account and blob routes are reached
-through a hand-written client rather than a generated one. Neither changes the
-decision; both are recorded in the second **Amendment** at the end of this
-file.
+pipe the Consequences describe, and the account and blob routes, first reached
+through a hand-written client, now go through the generated one (#774).
+Neither changes the decision; both are recorded in the second **Amendment** at
+the end of this file.
 
 ## Context
 
@@ -126,7 +126,7 @@ its semantics, its error mapping and its frozen fixtures.
   byte-frame pipe, which is why ADR-0005's claim that the wire protocol is
   transport-agnostic held; a future P2P or WebTransport path re-enters here.
   (It has since widened to fifteen methods; see the
-  [2026-11 amendment](#amendment-2026-11-the-transport-widened-and-the-account-and-blob-routes-are-hand-written).)
+  [2026-11 amendment](#amendment-2026-11-the-transport-widened-and-the-account-and-blob-routes-use-the-generated-client).)
 
 ## Amendment (2026-09): the mapping table was missing a row
 
@@ -142,7 +142,7 @@ as its own session-keyed operation, is in `schemas/generated/openapi.v1.json` as
 complete mapping in its module header since it was written. The implementation
 was never ambiguous about it; this ADR was.
 
-## Amendment (2026-11): the Transport widened, and the account and blob routes are hand-written
+## Amendment (2026-11): the Transport widened, and the account and blob routes use the generated client
 
 **What the original text said.** The Consequences called the `Transport` trait
 "a three-method byte-frame pipe", and said `spargen` "generates a client for
@@ -181,18 +181,43 @@ carried as whole frames, and a P2P or WebTransport path still re-enters here.
 What changed is that the seam also carries the account API, and a new
 transport either implements it or answers `Unsupported`.
 
-**The account and blob routes are hand-written.** `SseTransport` reaches every
-route it calls — `/sync`, `/devices/by-vault-id/{id}`, `/blobs`,
-`/snapshots/{stream}` and `/accounts/me` — through its own `hyper` client in
-`crates/sunrise-sync/src/sse/`, not through the `spargen`-generated
-`sunrise_relay_client::api::Client`. The generated client covers the
-bootstrap, push-registration and recovery-read paths in `sunrise-relay-client`. So the first
-Consequence holds for the document — every route above is in
-`schemas/generated/openapi.v1.json` — but not, today, for the client.
+**The account and blob routes use the generated client.** When the trait
+widened, `SseTransport` reached every route it calls through its own `hyper`
+client in `crates/sunrise-sync/src/sse/`, so the first Consequence held for the
+document and not for the client. #774 (Q-C-10) decided that: the twelve
+account and blob methods above now call the `spargen`-generated
+`sunrise_relay_client::api::Client` (`crates/sunrise-sync/src/sse/rest.rs`),
+and `sunrise-sync`'s `sse` feature reaches `reqwest` through
+`sunrise-relay-client`, the one crate that names it. Their request bodies and
+replies are the description's types, so a reply missing a required field is a
+malformed exchange rather than a zero the hand-written reader filled in.
 
-Whether the account and blob methods move onto the generated client is an open
-decision, tracked in #774 (Q-C-10); it changes a dependency on that path and
-moves code across crates, so it is not taken here. Until it is, those routes
-stay hand-written.
+They stay on the trait, for the reason given above: the driver holds one
+transport, one signer, one bearer and the reachability state, and the move
+changes how the transport makes those calls, not who makes them. The four
+`/sync` operations and the event stream were outside #774 and stay on `hyper`,
+in `http`, `events` and `session` beside the frame table they implement.
+
+What the move had to keep is recorded where it is kept:
+
+* **The bounds.** Every call carries the head deadline, body cap and per-frame
+  idle deadline the hand-written client held, with a refusal read as a document
+  on every route. `sunrise_relay_client::bounded` holds them in an
+  `HttpBackend`, the seam the generated client executes through, because the
+  generated client reads a success body whole and has nowhere to state a head
+  deadline.
+* **The refusal map.** A refusal is still classified by status, problem `code`,
+  `Date` and `Retry-After`. The backend records the reply as sent beside the
+  typed result, because a documented status whose body does not decode reaches
+  the generated client's caller with no status at all.
+* **The binding and the wire.** Each call is signed over the value the
+  generated client serializes (ADR-0022), HTTP/1.1, no redirect followed, no
+  proxy read from the environment, and no `Authorization` header from a
+  transport built without a bearer, as before.
+* **Strict replies.** The account and blob response types are
+  `additionalProperties: false`, so the generated models refuse a field they do
+  not know. That is the rule `docs/10-cross-cutting/protocol-versioning.md` §6
+  already states for the REST bodies outside the sync surface: a field added to
+  one is a new OpenAPI document version, not a minor change.
 
 Neither part changes the decision. Both record its shape as built.

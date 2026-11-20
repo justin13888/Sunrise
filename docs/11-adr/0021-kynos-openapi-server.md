@@ -12,6 +12,10 @@ the present tense that the workspace pins 1.88.0; it pins 1.91.1. The claim that
 mattered is unaffected: `spargen`'s floor is 1.88, which is below the new pin,
 so MSRV is still not a constraint this ADR imposes.
 
+**Amended (2026-11, #774):** the sync transport's account and blob routes now
+go through the generated client; `/sync` itself stays hand-written on the
+client side. See the last entry at the end of this file.
+
 ## Context
 
 The relay's HTTP surface had no machine-readable contract of any kind. Fourteen
@@ -213,3 +217,18 @@ nothing is currently lost.
 body"), so the two crates agree and both omit rules are gone: the generated
 client carries the chunk `PUT` and the blob `GET` with `bytes::Bytes` bodies.
 The served description did not change to get there.
+
+**"No hand-written client", 2026-11 (#774).** The Decision's "no
+hand-written client" did not hold for the sync transport: `SseTransport`
+reached the account and blob routes through its own `hyper` client, so
+`spargen` generated a client for those routes that nothing on the sync path
+called, and a reply shape the description and that client disagreed on would
+have compiled on both sides. #774 (Q-C-10) moved those twelve routes onto the
+generated `sunrise_relay_client::api::Client`, including the chunk `PUT` and
+the blob `GET` the closure above made available, so every account, device and
+blob route a client calls is now generated from the description. What stays
+hand-written on the client side is `/sync`: the event stream and the four
+session operations `SseTransport` maps frames onto
+([ADR-0023](./0023-sse-sync-transport.md) §Amendment 2026-11, which also
+records how the generated client keeps that transport's bounds and refusal
+map).
