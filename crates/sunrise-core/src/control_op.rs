@@ -215,7 +215,7 @@ pub struct DeviceRevokeByIdentityPayload {
 }
 
 /// The sender **withdraws its own revocation** of a device (ADR-0056 §2,
-/// `DOC_SCHEMA_V = 27`).
+/// `DOC_SCHEMA_V = 28`).
 ///
 /// It names only the target: the sender is the authenticated envelope's, so
 /// the op can withdraw nothing but its author's own claim, and that is the

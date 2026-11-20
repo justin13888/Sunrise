@@ -281,14 +281,20 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// an unknown place evaluates to anyway, so it needs no feature. The floor
 /// does not move.
 ///
-/// `27` adds the control family `DeviceRevokeWithdraw` (ADR-0056, issue
+/// `27` adds the feature `stream.civil_times` (#788): a stream op whose
+/// `paused_until` is `floating`, `zoned` or `all_day` uses it, and is written
+/// only into a vault that requires it. An instant expiry is still the bare
+/// timestamp every build reads, so no payload shape changes and the floor
+/// does not move.
+///
+/// `28` adds the control family `DeviceRevokeWithdraw` (ADR-0056, issue
 /// #383): a device withdrawing its own revocation of another, which the
 /// revocation fold reads as the head of that sender's pair. Its feature, the
 /// structural `core.revoke_withdraw`, names it, and the op is emitted only
 /// into a vault that requires it, because a build that cannot read it parks
-/// it and would keep the device revoked. Every v1..v26 payload shape is
+/// it and would keep the device revoked. Every v1..v27 payload shape is
 /// unchanged, so the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 27;
+pub const DOC_SCHEMA_V: u16 = 28;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -400,7 +406,11 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     ),
     (
         27,
-        hex32("47848c220ac899eedb4a9a187322c2d4a382c532cd4dd34ef5a84d2316f8f42b"),
+        hex32("13933824b64ec592adc2f55fa355339b331e8661fb7b9cc159444107289396f8"),
+    ),
+    (
+        28,
+        hex32("66507bdffc4e9ba02fe2fc0857d1fefd0c3815af2495b455180e0508fe602979"),
     ),
 ];
 
@@ -774,13 +784,7 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 ///
 /// `52` is migration `0052_places.sql` (#1128, ADR-0051): `places`, the Place
 /// entity's projection. It starts empty; no row is rewritten.
-///
-/// `53` is migration `0053_device_revoke_ops_kind.sql` (#383, ADR-0056 §2):
-/// `device_revoke_ops` gains `kind`, `revoke` on every existing row, and the
-/// column joins the row's unique identity, so a revocation and a withdrawal at
-/// one stamp are two rows. No row is otherwise rewritten, and no projection
-/// moves.
-pub const STORAGE_V: u16 = 53;
+pub const STORAGE_V: u16 = 52;
 
 #[cfg(test)]
 mod tests;

@@ -323,7 +323,10 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// The 25 → 26 re-freeze (#1128, the Place entity and `at_place`) moved the
 /// same three regions and nothing else.
 ///
-/// The 26 → 27 re-freeze (#383, the revocation withdrawal) moved the same
+/// The 26 → 27 re-freeze (#788, the feature `stream.civil_times`) moved the
+/// same three regions and nothing else.
+///
+/// The 27 → 28 re-freeze (#383, the revocation withdrawal) moved the same
 /// three regions and nothing else.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
@@ -343,10 +346,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840c0",
-        "8ce74b08fc3e46680f607e239621cc8c9c1c11cdec96b06aab97968b706e",
-        "0d224560c3ca51a7306d6794a60f44ebe61d2b95ccb557bd9541aa5b9ae5",
-        "af5d070c181b0d4847848c220ac899ee",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584098",
+        "afc94e1ece5698254c3090cf3f59e7325b3734b7df4514bee0f52f96ec6b",
+        "de6df07b401ea170369aa34dfa30b7b8d9bf3e5908a21d73898c5a7f4a02",
+        "388a040c181c0d4866507bdffc4e9ba0",
     ));
 }
 
@@ -430,7 +433,10 @@ pub mod signed_only_envelope {
 /// The 25 → 26 re-freeze (#1128, the Place entity and `at_place`) moved the
 /// same four regions; the ciphertext at `[94..117]` is again untouched.
 ///
-/// The 26 → 27 re-freeze (#383, the revocation withdrawal) moved the same
+/// The 26 → 27 re-freeze (#788, the feature `stream.civil_times`) moved the
+/// same four regions; the ciphertext at `[94..117]` is again untouched.
+///
+/// The 27 → 28 re-freeze (#383, the revocation withdrawal) moved the same
 /// four regions; the ciphertext at `[94..117]` is again untouched.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
@@ -452,11 +458,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8d266d8",
-        "17af3823f2e63b2f0348339fd10b5840a1931f9cd623abc6af02f05fc107",
-        "c973fd4b9291cc83ec68953e3cf5dd07175b9561187c7c1cd94b285cfd67",
-        "898c69e2978d2fdcd6b8ff3c8983d689b2fd55010c181b0d4847848c220a",
-        "c899ee",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb84fdd64",
+        "58699e0da5939545ce603394660b58401fa6014ba32b28578d0af4b64766",
+        "ea7635378e397e8e22c748c9ae518311121b8084a9ca51f4fff420ebd45c",
+        "7c98e8aa718e731f8fe5fad1c8b0db744c9a3a070c181c0d4866507bdffc",
+        "4e9ba0",
     ));
 }
 

@@ -4,7 +4,7 @@
 
 **Built by** [#383](https://github.com/justin13888/Sunrise/issues/383), now
 that §7's prerequisites have landed: §1–§4, §6 and §7 in the engine
-(`InnerOp::DeviceRevokeWithdraw`, migration 0053, `DOC_SCHEMA_V` 27,
+(`InnerOp::DeviceRevokeWithdraw`, migration 0053, `DOC_SCHEMA_V` 28,
 `STORAGE_V` 53), the seam and the CLI. Three parts are not built yet and are
 tracked on their own: the relay's reinstatement route and the client intent
 that drives it (§5, [#1238](https://github.com/justin13888/Sunrise/issues/1238);

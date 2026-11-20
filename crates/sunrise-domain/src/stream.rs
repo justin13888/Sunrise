@@ -133,9 +133,9 @@ pub struct Stream {
     pub paused: bool,
     /// Optional pause expiry. Any kind (`docs/10-cross-cutting/time.md` §1);
     /// an instant is written as the bare timestamp this field held before
-    /// `DOC_SCHEMA_V` 15 ([`crate::time::compat`]), which is the only kind
-    /// the stream commands write today, so a stream's wire form is unchanged
-    /// for every build.
+    /// `DOC_SCHEMA_V` 15 ([`crate::time::compat`]), so such a stream's wire
+    /// form is unchanged for every build. Any other kind is written only into
+    /// a vault that requires `stream.civil_times` (#788).
     #[serde(default, with = "crate::time::compat::option")]
     pub paused_until: Option<SunriseTime>,
     /// Review cadence preference.

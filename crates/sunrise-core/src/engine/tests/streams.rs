@@ -1,6 +1,7 @@
 //! Streams: their commands, order, counts and the fields they carry.
 
 use super::*;
+use crate::feature::STREAM_CIVIL_TIMES_FEATURE;
 
 #[test]
 fn create_stream_round_trips() {
@@ -593,4 +594,332 @@ fn stream_description_icon_and_default_context_survive_the_command_surface() {
     assert_eq!(cleared.icon.as_deref(), Some("rocket"));
     assert_eq!(cleared.default_context, None);
     assert_eq!(cleared.description, None);
+}
+
+fn new_stream(e: &Engine, db: &mut Db, name: &str) -> EntityRef {
+    e.apply(
+        db,
+        Command::CreateStream(StreamDraft {
+            name: name.into(),
+            ..Default::default()
+        }),
+    )
+    .unwrap()
+    .entity
+}
+
+fn pause_until(
+    e: &Engine,
+    db: &mut Db,
+    id: EntityRef,
+    until: SunriseTime,
+) -> Result<CommandResult, EngineError> {
+    e.apply(
+        db,
+        Command::UpdateStream {
+            id,
+            patch: StreamPatch {
+                paused: Some(true),
+                paused_until: Some(Some(until)),
+                ..Default::default()
+            },
+        },
+    )
+}
+
+/// The features each edit of a stream in `db`'s log uses, read off the
+/// sealed op as the seal guard reads it, in seq order. An edit is a
+/// `stream.update`, or a `stream.patch` in a vault that requires
+/// `core.field_ops`; that feature, which every such patch uses, is left out,
+/// and so is the patch that creates the stream.
+fn stream_edits(e: &Engine, db: &Db) -> Vec<Vec<&'static str>> {
+    let mut stmt = db
+        .conn()
+        .prepare(
+            "SELECT envelope FROM ops WHERE inner_kind IN ('stream.update', 'stream.patch')
+             ORDER BY seq",
+        )
+        .unwrap();
+    let envs: Vec<Vec<u8>> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    envs.iter()
+        .filter_map(|env| {
+            let inner = e.keychain.open_op(env).unwrap();
+            if matches!(decode_inner_op(&inner).unwrap(), InnerOp::Patch(p) if p.create) {
+                return None;
+            }
+            Some(
+                crate::feature::features_used(crate::feature::FEATURES, &inner)
+                    .into_iter()
+                    .filter(|id| *id != crate::feature::FIELD_OPS_FEATURE)
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// A paired device that has not advertised `stream.civil_times` could not
+/// read a civil pause expiry, so none is written: the edit is refused with
+/// the feature and the device named, and nothing reaches the log. An
+/// instant expiry needs no feature and is still written (#788).
+#[test]
+fn a_civil_pause_waits_for_every_device_to_support_stream_civil_times() {
+    let mut db = db();
+    let e = engine();
+    let id = new_stream(&e, &mut db, "Work");
+    legacy_peer(&db);
+    let ops = op_count(&db);
+
+    let monday = SunriseTime::all_day(jiff::civil::date(2026, 3, 9));
+    let err = pause_until(&e, &mut db, id, monday).unwrap_err();
+    assert!(
+        matches!(&err, EngineError::FeatureUnsupportedByDevices { feature, devices }
+            if feature == STREAM_CIVIL_TIMES_FEATURE && devices == &vec![LEGACY_PEER]),
+        "{err:?}"
+    );
+    assert_eq!(op_count(&db), ops, "the refused edit wrote nothing");
+    let held = read_stream(db.conn(), id.bytes()).unwrap().unwrap();
+    assert!(!held.paused);
+    assert_eq!(held.paused_until, None);
+    assert!(!e
+        .vault_requires(db.conn(), STREAM_CIVIL_TIMES_FEATURE)
+        .unwrap());
+
+    let at = jiff::Timestamp::from_millisecond(1_700_000_000_000 + 86_400_000).unwrap();
+    pause_until(&e, &mut db, id, SunriseTime::instant(at)).expect("an instant needs no feature");
+    let held = read_stream(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(held.paused_until, Some(SunriseTime::instant(at)));
+    let [used] = stream_edits(&e, &db).try_into().unwrap();
+    assert!(used.is_empty(), "an instant uses no feature: {used:?}");
+    assert!(!e
+        .vault_requires(db.conn(), STREAM_CIVIL_TIMES_FEATURE)
+        .unwrap());
+}
+
+/// With no device standing in the way, a floating, zoned or all-day pause
+/// expiry requires `stream.civil_times` and is written as it was given: the
+/// op carries it tagged, uses the feature, and the stream reads it back.
+/// Clearing it, and a later edit of another field, write what the stream
+/// holds (#788).
+#[test]
+fn a_civil_pause_round_trips_once_the_vault_requires_stream_civil_times() {
+    let mut db = db();
+    let e = engine();
+    let id = new_stream(&e, &mut db, "Work");
+    let nine = jiff::civil::date(2026, 3, 9).at(9, 0, 0, 0);
+    let kinds = [
+        SunriseTime::all_day(jiff::civil::date(2026, 3, 9)),
+        SunriseTime::floating(nine),
+        SunriseTime::zoned(nine, "America/New_York"),
+    ];
+    for until in kinds.clone() {
+        pause_until(&e, &mut db, id, until.clone()).unwrap();
+        assert!(e
+            .vault_requires(db.conn(), STREAM_CIVIL_TIMES_FEATURE)
+            .unwrap());
+        let held = read_stream(db.conn(), id.bytes()).unwrap().unwrap();
+        assert!(held.paused);
+        assert_eq!(held.paused_until.as_ref(), Some(&until));
+    }
+    let edits = stream_edits(&e, &db);
+    assert_eq!(edits.len(), kinds.len());
+    for used in &edits {
+        assert_eq!(used, &[STREAM_CIVIL_TIMES_FEATURE], "carried tagged");
+    }
+
+    e.apply(
+        &mut db,
+        Command::UpdateStream {
+            id,
+            patch: StreamPatch {
+                name: Some("Deep work".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let renamed = read_stream(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(renamed.name, "Deep work");
+    assert_eq!(renamed.paused_until.as_ref(), kinds.last());
+
+    e.apply(
+        &mut db,
+        Command::UpdateStream {
+            id,
+            patch: StreamPatch {
+                paused: Some(false),
+                paused_until: Some(None),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let resumed = read_stream(db.conn(), id.bytes()).unwrap().unwrap();
+    assert!(!resumed.paused);
+    assert_eq!(resumed.paused_until, None);
+    let used = stream_edits(&e, &db).pop().unwrap();
+    assert!(
+        used.is_empty(),
+        "a cleared expiry uses no feature: {used:?}"
+    );
+}
+
+/// Deleting a stream writes its tombstone, and each child's re-parenting,
+/// with the expiry each holds: a child paused until a civil time is written
+/// as it is in a vault that requires `stream.civil_times`.
+#[test]
+fn deleting_a_stream_keeps_a_childs_civil_pause() {
+    let mut db = db();
+    let e = engine();
+    let parent = new_stream(&e, &mut db, "Parent");
+    let child = e
+        .apply(
+            &mut db,
+            Command::CreateStream(StreamDraft {
+                name: "Child".into(),
+                parent_id: Some(parent),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let until = SunriseTime::all_day(jiff::civil::date(2026, 3, 9));
+    pause_until(&e, &mut db, child, until.clone()).unwrap();
+    pause_until(&e, &mut db, parent, until.clone()).unwrap();
+    e.apply(
+        &mut db,
+        Command::DeleteStream {
+            id: parent,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
+    )
+    .unwrap();
+    let held = read_stream(db.conn(), child.bytes()).unwrap().unwrap();
+    assert_eq!(held.parent_id, None);
+    assert_eq!(held.paused_until, Some(until.clone()));
+    let gone = read_stream(db.conn(), parent.bytes()).unwrap().unwrap();
+    assert!(gone.deleted);
+    assert_eq!(gone.paused_until, Some(until));
+}
+
+/// Pause stream `id` until `until` as a build from before #788 did, one
+/// with no `stream.civil_times` to gate it: the op is logged and folded, so
+/// the stream holds a civil expiry the vault does not require the feature
+/// for.
+fn hold_ungated_civil_pause(db: &mut Db, id: EntityRef, until: &SunriseTime) {
+    let older = engine().with_features(&BEFORE_STREAM_CIVIL_TIMES);
+    let mut stream = read_stream(db.conn(), id.bytes()).unwrap().unwrap();
+    stream.paused = true;
+    stream.paused_until = Some(until.clone());
+    stream.updated_at = ms_to_ts(older.clock.now_ms().cast_signed());
+    log_and_fold(&older, db, &InnerOp::StreamUpdate(stream), &META_STREAM);
+}
+
+/// A parent stream and its child, the child (or else the parent) holding a
+/// civil pause expiry the vault does not yet require `stream.civil_times`
+/// for.
+fn parent_and_child_with_ungated_pause(
+    e: &Engine,
+    db: &mut Db,
+    on_child: bool,
+) -> (EntityRef, EntityRef, SunriseTime) {
+    let parent = new_stream(e, db, "Parent");
+    let child = e
+        .apply(
+            db,
+            Command::CreateStream(StreamDraft {
+                name: "Child".into(),
+                parent_id: Some(parent),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let until = SunriseTime::all_day(jiff::civil::date(2026, 3, 9));
+    hold_ungated_civil_pause(db, if on_child { child } else { parent }, &until);
+    assert!(!e
+        .vault_requires(db.conn(), STREAM_CIVIL_TIMES_FEATURE)
+        .unwrap());
+    (parent, child, until)
+}
+
+fn delete_detached(e: &Engine, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
+    e.apply(
+        db,
+        Command::DeleteStream {
+            id,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
+    )
+}
+
+/// A child's re-parenting carries the civil expiry it already held, so the
+/// delete requires `stream.civil_times` first rather than writing an op the
+/// seal guard refuses, and the child keeps its expiry (#788).
+#[test]
+fn deleting_a_stream_requires_stream_civil_times_for_a_childs_ungated_civil_pause() {
+    let mut db = db();
+    let e = engine();
+    let (parent, child, until) = parent_and_child_with_ungated_pause(&e, &mut db, true);
+    delete_detached(&e, &mut db, parent).unwrap();
+    assert!(e
+        .vault_requires(db.conn(), STREAM_CIVIL_TIMES_FEATURE)
+        .unwrap());
+    let held = read_stream(db.conn(), child.bytes()).unwrap().unwrap();
+    assert_eq!(held.parent_id, None);
+    assert_eq!(held.paused_until, Some(until));
+    assert!(
+        read_stream(db.conn(), parent.bytes())
+            .unwrap()
+            .unwrap()
+            .deleted
+    );
+}
+
+/// The tombstone carries the civil expiry the deleted stream already held,
+/// so the delete requires `stream.civil_times` first rather than writing an
+/// op the seal guard refuses (#788).
+#[test]
+fn deleting_a_stream_requires_stream_civil_times_for_its_own_ungated_civil_pause() {
+    let mut db = db();
+    let e = engine();
+    let (parent, _, until) = parent_and_child_with_ungated_pause(&e, &mut db, false);
+    delete_detached(&e, &mut db, parent).unwrap();
+    assert!(e
+        .vault_requires(db.conn(), STREAM_CIVIL_TIMES_FEATURE)
+        .unwrap());
+    let gone = read_stream(db.conn(), parent.bytes()).unwrap().unwrap();
+    assert!(gone.deleted);
+    assert_eq!(gone.paused_until, Some(until));
+}
+
+/// Where a paired device has not advertised `stream.civil_times`, deleting
+/// a stream that would write an ungated civil expiry, the child's or its
+/// own, is refused with the feature and the device named, and writes
+/// nothing (#788).
+#[test]
+fn deleting_a_stream_with_an_ungated_civil_pause_waits_for_every_device() {
+    for on_child in [true, false] {
+        let mut db = db();
+        let e = engine();
+        let (parent, _, _) = parent_and_child_with_ungated_pause(&e, &mut db, on_child);
+        legacy_peer(&db);
+        let ops = op_count(&db);
+        let err = delete_detached(&e, &mut db, parent).unwrap_err();
+        assert!(
+            matches!(&err, EngineError::FeatureUnsupportedByDevices { feature, devices }
+                if feature == STREAM_CIVIL_TIMES_FEATURE && devices == &vec![LEGACY_PEER]),
+            "on_child={on_child}: {err:?}"
+        );
+        assert_eq!(op_count(&db), ops, "the refused delete wrote nothing");
+        assert!(
+            !read_stream(db.conn(), parent.bytes())
+                .unwrap()
+                .unwrap()
+                .deleted
+        );
+    }
 }

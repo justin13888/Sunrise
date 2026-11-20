@@ -637,6 +637,114 @@ fn a_revoked_device_does_not_stand_in_the_way_of_enabling_a_feature() {
     );
 }
 
+/// A stream paused until a civil time, across a build that has
+/// `stream.civil_times` and one that does not (#788).
+///
+/// The older build has advertised what it supports, so the newer one will
+/// not write a civil expiry over it until the user says so. Once they do,
+/// the older build takes the vault's requirement: it keeps applying and
+/// reading the stream, expiry and all, and refuses its own stream writes
+/// with the feature named, writing nothing, so it never writes the stream
+/// back without the expiry it cannot represent. Its other writes go on.
+#[test]
+fn an_older_build_keeps_a_civil_stream_pause_and_writes_no_stream_over_it() {
+    use crate::feature::STREAM_CIVIL_TIMES_FEATURE;
+    let ea = engine_seeded(ROOT, [1u8; 32], clock());
+    let eb = engine_seeded(ROOT, [2u8; 32], clock()).with_features(&BEFORE_STREAM_CIVIL_TIMES);
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+    trust(&ea, &mut dba, &eb);
+    let b_id = eb.keychain.device_id();
+    assert!(ea.advertise_features(&mut dba).unwrap());
+    assert!(eb.advertise_features(&mut dbb).unwrap());
+    deliver(&ea, &dba, &eb, &mut dbb, true);
+    deliver(&eb, &dbb, &ea, &mut dba, true);
+
+    let s = ea
+        .apply(
+            &mut dba,
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let until = SunriseTime::all_day(jiff::civil::date(2026, 3, 9));
+    let pause = |e: &Engine, db: &mut Db| {
+        e.apply(
+            db,
+            Command::UpdateStream {
+                id: s,
+                patch: StreamPatch {
+                    paused: Some(true),
+                    paused_until: Some(Some(until.clone())),
+                    ..Default::default()
+                },
+            },
+        )
+    };
+
+    let ops = op_count(&dba);
+    let refused = pause(&ea, &mut dba);
+    assert!(
+        matches!(&refused, Err(EngineError::FeatureUnsupportedByDevices { feature, devices })
+            if feature == STREAM_CIVIL_TIMES_FEATURE && devices == &vec![b_id]),
+        "got {refused:?}"
+    );
+    assert_eq!(op_count(&dba), ops, "a refused edit writes nothing");
+
+    // The user's word: B may be left read-only for streams until it updates.
+    ea.require_features(&mut dba, &[STREAM_CIVIL_TIMES_FEATURE], true)
+        .unwrap();
+    pause(&ea, &mut dba).unwrap();
+    deliver(&ea, &dba, &eb, &mut dbb, true);
+
+    assert_eq!(
+        eb.missing_features(&dbb).unwrap(),
+        vec![MissingFeature {
+            id: STREAM_CIVIL_TIMES_FEATURE.into(),
+            scope: FeatureScope::Entity(EntityKind::Stream),
+        }]
+    );
+    let held = read_stream(dbb.conn(), s.bytes()).unwrap().unwrap();
+    assert!(held.paused);
+    assert_eq!(
+        held.paused_until.as_ref(),
+        Some(&until),
+        "B read the expiry"
+    );
+
+    let ops = op_count(&dbb);
+    let rename = eb.apply(
+        &mut dbb,
+        Command::UpdateStream {
+            id: s,
+            patch: StreamPatch {
+                name: Some("renamed on B".into()),
+                ..Default::default()
+            },
+        },
+    );
+    assert!(
+        matches!(&rename, Err(EngineError::FeatureMissing { feature })
+            if feature == STREAM_CIVIL_TIMES_FEATURE),
+        "got {rename:?}"
+    );
+    assert_eq!(op_count(&dbb), ops, "a refused write writes nothing");
+    assert_eq!(read_stream(dbb.conn(), s.bytes()).unwrap().unwrap(), held);
+
+    eb.apply(
+        &mut dbb,
+        Command::CreateTask(TaskDraft {
+            title: "still writable".into(),
+            ..Default::default()
+        }),
+    )
+    .expect("a task is outside stream.civil_times's scope");
+}
+
 /// Two `DeviceFeatures` ops from one device with the same HLC converge on
 /// the greater list text, whichever arrives first (Decision 8).
 #[test]
