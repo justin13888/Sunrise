@@ -30,6 +30,7 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -73,6 +74,56 @@ pub struct S3Blobs {
     bucket: String,
     region: String,
     credentials: S3Credentials,
+    /// Shared by every clone, so the maintenance pass on any handle reuses
+    /// what an earlier one read.
+    read_manifests: Arc<Mutex<ReadManifests>>,
+}
+
+/// The manifests [`BlobBackend::committed_manifests`] has already read, so a
+/// pass reads only the ones written or rewritten since the last, rather than
+/// one `GET` per committed blob in the bucket. An entry stands while the
+/// listing shows its object under the same entity tag, which changes on any
+/// rewrite; one the listing no longer shows is dropped, so there is at most one
+/// entry per committed blob.
+#[derive(Debug, Default)]
+struct ReadManifests(BTreeMap<(AccountKey, [u8; 16]), (String, Manifest)>);
+
+/// One listed manifest: its account, its blob, and its entity tag.
+type ListedManifest = (AccountKey, [u8; 16], String);
+
+impl ReadManifests {
+    /// `listed` split into the manifests already read and the ones still to
+    /// read, after dropping every entry `listed` does not hold. An object the
+    /// listing gave no entity tag is always read again.
+    fn split(
+        &mut self,
+        listed: Vec<ListedManifest>,
+    ) -> (Vec<CommittedManifest>, Vec<ListedManifest>) {
+        let present: BTreeSet<_> = listed.iter().map(|(a, b, _)| (*a, *b)).collect();
+        self.0.retain(|key, _| present.contains(key));
+        let mut known = Vec::new();
+        let mut unread = Vec::new();
+        for (account, blob, etag) in listed {
+            match self.0.get(&(account, blob)) {
+                Some((seen, manifest)) if !etag.is_empty() && *seen == etag => {
+                    known.push(CommittedManifest {
+                        account,
+                        blob,
+                        manifest: *manifest,
+                    });
+                }
+                _ => unread.push((account, blob, etag)),
+            }
+        }
+        (known, unread)
+    }
+
+    /// Remember `manifest`, read from the object the listing tagged `etag`.
+    fn record(&mut self, account: AccountKey, blob: [u8; 16], etag: String, manifest: Manifest) {
+        if !etag.is_empty() {
+            self.0.insert((account, blob), (etag, manifest));
+        }
+    }
 }
 
 impl std::fmt::Debug for S3Blobs {
@@ -147,7 +198,16 @@ impl S3Blobs {
             bucket: bucket.to_owned(),
             region: region.trim().to_owned(),
             credentials,
+            read_manifests: Arc::default(),
         })
+    }
+
+    /// The manifests already read. Never held across a request; a panic
+    /// while it was held leaves entries that are each still whole.
+    fn read_manifests(&self) -> std::sync::MutexGuard<'_, ReadManifests> {
+        self.read_manifests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// One signed request. `key` is `None` for the bucket itself.
@@ -544,17 +604,30 @@ impl BlobBackend for S3Blobs {
     }
 
     /// A manifest that does not parse is left out, as on the filesystem.
+    ///
+    /// One listing, then a `GET` only for each manifest [`ReadManifests`]
+    /// has not already read under the same entity tag: the first pass after
+    /// a start reads every manifest, and each later one only those committed
+    /// since.
     async fn committed_manifests(&self) -> Result<Vec<CommittedManifest>, BlobError> {
-        let mut out = Vec::new();
-        for object in self.list(BLOBS).await? {
-            if let Some(Parsed::Manifest { account, blob }) = Parsed::of(&object.key) {
-                if let Ok(Some(manifest)) = self.manifest(account, blob).await {
-                    out.push(CommittedManifest {
-                        account,
-                        blob,
-                        manifest,
-                    });
-                }
+        let listed = self
+            .list(BLOBS)
+            .await?
+            .into_iter()
+            .filter_map(|object| match Parsed::of(&object.key) {
+                Some(Parsed::Manifest { account, blob }) => Some((account, blob, object.etag)),
+                _ => None,
+            })
+            .collect();
+        let (mut out, unread) = self.read_manifests().split(listed);
+        for (account, blob, etag) in unread {
+            if let Ok(Some(manifest)) = self.manifest(account, blob).await {
+                self.read_manifests().record(account, blob, etag, manifest);
+                out.push(CommittedManifest {
+                    account,
+                    blob,
+                    manifest,
+                });
             }
         }
         Ok(out)

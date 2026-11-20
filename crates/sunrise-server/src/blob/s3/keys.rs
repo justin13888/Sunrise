@@ -178,6 +178,9 @@ pub(super) struct Object {
     pub(super) key: String,
     pub(super) last_modified_ms: u64,
     pub(super) size: u64,
+    /// The store's entity tag, quotes kept; empty where the listing gave
+    /// none. It changes whenever the object is rewritten.
+    pub(super) etag: String,
 }
 
 /// One `ListObjectsV2` page: its objects, and the token for the next page
@@ -200,6 +203,7 @@ pub(super) fn parse_listing(xml: &str) -> Result<(Vec<Object>, Option<String>), 
             key: unescape(key),
             last_modified_ms: u64::try_from(last_modified.as_millisecond()).unwrap_or(0),
             size: tag(entry, "Size").and_then(|s| s.parse().ok()).unwrap_or(0),
+            etag: tag(entry, "ETag").map(unescape).unwrap_or_default(),
         });
         rest = &after[end + "</Contents>".len()..];
     }
@@ -304,12 +308,14 @@ mod tests {
                 Object {
                     key: "blobs/a&b".to_owned(),
                     last_modified_ms: 1_767_323_045_678,
-                    size: 12
+                    size: 12,
+                    etag: "\"x\"".to_owned(),
                 },
                 Object {
                     key: "probes/p".to_owned(),
                     last_modified_ms: 1000,
-                    size: 2
+                    size: 2,
+                    etag: String::new(),
                 },
             ]
         );

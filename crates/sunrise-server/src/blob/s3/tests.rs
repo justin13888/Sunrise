@@ -57,6 +57,51 @@ async fn an_unreachable_store_is_unavailable() {
     assert_eq!(blobs.location(), "s3://sunrise at http://127.0.0.1:1");
 }
 
+/// A manifest read once is not read again while the listing shows it under
+/// the same entity tag; a new tag, or no tag, reads it again; one the listing
+/// no longer shows is forgotten.
+#[test]
+fn a_manifest_already_read_is_read_again_only_when_its_object_changes() {
+    let m = |size_bytes| Manifest {
+        chunk_count: 1,
+        size_bytes,
+    };
+    let (a, b, c) = ([1; 16], [2; 16], [3; 16]);
+    let mut read = ReadManifests::default();
+    let (known, unread) = read.split(vec![(a, b, "\"1\"".into()), (a, c, String::new())]);
+    assert!(known.is_empty());
+    assert_eq!(
+        unread,
+        vec![(a, b, "\"1\"".to_owned()), (a, c, String::new())]
+    );
+    read.record(a, b, "\"1\"".into(), m(8));
+    read.record(a, c, String::new(), m(9));
+
+    let (known, unread) = read.split(vec![(a, b, "\"1\"".into()), (a, c, String::new())]);
+    assert_eq!(
+        known,
+        vec![CommittedManifest {
+            account: a,
+            blob: b,
+            manifest: m(8)
+        }]
+    );
+    assert_eq!(unread, vec![(a, c, String::new())]);
+
+    let (known, unread) = read.split(vec![(a, b, "\"2\"".into())]);
+    assert!(known.is_empty());
+    assert_eq!(unread, vec![(a, b, "\"2\"".to_owned())]);
+
+    read.record(a, b, "\"2\"".into(), m(8));
+    assert!(read.split(Vec::new()).0.is_empty());
+    let (known, unread) = read.split(vec![(a, b, "\"2\"".into())]);
+    assert!(
+        known.is_empty(),
+        "an entry the listing dropped is forgotten"
+    );
+    assert_eq!(unread.len(), 1);
+}
+
 /// `[blobs] backend = "s3"` is what the state opens, and a credentials file
 /// it cannot read refuses the start rather than falling back to the
 /// filesystem.
@@ -243,6 +288,40 @@ async fn the_sweeps_list_and_remove_what_has_gone_idle() {
     );
     blobs.remove_account_tree(trees[0]).await.unwrap();
     assert!(blobs.list(BLOBS).await.unwrap().is_empty());
+}
+
+/// The manifests a pass already read stand for the next pass only while
+/// their objects are unchanged: a rewritten manifest is read again, and a
+/// removed one is not listed.
+#[tokio::test]
+async fn a_rewritten_manifest_is_read_again_on_the_next_pass() {
+    let Some(blobs) = fresh().await else { return };
+    let (a, b) = ([0xa1; 16], [0xbb; 16]);
+    let listed = |chunk_count, size_bytes| {
+        vec![CommittedManifest {
+            account: a,
+            blob: b,
+            manifest: Manifest {
+                chunk_count,
+                size_bytes,
+            },
+        }]
+    };
+    blobs
+        .write_manifest(a, b, listed(1, 4)[0].manifest)
+        .await
+        .unwrap();
+    assert_eq!(blobs.committed_manifests().await.unwrap(), listed(1, 4));
+    // The store tagged it, so the next pass reuses it without a `GET`.
+    assert_eq!(blobs.read_manifests().0.len(), 1);
+    assert_eq!(blobs.committed_manifests().await.unwrap(), listed(1, 4));
+    blobs
+        .write_manifest(a, b, listed(2, 4)[0].manifest)
+        .await
+        .unwrap();
+    assert_eq!(blobs.committed_manifests().await.unwrap(), listed(2, 4));
+    blobs.delete_committed(a, b).await.unwrap();
+    assert!(blobs.committed_manifests().await.unwrap().is_empty());
 }
 
 /// A backup is a filesystem tree [`FsBlobs`] reads back.
