@@ -1254,10 +1254,20 @@ jobs:
     # (debug, as cargo-mutants builds it) ran past a 560 s cutoff on a 12-core
     # M3 Pro with 1043 of its 1049 tests done and 5,751 s of per-test time.
     # Most of that is a fresh in-memory vault migrated from version 0 for
-    # every proptest case: 68% of one sampled test. #1203 tracks that. A shard
-    # of about 105 mutants finishes under 120 minutes only at about 60 s a
-    # mutant, rebuild included, so expect `sunrise-core`'s shards to time out
-    # until #1203 lands and a nightly re-measures them.
+    # every proptest case: 68% of one sampled test. #1203 made the engine
+    # tests copy one migrated vault per root instead. Measured on the same
+    # 12-core M3 Pro at `aa1629b` and at #1203's head with
+    # `cargo test -p sunrise-core --all-features`, the unit-test binary went
+    # from 609 s to 151 s (141 s under `SUNRISE_PROPTEST_DEPTH=full`, as this
+    # workflow runs it: depth is not what costs). That is still far above
+    # about 60 s a mutant, rebuild included, which a shard of about 105
+    # mutants needs to finish under 120 minutes, so expect `sunrise-core`'s
+    # shards to keep timing out. What is left is the rebuild-identity check
+    # after every write, 64% of a sampled run's test-thread time and
+    # quadratic in a test's log length (one 200-write test alone is 38 s),
+    # and the threads waiting on SQLite's global allocator mutex beneath it.
+    # Bounding proptest case counts would not reach that floor. #1279 tracks
+    # it.
     #
     # The rates are shard averages over the first third of each slice, not
     # over the whole crate: cargo-mutants' default `slice` sharding gives each
@@ -1301,7 +1311,7 @@ jobs:
         # is not the cost. The wall clocks above are what they balance against —
         # sunrise-core at 24 shards is about 105 mutants, which fits 120
         # minutes only at about 60 s a mutant, and its test run is far above
-        # that (#1122, #1203; see the `timeout-minutes` comment); sunrise-domain at 6 is about 241 and took 24-33
+        # that (#1122, #1279; see the `timeout-minutes` comment); sunrise-domain at 6 is about 241 and took 24-33
         # minutes; sunrise-sync whole took 61.
         #
         # `--shard k/n` is zero-based: cargo-mutants requires k < n and rejects
