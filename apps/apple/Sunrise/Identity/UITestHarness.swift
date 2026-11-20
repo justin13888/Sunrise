@@ -75,18 +75,11 @@ enum UITestHarness {
     static let relayFlag = "-sunrise-ui-test-relay"
 
     /// The launch argument a UI test passes to find one **weekly** block in
-    /// its vault the moment it is created (#1209).
-    ///
-    /// Nothing a UI test can click makes a repeating block: the draft sheet
-    /// writes one-off blocks, and the one path that writes a series is the
-    /// `.ics` import (#1215), which on the Mac opens a file panel a test
-    /// cannot drive. So the harness imports ``WeeklyBlockSeed``'s document
-    /// through that same path, `CoreBridge.importIcal`, right after the vault
-    /// opens, and the calendar finds a series exactly as it would after a
-    /// user's import.
-    ///
-    /// Opt **in**, for the same reason as ``recoveryFlag``. Read only by the
-    /// single-vault session, and ignored without a scratch vault.
+    /// its vault the moment it is created (#1209). Nothing a test can click
+    /// writes a series: only the `.ics` import does (#1215), behind a file
+    /// panel. So the harness imports ``WeeklyBlockSeed``'s document through
+    /// that same `CoreBridge.importIcal` as the vault opens. Opt **in**, as
+    /// ``recoveryFlag``; single-vault only, and ignored without a scratch vault.
     static let weeklyBlockFlag = "-sunrise-ui-test-weekly-block"
 
     /// The `UserDefaults` suite the relay session's settings read, emptied at
@@ -130,11 +123,8 @@ enum UITestHarness {
         scratchVault(arguments: arguments) != nil && arguments.contains(failCaptureFlag)
     }
 
-    /// Whether the vault this process opens should hold the weekly block.
-    ///
-    /// `false` without a scratch vault, whatever else was passed, exactly as
-    /// ``usesMultiVault(arguments:)`` is: no launch that can reach a real vault
-    /// can have a block imported into it by a stray argument.
+    /// Whether the vault this process opens should hold the weekly block:
+    /// never without a scratch vault, so a stray argument cannot seed a real one.
     static func seedsWeeklyBlock(
         arguments: [String] = ProcessInfo.processInfo.arguments
     ) -> Bool {
@@ -142,11 +132,9 @@ enum UITestHarness {
     }
 
     /// How the single-vault session opens its vault: as every launch does,
-    /// then, under ``weeklyBlockFlag``, with ``WeeklyBlockSeed`` imported.
-    ///
-    /// A seed that fails closes the vault and throws, so the session lands on
-    /// its failure screen naming why instead of on a calendar a test would
-    /// search for a block it never got.
+    /// then, under ``weeklyBlockFlag``, with ``WeeklyBlockSeed`` imported. A
+    /// seed that fails closes the vault and throws, so the session lands on its
+    /// failure screen naming why, not on a calendar missing the block.
     static func openBridge(
         arguments: [String]
     ) -> @Sendable (URL, Data, String, Data?) async throws -> CoreBridge {
@@ -452,4 +440,78 @@ enum RelaySeed {
     }
 }
 
+/// The weekly block ``UITestHarness/weeklyBlockFlag`` imports (#1209): one
+/// `.ics` event repeating every week with no end, an hour from ``startHour``
+/// on today's weekday, first occurring ``weeksBefore`` weeks back, so the week
+/// on screen at launch is mid-series. Floating times, so the block sits at
+/// ``startHour`` on the grid in any zone, early enough to need no scrolling.
+enum WeeklyBlockSeed {
+    /// The block's title. `SunriseUITests` asserts this literal.
+    static let title = "Studio hours"
+    /// The event's `UID`, so a second import lands on the same block.
+    static let uid = "weekly-block@ui-test.sunrise.invalid"
+    /// How many weeks before today the series begins.
+    static let weeksBefore = 4
+    /// The hour, on the wall clock, each occurrence starts.
+    static let startHour = 4
+
+    /// Why the import did not leave one repeating block behind.
+    enum SeedError: LocalizedError, Equatable {
+        case notImported(written: Int, notices: [String])
+
+        var errorDescription: String? {
+            switch self {
+            case let .notImported(written, notices):
+                "the weekly block was not imported as one series (\(written) written; "
+                    + "\(notices.joined(separator: "; ")))"
+            }
+        }
+    }
+
+    /// The first occurrence's day: today's weekday, ``weeksBefore`` weeks back.
+    static func firstDay(now: Date, calendar: Calendar) -> Date {
+        let today = calendar.startOfDay(for: now)
+        return calendar.date(byAdding: .day, value: -7 * weeksBefore, to: today) ?? today
+    }
+
+    /// The document imported: one weekly `VEVENT`, CRLF-delimited per RFC 5545.
+    static func document(now: Date, calendar: Calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyyMMdd"
+        let day = formatter.string(from: firstDay(now: now, calendar: calendar))
+        let at = { (hour: Int) in String(format: "%02d0000", hour) }
+        return [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//Sunrise//UI test harness//EN",
+            "BEGIN:VEVENT",
+            "UID:\(uid)",
+            "DTSTAMP:20260101T000000Z",
+            "DTSTART:\(day)T\(at(startHour))",
+            "DTEND:\(day)T\(at(startHour + 1))",
+            "RRULE:FREQ=WEEKLY",
+            "SUMMARY:\(title)",
+            "END:VEVENT",
+            "END:VCALENDAR",
+            ""
+        ].joined(separator: "\r\n")
+    }
+
+    /// Import ``document(now:calendar:)`` into `bridge`'s vault, and throw
+    /// unless it wrote one block (written, not created: a relock reseeds onto
+    /// the same ``uid``) with no notice, since a dropped RRULE is a notice
+    /// and a one-off block every series test would then assert against.
+    static func seed(into bridge: CoreBridge, now: Date, calendar: Calendar) async throws {
+        let report = try await bridge.importIcal(text: document(now: now, calendar: calendar))
+        guard report.blocks.count == 1, report.failed == 0, report.notices.isEmpty else {
+            throw SeedError.notImported(
+                written: report.blocks.count,
+                notices: report.notices.map(\.detail)
+            )
+        }
+    }
+}
 #endif
