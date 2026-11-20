@@ -51,6 +51,36 @@ struct PrintDocumentTests {
         await vault.bridge.shutdown()
     }
 
+    /// Upcoming prints a section per day that holds a task and one per
+    /// stream with undated tasks, headed as the screen heads them; the days
+    /// with nothing on them are dropped, and a capped no-date group counts
+    /// what it holds, not what it shows.
+    @Test
+    func upcomingPrintsASectionPerDayAndStreamHeadedAsOnScreen() async throws {
+        let vault = try await TestVault()
+        let list = TaskListModel(bridge: vault.bridge, kind: .upcomingDefault)
+        await list.refresh()
+        var report = draft("Report")
+        report.scheduledAt = .allDay(date: UpcomingLayout.adding(1, to: list.upcomingToday))
+        _ = try await vault.bridge.submit(.createTask(draft: report))
+        for index in 1...6 {
+            _ = try await vault.bridge.submit(.createTask(draft: draft("Someday \(index)")))
+        }
+        await list.refresh()
+
+        let document = PrintDocument.taskList(list)
+
+        #expect(document.title == L10n.Upcoming.title)
+        #expect(document.sections.count == 2, "the six days with nothing on them print nothing")
+        let tomorrow = try #require(document.sections.first)
+        #expect(tomorrow.heading == L10n.Print.sectionCount(heading: L10n.Upcoming.tomorrow, count: 1))
+        #expect(tomorrow.rows.map(\.title) == ["Report"])
+        let lane = try #require(document.sections.last)
+        #expect(lane.rows.count == 5, "the no-date lane shows the core's first five")
+        #expect(lane.heading.contains("6"), "and its heading counts all six: \(lane.heading)")
+        await vault.bridge.shutdown()
+    }
+
     /// An empty list is a document with nothing in it, and the caller is
     /// expected to beep rather than print a blank sheet.
     @Test

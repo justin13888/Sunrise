@@ -205,6 +205,7 @@ ALLOWED: dict[str, str] = {
     "apps/apple/Sunrise/Tasks/TaskListModel.swift": SEAM,
     "apps/apple/Sunrise/Tasks/ThumbnailRenderer.swift": PLATFORM,
     "apps/apple/Sunrise/Tasks/TriageModel.swift": SEAM,
+    "apps/apple/Sunrise/Tasks/UpcomingPlanner.swift": SEAM,
     "apps/apple/Sunrise/Undo/SavedViewsModel.swift": SEAM,
     "apps/apple/Sunrise/Undo/UndoModel.swift": SEAM,
     "apps/apple/Sunrise/Views/AccountView.swift": PRESENTATION,

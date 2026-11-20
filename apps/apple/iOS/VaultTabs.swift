@@ -370,8 +370,8 @@ extension VaultTabs {
 
     private func navigate(_ action: AppAction) -> Bool {
         switch action {
-        case .today, .inbox: // and the keyboard to the rows, as the Mac does, so `?` and `X` answer
-            show(.list(action == .today ? .todayAll : .inbox))
+        case .today, .inbox, .upcoming: // and the keyboard to the rows, as the Mac does: `?` and `X` answer
+            show(.list(action == .today ? .todayAll : action == .inbox ? .inbox : .upcomingDefault))
             pane = .rows
         case .morningSummary: show(.morning)
         case .endOfDay: show(.evening)
@@ -445,7 +445,7 @@ extension VaultTabs {
                 model: models.savedViews,
                 contexts: models.list.names,
                 recall: show,
-                saveCurrent: { savingView = destination }
+                saveCurrent: { savingView = destination }, canSave: destination.primary != nil
             )
             .accessibilityIdentifier("saved-views")
         }

@@ -1461,6 +1461,61 @@ enum L10n {
         }
     }
 
+    enum Upcoming {
+        /// Upcoming
+        static var title: String { L10n.tr("apple.upcoming.title") }
+        /// Days to show
+        static var span: String { L10n.tr("apple.upcoming.span") }
+        /// {count, plural, one {# day} other {# days}}
+        static func spanDays(count: Int) -> String {
+            L10n.tr("apple.upcoming.span_days", count)
+        }
+        /// Today
+        static var today: String { L10n.tr("apple.upcoming.today") }
+        /// Tomorrow
+        static var tomorrow: String { L10n.tr("apple.upcoming.tomorrow") }
+        /// Nothing planned
+        static var nothingPlanned: String { L10n.tr("apple.upcoming.nothing_planned") }
+        /// Due
+        static var due: String { L10n.tr("apple.upcoming.due") }
+        /// Target
+        static var target: String { L10n.tr("apple.upcoming.target") }
+        /// No date
+        static var noDate: String { L10n.tr("apple.upcoming.no_date") }
+        /// No stream
+        static var noStream: String { L10n.tr("apple.upcoming.no_stream") }
+        /// {count, plural, one {# more} other {# more}}
+        static func more(count: Int) -> String {
+            L10n.tr("apple.upcoming.more", count)
+        }
+        /// Nothing coming up in the next {span} days, and nothing undated.
+        static func empty(span: String) -> String {
+            L10n.tr("apple.upcoming.empty", span)
+        }
+        /// Nothing scheduled in the next {span} days. Your undated tasks are below.
+        static func onlyUndated(span: String) -> String {
+            L10n.tr("apple.upcoming.only_undated", span)
+        }
+        /// reschedule ‘{title}’
+        static func undoMove(title: String) -> String {
+            L10n.tr("apple.upcoming.undo_move", title)
+        }
+        /// {count, plural, one {reschedule # task} other {reschedule # tasks}}
+        static func undoMoveMany(count: Int) -> String {
+            L10n.tr("apple.upcoming.undo_move_many", count)
+        }
+        /// clear the date of ‘{title}’
+        static func undoUnschedule(title: String) -> String {
+            L10n.tr("apple.upcoming.undo_unschedule", title)
+        }
+        /// {count, plural, one {clear the date of # task} other {clear the date of # tasks}}
+        static func undoUnscheduleMany(count: Int) -> String {
+            L10n.tr("apple.upcoming.undo_unschedule_many", count)
+        }
+        /// Not moved: that day breaks a rule the task cannot break.
+        static var notePlanRefused: String { L10n.tr("apple.upcoming.note_plan_refused") }
+    }
+
     enum Tasks {
         /// Scheduled
         static var sectionScheduled: String { L10n.tr("apple.tasks.section_scheduled") }
@@ -1914,6 +1969,8 @@ enum L10n {
             static var quickCapture: String { L10n.tr("apple.keyboard.command.quick_capture") }
             /// Go to Today
             static var today: String { L10n.tr("apple.keyboard.command.today") }
+            /// Go to Upcoming
+            static var upcoming: String { L10n.tr("apple.keyboard.command.upcoming") }
             /// Go to Inbox
             static var inbox: String { L10n.tr("apple.keyboard.command.inbox") }
             /// Find in This List

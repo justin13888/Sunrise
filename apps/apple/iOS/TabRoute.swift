@@ -80,6 +80,8 @@ struct TabRoute: Equatable, Sendable {
     /// context are all *browsing*, so they push onto Browse, which is where
     /// their parent list already is — landing on a stream with no way back to
     /// the stream list is the navigation dead end a tab bar makes easy.
+    /// Upcoming is Browse's too: `planning-views.md` puts it "in Browse on
+    /// phone", and the tab bar has no room for a sixth tab.
     static func route(to destination: Destination) -> TabRoute {
         switch destination {
         case let .list(kind):
@@ -94,7 +96,7 @@ struct TabRoute: Equatable, Sendable {
                 } else {
                     TabRoute(tab: .today, path: [destination])
                 }
-            case .inbox, .stream, .context:
+            case .inbox, .stream, .context, .upcoming:
                 TabRoute(tab: .browse, path: [destination])
             case .search:
                 TabRoute(tab: .search)
