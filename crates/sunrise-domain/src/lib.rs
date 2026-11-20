@@ -53,6 +53,7 @@ pub mod routine_gen;
 pub mod rrule;
 pub mod saved_view;
 pub mod search;
+pub mod shift;
 pub mod sort_order;
 pub mod stats;
 pub mod streak;
@@ -180,6 +181,10 @@ pub use rrule::{rrule_summary, Frequency, RRule, RRuleParseError, Weekday};
 pub use saved_view::{
     DateWindow, LatenessPart, PriorityRange, SavedView, SavedViewDraft, SavedViewPatch, ViewFilter,
     ViewKind, ViewSort, WindowField,
+};
+pub use shift::{
+    active_shift, away_summary, AwaySummary, MissedOccurrence, Shift, ShiftGeneration, ShiftPolicy,
+    ShiftedOccurrence, CONTEXT_SHIFT_CAUSE, MAX_SHIFT_NAME_LEN,
 };
 pub use sort_order::{
     append_after as sort_order_append_after, between as sort_order_between, SortOrderError,
