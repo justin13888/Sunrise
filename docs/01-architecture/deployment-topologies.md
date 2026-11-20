@@ -28,7 +28,7 @@ Two topologies are designed. **Only T2 is built** ([ADR-0027](../11-adr/0027-v1-
                                 └── local disk
 ```
 
-- One Rust binary over local disk: one SQLite file for metadata and blobs on the local filesystem ([`../06-server/overview.md`](../06-server/overview.md)). Several nodes over one Postgres database are built as an opt-in ([#481](https://github.com/justin13888/Sunrise/issues/481), [`../06-server/self-hosting.md`](../06-server/self-hosting.md) §Several nodes over Postgres); an S3-compatible blob store ([#482](https://github.com/justin13888/Sunrise/issues/482)) is **proposed, not built**.
+- One Rust binary over local disk: one SQLite file for metadata and blobs on the local filesystem ([`../06-server/overview.md`](../06-server/overview.md)). Several nodes over one Postgres database are built as an opt-in ([#481](https://github.com/justin13888/Sunrise/issues/481), [`../06-server/self-hosting.md`](../06-server/self-hosting.md) §Several nodes over Postgres); an S3-compatible blob store is built as an opt-in too ([#482](https://github.com/justin13888/Sunrise/issues/482), [`../06-server/self-hosting.md`](../06-server/self-hosting.md) §Blobs on an object store).
 - Auth: operator brings any OIDC issuer (Keycloak, Authelia, Dex, Auth0, Google Workspace, etc.). See [`../06-server/auth.md`](../06-server/auth.md).
 - Push: optional; if absent, devices poll. (See [`../06-server/push-notifications.md`](../06-server/push-notifications.md).)
 - Use cases: privacy-conscious users; teams of ≤3; researchers.

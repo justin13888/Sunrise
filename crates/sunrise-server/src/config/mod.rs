@@ -8,6 +8,7 @@
 //! `std::env` or the config filesystem, and nothing in `model` knows either
 //! exists.
 
+mod blobs;
 mod file;
 mod limits;
 mod model;
@@ -15,6 +16,7 @@ mod observability;
 mod push;
 mod storage;
 
+pub use blobs::{BlobBackendKind, BlobsConfig, BlobsConfigError};
 pub use file::{
     load, resolve_candidate, AuthTable, Candidate, FileConfig, LoadError, ServerTable, ENV_CONFIG,
     IMPLICIT_CONFIG_PATHS,

@@ -1,6 +1,7 @@
 //! The checks every [`BlobBackend`] must pass, written once and run against
-//! each implementation: [`FsBlobs`] in this module's tests, and an object
-//! store in its own. Also [`Unreachable`], the backend that fails every call,
+//! each implementation: [`FsBlobs`] in this module's tests, and
+//! [`super::S3Blobs`] in its own, against the store `SUNRISE_TEST_S3_ENDPOINT`
+//! names. Also [`Unreachable`], the backend that fails every call,
 //! for the tests of what a caller does with a failure.
 
 use std::path::Path;

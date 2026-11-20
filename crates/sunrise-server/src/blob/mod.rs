@@ -2,8 +2,10 @@
 //!
 //! [`BlobBackend`] covers pending uploads, committed chunks, manifests,
 //! deletion, and the listings the maintenance pass sweeps. [`FsBlobs`], the
-//! per-account tree under `[storage] blob_root`, is the first implementation
-//! and the only one today; nothing outside it builds a blob path.
+//! per-account tree under `[storage] blob_root`, is the default;
+//! [`S3Blobs`], an S3-compatible object store, is chosen by
+//! `[blobs] backend = "s3"`. Nothing outside the two builds a blob path or an
+//! object key.
 //!
 //! Every key the seam takes is the account's 16-byte hash
 //! ([`crate::relay_log::account_key`]), never its id: the per-account isolation
@@ -20,6 +22,7 @@
 //! both directions.
 
 mod fs;
+mod s3;
 
 #[cfg(test)]
 pub(crate) mod conformance;
@@ -27,6 +30,7 @@ pub(crate) mod conformance;
 use std::path::Path;
 
 pub use fs::FsBlobs;
+pub use s3::{S3Blobs, S3Credentials, S3OpenError};
 
 /// The account hash every blob key is filed under.
 pub type AccountKey = [u8; 16];

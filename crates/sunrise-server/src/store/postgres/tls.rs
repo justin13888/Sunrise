@@ -41,30 +41,40 @@ impl MakeRustls {
     /// The file cannot be read, holds no certificate, or holds one rustls
     /// will not take as a root.
     pub(crate) fn from_ca_file(ca_file: &Path) -> Result<Self, String> {
-        let shown = ca_file.display();
-        let mut roots = rustls::RootCertStore::empty();
-        let certs = CertificateDer::pem_file_iter(ca_file)
-            .map_err(|e| format!("[storage] postgres_ca_file {shown}: {e}"))?;
-        for cert in certs {
-            let cert = cert.map_err(|e| format!("[storage] postgres_ca_file {shown}: {e}"))?;
-            roots
-                .add(cert)
-                .map_err(|e| format!("[storage] postgres_ca_file {shown}: {e}"))?;
-        }
-        if roots.is_empty() {
-            return Err(format!(
-                "[storage] postgres_ca_file {shown} holds no PEM certificate"
-            ));
-        }
-        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|e| e.to_string())?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-        Ok(Self(Arc::new(config)))
+        client_config_from_ca_file(ca_file, "[storage] postgres_ca_file")
+            .map(|config| Self(Arc::new(config)))
     }
+}
+
+/// A TLS client configuration trusting the PEM certificates in `ca_file`
+/// alone; `key` is the config key that named it, for the error. Also the
+/// object store's, for `[blobs] s3_ca_file`.
+///
+/// # Errors
+/// The file cannot be read, holds no certificate, or holds one rustls will not
+/// take as a root.
+pub(crate) fn client_config_from_ca_file(
+    ca_file: &Path,
+    key: &str,
+) -> Result<rustls::ClientConfig, String> {
+    let shown = ca_file.display();
+    let mut roots = rustls::RootCertStore::empty();
+    let certs =
+        CertificateDer::pem_file_iter(ca_file).map_err(|e| format!("{key} {shown}: {e}"))?;
+    for cert in certs {
+        let cert = cert.map_err(|e| format!("{key} {shown}: {e}"))?;
+        roots.add(cert).map_err(|e| format!("{key} {shown}: {e}"))?;
+    }
+    if roots.is_empty() {
+        return Err(format!("{key} {shown} holds no PEM certificate"));
+    }
+    Ok(rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| e.to_string())?
+    .with_root_certificates(roots)
+    .with_no_client_auth())
 }
 
 impl<S> MakeTlsConnect<S> for MakeRustls

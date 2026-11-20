@@ -11,9 +11,11 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 > and blobs on the local filesystem (`sunrise_storage::BlobStore`) — and, as an
 > opt-in, several relay nodes over one Postgres database (`store/postgres/`,
 > `tokio-postgres`; [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md),
-> [`self-hosting.md`](./self-hosting.md) §Several nodes over Postgres). There is
-> **no** S3, Redis or external pub/sub — no `aws-sdk-s3` appears in any
-> `Cargo.toml`; the nodes' fan-out is Postgres `LISTEN/NOTIFY` — and push delivery is
+> [`self-hosting.md`](./self-hosting.md) §Several nodes over Postgres), and blobs
+> on an S3-compatible object store (`blob/s3/`, signed requests over the
+> `hyper` client; §Blobs on an object store). There is **no** Redis or external
+> pub/sub and no AWS SDK — no `aws-sdk-s3` appears in any `Cargo.toml`; the
+> nodes' fan-out is Postgres `LISTEN/NOTIFY` — and push delivery is
 > APNs only, over the `hyper` client already in the tree
 > ([`push-notifications.md`](./push-notifications.md)). The managed and scale-out sections below are design targets;
 > each unbuilt piece is marked. Two accepted ADRs moved this document's ground
@@ -91,8 +93,9 @@ Why Rust: shares the wire-format crate with the client core (one source of truth
 
 ## Stateless scale-out
 
-Built for metadata as [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md)
-decides; blobs on an object store are not (#482). The server scales
+Built as [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md)
+decides, for metadata and for blobs on an object store
+([`self-hosting.md`](./self-hosting.md) §Blobs on an object store). The server scales
 horizontally over one Postgres database. Each instance:
 
 - Holds the open event streams.
@@ -100,7 +103,8 @@ horizontally over one Postgres database. Each instance:
   durable relay log, op envelopes included.
 - Learns of ops another instance accepted from Postgres `LISTEN/NOTIFY`, and
   reads them out of the shared log to fan out to its own streams.
-- Reads/writes blobs on a filesystem every instance mounts, until #482.
+- Reads/writes blobs in one bucket of an S3-compatible object store
+  (`[blobs] backend = "s3"`), or on a filesystem every instance mounts.
 
 Single-instance self-host has none of this.
 
