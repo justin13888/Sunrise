@@ -120,6 +120,21 @@ final class RecurringBlockScopeUITests: SunriseUITestCase {
         app.descendants(matching: .any).matching(identifier: "calendar-block")
     }
 
+    /// One frame per chip, from every `calendar-block` match.
+    ///
+    /// `BlockChip` sets the identifier on its container, and SwiftUI may hand
+    /// it down to the glyphs and the title inside, so one chip can be several
+    /// matches. Those all sit inside the chip's own frame: keep only the
+    /// matches no other match contains, which is one per chip either way.
+    private func chipFrames() -> [CGRect] {
+        let frames = blocks.allElementsBoundByIndex.map(\.frame)
+        return frames.enumerated().filter { index, frame in
+            !frames.enumerated().contains { other, outer in
+                other != index && outer.contains(frame) && (outer != frame || other < index)
+            }
+        }.map(\.element)
+    }
+
     /// Step the grid a week, by the toolbar's chevron of that name.
     private func step(_ direction: String, file: StaticString = #filePath, line: UInt = #line) {
         let chevron = app.buttons[direction].firstMatch
@@ -136,11 +151,11 @@ final class RecurringBlockScopeUITests: SunriseUITestCase {
     /// trips beats by far, rather than taking the first look.
     private func settledBlocks(timeout: TimeInterval = 15) -> [CGRect] {
         let deadline = Date().addingTimeInterval(timeout)
-        var last = blocks.allElementsBoundByIndex.map(\.frame)
+        var last = chipFrames()
         var since = Date()
         while Date() < deadline {
             usleep(150_000)
-            let now = blocks.allElementsBoundByIndex.map(\.frame)
+            let now = chipFrames()
             if now != last {
                 last = now
                 since = Date()
@@ -156,7 +171,19 @@ final class RecurringBlockScopeUITests: SunriseUITestCase {
     private func eventTop(_ week: String, file: StaticString = #filePath, line: UInt = #line) -> CGFloat? {
         let frames = settledBlocks()
         XCTAssertEqual(frames.count, 1, "\(week) holds one event", file: file, line: line)
-        return frames.first?.minY
+        guard let frame = frames.first else { return nil }
+        // The event is an hour long, so the chip is an hour tall. A frame of
+        // any other height is not the chip (iOS reports the whole day column
+        // for this identifier), and its top would not move with the event.
+        XCTAssertEqual(
+            frame.height,
+            Self.hourHeight,
+            accuracy: 4,
+            "\(week)'s `calendar-block` frame is the chip's own, one hour tall",
+            file: file,
+            line: line
+        )
+        return frame.minY
     }
 
     /// Measure last week, this week and next, drag this week's event an hour
@@ -177,12 +204,19 @@ final class RecurringBlockScopeUITests: SunriseUITestCase {
         step("Previous", file: file, line: line)
         _ = settledBlocks()
 
-        let event = blocks.firstMatch
-        XCTAssertTrue(event.exists, "this week's event is on screen to drag", file: file, line: line)
-        // A third of the way down, clear of the resize strip on its bottom
-        // edge, and pressed before it moves: the grid sits in a scroll view,
-        // whose pan takes a drag that starts moving at once.
-        let grip = event.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        guard let event = chipFrames().first else {
+            XCTFail("this week's event is on screen to drag", file: file, line: line)
+            return
+        }
+        // A third of the way down the chip's own frame, rather than an offset
+        // into whichever match `firstMatch` returns, clear of the resize strip
+        // on its bottom edge, and pressed before it moves: the grid sits in a
+        // scroll view, whose pan takes a drag that starts moving at once.
+        let origin = app.frame.origin
+        let grip = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: event.midX - origin.x,
+            dy: event.minY + event.height * 0.3 - origin.y
+        ))
         grip.press(forDuration: 0.4, thenDragTo: grip.withOffset(CGVector(dx: 0, dy: Self.hourHeight)))
 
         activate(
