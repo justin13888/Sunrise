@@ -27,6 +27,20 @@ Numbers we promise. CI fails when a regression breaks them.
 
 Linux/Windows desktop builds run a calibrated comparison test on a Ryzen 5 5600 (16 GB DDR4-3200, NVMe SSD) and a Dell XPS 13 9310 (i7-1185G7, 16 GB, NVMe SSD); benches must hit Baseline A within ±15 % on both. Targets above are normative on the named baseline; comparable consumer hardware is expected to track within the same envelope.
 
+The CI names in the table (`bench-desktop-a`, `bench-ios-b`, `bench-android-c`) are specification: no
+workflow defines a job by those names, and no device farm runs one.
+
+**How the core's share is measured.** `crates/sunrise-bench/benches/cold_start.rs` seeds a vault with
+10k tasks through the command path and closes it. Each iteration is `Core::open` on that vault,
+then the first `Query::Today` result, timed as one unit; the `Core` is closed outside the timed
+span. That is the part of the budget the core spends: the lock, the SQLCipher key derivation, the
+keychain, `prime_hlc` and the open-time checks, then the query. The app's own launch and first
+render are not in it. Each open is a new connection with an empty page cache, but the operating
+system's file cache is warm after the first, because dropping it needs root. The row
+`cold_start/today_10000` records `cold_start_today_10k_tasks_p50_ms` and `_p99_ms` in
+`bench/baseline.json`, `null` until a runner records them
+([#1250](https://github.com/justin13888/Sunrise/issues/1250)).
+
 ## Quick capture (trigger → input ready)
 
 All platforms: ≤100ms p95.
@@ -162,6 +176,17 @@ connection included, at the default page cache.
 - Web tab: ≤150 MB.
 - CLI: ≤80 MB (a one-shot process; the number is a ceiling on the core, not on a long-running UI).
 
+**How it is measured.** `crates/sunrise-bench/benches/rss.rs` seeds a vault with 10k tasks through
+the command path, closes it, opens it through `Core::open`, and runs `Query::Today` repeatedly. Each
+sample is the process's resident set after its queries: `VmRSS` from `/proc/self/status` on Linux,
+`ps -o rss=` elsewhere. It is the whole bench process, the async runtime and Criterion's
+bookkeeping included, so it overstates the core slightly and never understates it. The value goes
+through a custom Criterion measurement whose unit is bytes, and the row `rss/steady_10000` records
+`rss_steady_10k_tasks_p99_mib` in `bench/baseline.json`, `null` until a runner records it
+([#1250](https://github.com/justin13888/Sunrise/issues/1250)). Nothing compares it with the ceilings
+above yet; the regression comparisons in [Regression policy](#regression-policy) compare it with
+itself.
+
 ## Background impact
 
 - iOS: average background CPU per day ≤30s.
@@ -215,6 +240,14 @@ connection included, at the default page cache.
   not run, or a directory no row names, is printed and fails `--check`; it is
   never skipped in silence, which is how `sync_session` went uncompared after
   it replaced `ws_handshake`.
+- **As built, the same-runner A/B:** the `Bench A/B (base vs head)` job in
+  `ci.yml` benches the base and the head one after the other on one runner and
+  compares the two with `baseline --compare`, so the runner's speed cancels.
+  It runs after a merge to master and on a dispatch, never on a pull request.
+  Its tolerance comes from a recorded A/A run; until one is recorded it reports
+  and judges nothing
+  ([`testing.md`](./testing.md#perf-bench-ci-integration),
+  [#1250](https://github.com/justin13888/Sunrise/issues/1250)).
 - **As built, the sync propagation budget:** the `Sync latency` job runs the
   harness under [Sync propagation](#sync-propagation-commit-on-one-device--applied-on-another)
   nightly and on demand, and it does gate: it fails when the p99 at any RTT the

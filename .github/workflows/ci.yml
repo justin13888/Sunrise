@@ -15,6 +15,14 @@ on:
     # 04:00 UTC daily.
     - cron: "0 4 * * *"
   workflow_dispatch:
+    inputs:
+      bench_ab_base:
+        description: >-
+          The commit `Bench A/B` compares the dispatched ref against. Empty
+          means its parent. The dispatched ref itself makes an A/A run, which
+          measures the runner's own spread.
+        required: false
+        default: ""
 
 # The whole scope this workflow needs, stated where it can be read. Every job
 # below checks out, and `actions/checkout` wants `contents: read` and nothing
@@ -1030,6 +1038,92 @@ jobs:
         run: cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5
       - name: Compare against bench/baseline.json
         run: cargo run -q -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60
+
+  # The comparison that can gate (#474): the base and the head benched one
+  # after the other in one job on one runner, then compared with each other
+  # rather than with a number recorded on other hardware at another time, so
+  # the runner's speed cancels out. What is left is the runner's drift within
+  # the job, and an A/A run measures that: dispatch this workflow with
+  # `bench_ab_base` set to the dispatched commit, and the comparison step
+  # prints every metric's move and the widest one. The tolerance is chosen
+  # from that spread and recorded in docs/10-cross-cutting/testing.md
+  # §Perf-bench CI integration.
+  #
+  # Until an A/A run has been recorded, BENCH_AB_TOLERANCE_PCT is empty and the
+  # comparison reports without judging any move (#1250). It still fails, on its
+  # own terms, when the head did not run a bench in `baseline.rs`'s table or
+  # ran one the table does not name, as `bench-regression`'s does.
+  #
+  # After the merge, never on a pull request (#1117): two full bench runs cost
+  # about twice `bench-regression`'s leg, and master is where the slow work runs.
+  # On a push the base is the commit master moved from; on a dispatch it is the
+  # `bench_ab_base` input, or the dispatched commit's parent.
+  bench-ab:
+    name: Bench A/B (base vs head)
+    runs-on: ubuntu-latest
+    # Not observed on a runner yet. Two `cargo bench` runs of the suite at
+    # `bench-regression`'s sizes, each about that job's 12 minutes, the second
+    # compiling only what the head changed; 90 leaves room for both to run
+    # slower than that.
+    timeout-minutes: 90
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    env:
+      # The sizes `baseline.rs` records, as in `bench-regression`.
+      SUNRISE_BENCH_COMPACT_TASKS: "10000"
+      SUNRISE_BENCH_REBUILD_TASKS: "10000"
+      SUNRISE_BENCH_FTS_TASKS: "10000"
+      # Empty until an A/A run on this runner is recorded (#1250); then the
+      # tolerance testing.md derives from it, and the job gates.
+      BENCH_AB_TOLERANCE_PCT: ""
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          # The base is any earlier commit, so the whole history.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # A reader of the `rust` gate's entry, as `bench-regression` is, and
+          # for the same reasons.
+          shared-key: rust
+          save-if: false
+      - name: Choose the base
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          INPUT_BASE: ${{ inputs.bench_ab_base }}
+        run: |
+          if [ "$EVENT" = push ]; then
+            base="$BEFORE"
+          else
+            base="${INPUT_BASE:-HEAD^}"
+          fi
+          sha=$(git rev-parse --verify --quiet "${base}^{commit}") || {
+            echo "::error::no commit to compare against: '$base'"
+            exit 1
+          }
+          echo "Base $sha, head $(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Bench the base
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+        run: |
+          git checkout --quiet --detach "$BASE"
+          cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5
+          mv target/criterion "$RUNNER_TEMP/criterion-base"
+      - name: Bench the head
+        run: |
+          git checkout --quiet --detach "$GITHUB_SHA"
+          cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5
+      - name: Compare the head with the base
+        run: >-
+          cargo run -q -p sunrise-bench --bin baseline --
+          --compare "$RUNNER_TEMP/criterion-base" target/criterion "$BENCH_AB_TOLERANCE_PCT"
 
   # The end-to-end sync budget, measured: two cores and a real relay on
   # loopback, injected RTT, ten thousand ops per RTT, p99 against 500 ms
