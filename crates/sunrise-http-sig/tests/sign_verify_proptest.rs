@@ -3,9 +3,9 @@
 //! The unit tests in `src/lib.rs` pin the round trip and each binding on one
 //! fixed method, path, body and date. That proves the scheme works for that
 //! request; it does not prove the canonical string keeps every input apart for
-//! any request. A canonical string that, say, let a path ending in a newline
-//! run into the date, or hashed a body whose canonical form collapsed two
-//! values, would pass every fixed case and still sign two requests alike.
+//! any request. A canonical string that, say, left an input out for some shape
+//! of request, or hashed a body whose canonical form collapsed two values,
+//! would pass every fixed case and still sign two requests alike.
 //!
 //! So this draws the four inputs a client chooses - method, origin-form target,
 //! JSON body (or none) and `Date` - and asserts that what [`sign`] produces
