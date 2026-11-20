@@ -17,7 +17,7 @@ class SunriseUITestCase: XCTestCase {
 
     /// Not implicitly unwrapped: a nil here means `setUp` did not run, and the
     /// honest response is to delete nothing rather than to trap.
-    private var scratch: URL?
+    private(set) var scratch: URL?
 
     override func setUp() async throws {
         try await super.setUp()
@@ -47,6 +47,114 @@ class SunriseUITestCase: XCTestCase {
         app.terminate()
         app.launchArguments.append(contentsOf: flags)
         app.launch()
+    }
+
+    // MARK: - A seeded relay
+
+    /// The runner's environment variable naming a running self-host relay's
+    /// base URL (#458). `xcodebuild` hands the runner every variable in its
+    /// own **environment** with a `TEST_RUNNER_` prefix, prefix stripped, so a
+    /// run exports `TEST_RUNNER_SUNRISE_UI_TEST_RELAY`. Passed as a build
+    /// setting after the action it never reaches the runner, and the test
+    /// skips.
+    ///
+    /// **Each run needs a fresh relay process.** The self-host `NullVerifier`
+    /// maps every bearer to one account, and that account's recovery blob is
+    /// write-once: a second founding is refused with `409
+    /// RECOVERY_BLOB_EXISTS`. A relay that has been seeded once — by an
+    /// earlier run, or by the other platform's suite — cannot be seeded
+    /// again, and the code it was first seeded with died with that run's
+    /// scratch directory. So start the relay with its default in-memory store
+    /// and restart it before every `xcodebuild test`, the macOS and iOS
+    /// suites included.
+    static let relayVariable = "SUNRISE_UI_TEST_RELAY"
+
+    /// Relaunch against the relay ``relayVariable`` names, wait for the
+    /// harness to found an account on it, and return the account's recovery
+    /// code.
+    ///
+    /// Skips, rather than fails, when no relay is named: the relay is a
+    /// separate process the runner cannot start on iOS, and a suite run
+    /// without one has nothing to restore from. The harness founds the
+    /// account at launch and writes the code into the scratch directory this
+    /// test owns (`RelaySeed` in the app), or writes why it could not.
+    func relaunchAgainstSeededRelay(file: StaticString = #filePath, line: UInt = #line) throws -> String {
+        let relay = ProcessInfo.processInfo.environment[Self.relayVariable]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !relay.isEmpty else {
+            throw XCTSkip(
+                "no relay: start a self-host sunrise-server and pass its base URL as "
+                    + "TEST_RUNNER_\(Self.relayVariable)=http://127.0.0.1:PORT"
+            )
+        }
+        let scratch = try XCTUnwrap(scratch, "setUp made a scratch directory", file: file, line: line)
+        relaunch(adding: ["-sunrise-ui-test-relay", relay])
+
+        let code = scratch.appending(path: "seeded-recovery-code")
+        let failure = scratch.appending(path: "seed-failure")
+        let manager = FileManager.default
+        let settled = waitUntil(timeout: 60) {
+            manager.fileExists(atPath: code.path(percentEncoded: false))
+                || manager.fileExists(atPath: failure.path(percentEncoded: false))
+        }
+        if let reason = try? String(contentsOf: failure, encoding: .utf8) {
+            XCTFail(
+                "the harness could not seed \(relay): \(reason). A relay seeded before "
+                    + "refuses a second founding (RECOVERY_BLOB_EXISTS): restart it, with its "
+                    + "in-memory store, before every run",
+                file: file,
+                line: line
+            )
+        }
+        XCTAssertTrue(settled, "the harness seeded \(relay) within a minute", file: file, line: line)
+        return try String(contentsOf: code, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Restore from `code` through onboarding's **Restore from recovery
+    /// code**, and close the sheet once the account is back.
+    ///
+    /// The restore's sign-in is the harness's self-host bearer, so nothing
+    /// leaves the app for a browser between the submit and the result.
+    func restoreFromRecoveryCode(_ code: String, file: StaticString = #filePath, line: UInt = #line) {
+        activate(
+            app.buttons["onboarding.restore"],
+            named: "onboarding's Restore from recovery code button",
+            timeout: 20,
+            file: file,
+            line: line
+        )
+        // A vertical-axis `TextField` is a text view on one platform and a
+        // text field on the other, so it is found by identifier alone.
+        let words = app.descendants(matching: .any)["restore.words"].firstMatch
+        activate(words, named: "the recovery code field", file: file, line: line)
+        words.typeText(code)
+
+        let submit = app.buttons["restore.submit"]
+        XCTAssertTrue(
+            waitUntil(timeout: 10) { submit.isEnabled },
+            "twenty-four valid words enable Restore",
+            file: file,
+            line: line
+        )
+        activate(submit, named: "the sheet's Restore button", file: file, line: line)
+
+        let done = app.buttons["restore.done"]
+        let error = app.descendants(matching: .any)["restore.error"].firstMatch
+        if !done.appears(within: 120), error.exists {
+            XCTFail(
+                "the restore failed: \(error.label)",
+                file: file,
+                line: line
+            )
+        }
+        activate(done, named: "the restored sheet's Done button", file: file, line: line)
+        XCTAssertTrue(
+            waitUntil(timeout: 10) { !done.exists },
+            "Done closed the sheet",
+            file: file,
+            line: line
+        )
     }
 
     // MARK: - Driving the app

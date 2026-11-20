@@ -76,7 +76,7 @@ extension SessionModel {
         guard canRestoreFromRecoveryCode, restoration.model == nil else { return }
         let settings = currentSettings()
         restoration.model = RestoreFromCodeModel(
-            signIn: { try await Self.stepUpBearer(settings: settings) },
+            signIn: { try await Self.restoreBearer(settings: settings) },
             restore: { [weak self] code, bearer, onStep in
                 guard let self else { throw RecoverySetupError.vaultClosed }
                 let request = RecoveryRequest(
@@ -193,6 +193,16 @@ extension SessionModel {
         } catch {
             throw RestoreSetupError.originalNotPutBack(aside.path(percentEncoded: false))
         }
+    }
+
+    /// The bearer a restore presents: ``stepUpBearer(settings:)``, except
+    /// under the UI-test harness's self-host relay (#458), where no browser
+    /// can be driven and the relay asks for no step-up.
+    static func restoreBearer(settings: AppSettings) async throws -> String {
+        #if DEBUG
+        if let bearer = UITestHarness.stepUpBearer() { return bearer }
+        #endif
+        return try await stepUpBearer(settings: settings)
     }
 
     /// Sign in again, now, whatever session the browser holds, and return the
