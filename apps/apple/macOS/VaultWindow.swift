@@ -99,7 +99,8 @@ struct VaultWindow: View {
                     model: savedViews,
                     contexts: list.names,
                     recall: { selection = $0 },
-                    saveCurrent: { savingView = true }
+                    saveCurrent: { savingView = true },
+                    canSave: selection?.primary != nil
                 )
             }
             ToolbarItem(placement: .status) {
@@ -440,6 +441,9 @@ extension VaultWindow {
             pane = .rows
         case .inbox:
             selection = .list(.inbox)
+            pane = .rows
+        case .upcoming:
+            selection = .list(.upcomingDefault)
             pane = .rows
         case .searchInView:
             // This client has one search surface. ⌘F carries the query over —

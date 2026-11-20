@@ -33,8 +33,11 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 > - The undo step is ordered against the command stack in Swift
 >   (`UndoJournal`, beside `CoreBridge`), not in `sunrise-client-core`, and a
 >   planner commit has no redo.
-> - Task → day in Upcoming, triage Defer and "Plan my day" send no intent
->   yet: Upcoming does not exist ([#351](https://github.com/justin13888/Sunrise/issues/351)).
+> - Task → day in Upcoming sends `BulkDefer { to: day, place: false }`, and
+>   a task dropped into its no-date lane sends `Unschedule { keep: Nothing }`,
+>   previewed while the drag hovers and committed on drop by the Apple
+>   client's `UpcomingPlanner` (`planning-views.md` §Upcoming). Triage Defer
+>   and "Plan my day" send no intent yet.
 >
 > What this build does differently from the contract below:
 >

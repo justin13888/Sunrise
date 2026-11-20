@@ -21,6 +21,14 @@ final class TaskListModel {
     private(set) var kind: TaskListKind
     private(set) var tasks: [TaskItem] = []
     private(set) var groups: [TodayGroup] = []
+    /// Upcoming's days and no-date groups, as the core composed them. Empty
+    /// for every other list.
+    private(set) var upcoming: [UpcomingSection] = []
+    /// The span the core answered Upcoming with: the one asked for, or the
+    /// device's preference.
+    private(set) var upcomingSpan: UInt32 = TaskListKind.upcomingSpans[0]
+    /// The device's civil today, as Upcoming's report gives it.
+    private(set) var upcomingToday: CivilDate = ""
     private(set) var names = NameBook()
     private(set) var nowMs: UInt64 = 0
     private(set) var errorMessage: String?
@@ -44,6 +52,9 @@ final class TaskListModel {
     /// ``FocusFilter``.
     private let focusFilter: FocusFilterStore
 
+    /// Rescheduling in Upcoming, planned by the core. Idle in every other list.
+    let upcomingPlanner: UpcomingPlanner
+
     init(
         bridge: CoreBridge,
         kind: TaskListKind = .todayAll,
@@ -54,6 +65,8 @@ final class TaskListModel {
         self.kind = kind
         self.orderImport = orderImport
         self.focusFilter = focusFilter
+        upcomingPlanner = UpcomingPlanner(bridge: bridge)
+        upcomingPlanner.afterWrite = { [weak self] in await self?.refresh() }
     }
 
     /// The streams a Focus filter has narrowed this list to, or `nil` when it
@@ -76,6 +89,7 @@ final class TaskListModel {
         guard kind.isWorthQuerying else {
             tasks = []
             groups = []
+            upcoming = []
             errorMessage = nil
             return
         }
@@ -84,6 +98,11 @@ final class TaskListModel {
             if case let .tasks(queried) = result, await importStoredOrder(into: queried) {
                 result = try await bridge.query(kind.query(nowMs: nowMs))
             }
+            if case let .upcoming(report) = result {
+                adopt(report)
+                return
+            }
+            upcoming = []
             guard case let .tasks(queried) = result else {
                 tasks = []
                 groups = []
@@ -101,6 +120,40 @@ final class TaskListModel {
             errorMessage = error.localizedDescription
         }
     }
+
+    /// Upcoming, as the core composed it. The rows the keyboard walks are its
+    /// tasks in screen order, each once; the Focus filter does not narrow it,
+    /// as it narrows only Today.
+    private func adopt(_ report: UpcomingReport) {
+        upcoming = UpcomingLayout.sections(of: report)
+        upcomingSpan = report.spanDays
+        upcomingToday = report.today
+        tasks = UpcomingLayout.tasks(in: upcoming)
+        groups = []
+        errorMessage = nil
+    }
+
+    /// Upcoming's chips: show `span` days. The span is the device's
+    /// `views.upcoming.span_days` preference, so the next Upcoming opened here
+    /// shows the same; a list opened at an explicit span moves to this one.
+    func setUpcomingSpan(_ span: UInt32) async {
+        guard case let .upcoming(asked) = kind else { return }
+        if asked != nil { kind = .upcoming(span: span) }
+        do {
+            _ = try await bridge.submit(.setPreference(
+                key: Self.upcomingSpanKey,
+                value: .uint(value: UInt64(span)),
+                target: .device
+            ))
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+        await refresh()
+    }
+
+    /// The device-local preference Upcoming's span is kept in.
+    static let upcomingSpanKey = "views.upcoming.span_days"
 
     /// Write the order an earlier build kept for this list on this device
     /// into the vault, once; `true` when it wrote, so the caller re-reads.

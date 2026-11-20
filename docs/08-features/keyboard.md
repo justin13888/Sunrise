@@ -99,6 +99,7 @@ Defaults follow platform conventions.
 | Quick capture (in-app) | `Cmd+N` | `Ctrl+N` | `n` |
 | Today | `Cmd+1` | `Ctrl+1` | `g t` |
 | Inbox | `Cmd+2` | `Ctrl+2` | `g i` |
+| Upcoming | `Cmd+3` | `Ctrl+3` | — |
 | Search (keeping the query) | `Cmd+F` | `Ctrl+F` | `/` |
 | Search (fresh query) | `Cmd+K` | `Ctrl+K` | `/` |
 | Open command palette | `Cmd+Shift+P` | `Ctrl+Shift+P` | `Ctrl+Shift+P` |
@@ -128,7 +129,6 @@ They join the table above, with their hints, when their features land.
 
 | Action | macOS | Desktop (Win/Linux) | Spec |
 |---|---|---|---|
-| Upcoming | `Cmd+3` | `Ctrl+3` | [`planning-views.md`](./planning-views.md) |
 | Needs decision (triage) | `Cmd+4` | `Ctrl+4` | [`planning-views.md`](./planning-views.md) |
 | Save search | `Cmd+S` (in search) | `Ctrl+S` | [`search.md`](./search.md) |
 | Nudge item by one snap | `Opt+↑/↓` | `Alt+↑/↓` | [`planner.md`](./planner.md) |

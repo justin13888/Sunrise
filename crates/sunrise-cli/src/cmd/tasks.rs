@@ -4,7 +4,7 @@ use sunrise_cli::i18n::strings;
 use sunrise_cli::when::{self, When};
 use sunrise_core::commands::FocusStartDraft;
 use sunrise_core::{BulkTaskAction, BulkTaskItem, Command, Core, Query, QueryResult};
-use sunrise_domain::{NoteBlock, NoteBody, Task, TaskPatch};
+use sunrise_domain::{NoteBody, Task, TaskPatch};
 use sunrise_id::EntityRef;
 
 use super::{
@@ -578,16 +578,7 @@ fn note_text(t: &Task) -> Option<String> {
 
 /// Plain text as a note: one paragraph per blank-line-separated run.
 fn note_from(text: &str) -> NoteBody {
-    let blocks: Vec<NoteBlock> = text
-        .replace("\r\n", "\n")
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(|p| NoteBlock::Paragraph {
-            inline: vec![sunrise_domain::Inline::text(p)],
-        })
-        .collect();
-    sunrise_domain::encode_note_body(&blocks)
+    sunrise_domain::encode_note_body(&sunrise_domain::note_body_from_plain_text(text))
 }
 
 /// `note <id> [<text>...|-|--file <path|->] [--force]` — read or replace a

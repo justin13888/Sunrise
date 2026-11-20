@@ -10,6 +10,9 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
     case quickCaptureGlobal
     case quickCapture
     case today
+    /// ⌘3: the next days, day by day (`docs/08-features/planning-views.md`
+    /// §Upcoming).
+    case upcoming
     case inbox
     case searchInView
     case searchGlobal
@@ -54,6 +57,7 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
         case .quickCaptureGlobal: L10n.Keyboard.Command.quickCaptureGlobal
         case .quickCapture: L10n.Keyboard.Command.quickCapture
         case .today: L10n.Keyboard.Command.today
+        case .upcoming: L10n.Keyboard.Command.upcoming
         case .inbox: L10n.Keyboard.Command.inbox
         case .searchInView: L10n.Keyboard.Command.searchInView
         case .searchGlobal: L10n.Keyboard.Command.searchGlobal
@@ -88,6 +92,7 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
         switch self {
         case .quickCaptureGlobal, .quickCapture: "plus.circle"
         case .today: "sun.max"
+        case .upcoming: "calendar.day.timeline.left"
         case .inbox: "tray"
         case .searchInView, .searchGlobal: "magnifyingglass"
         case .commandPalette: "command"
@@ -118,7 +123,7 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
     var section: KeySection {
         switch self {
         case .quickCaptureGlobal, .quickCapture: .capture
-        case .today, .inbox, .searchInView, .searchGlobal, .commandPalette, .newStream,
+        case .today, .upcoming, .inbox, .searchInView, .searchGlobal, .commandPalette, .newStream,
              .morningSummary, .endOfDay: .navigation
         case .moveUp, .moveDown, .listTop, .listBottom, .openDetail, .closeDetail,
              .toggleSelection, .extendSelectionUp, .extendSelectionDown: .list
@@ -230,6 +235,7 @@ enum Keymap {
         app(KeyChord("n", [.command]), .quickCapture),
         app(KeyChord("1", [.command]), .today),
         app(KeyChord("2", [.command]), .inbox),
+        app(KeyChord("3", [.command]), .upcoming),
         app(KeyChord("f", [.command]), .searchInView),
         app(KeyChord("k", [.command]), .searchGlobal),
         app(KeyChord("p", [.command, .shift]), .commandPalette),

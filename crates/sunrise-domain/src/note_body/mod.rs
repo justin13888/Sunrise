@@ -63,4 +63,4 @@ pub use grammar::{
     MAX_NEST_DEPTH, NOTE_BODY_MAX_BYTES, NOTE_BODY_SOFT_LIMIT_BYTES,
 };
 pub use markdown::to_markdown;
-pub use plain::to_plain_text;
+pub use plain::{from_plain_text, to_plain_text};

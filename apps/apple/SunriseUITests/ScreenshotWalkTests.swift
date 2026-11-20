@@ -42,7 +42,7 @@ final class ScreenshotWalkTests: SunriseUITestCase {
         // In `Destination.fixed` order, which is the order the sidebar draws
         // them, so the filenames sort into the shape of the sidebar.
         let destinations = [
-            "morning", "today", "inbox", "search",
+            "morning", "today", "upcoming", "inbox", "search",
             "calendar", "focus", "routines", "review", "evening"
         ]
         for (index, name) in destinations.enumerated() {
