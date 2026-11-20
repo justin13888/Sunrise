@@ -55,18 +55,22 @@ Capture works fully offline; sync is best-effort after commit.
 **Trigger.** User is changing context — boarding a flight, starting a 2-week trip, taking a sabbatical from one job.
 
 **Path.**
-1. User activates a "context" (e.g. `Travel: Tokyo`).
-2. Sunrise filters: streams not relevant become collapsed, items tagged for the trip become primary, recurring routines pause or shift.
-3. On return, Sunrise restores prior state and surfaces what accrued during the shift.
+1. User starts a shift (e.g. `Travel: Tokyo`), optionally with a destination zone and place. The entity is a `Shift`, not a "context": `Context` is the tag entity ([ADR-0073](../11-adr/0073-context-shift.md) §1–2).
+2. Sunrise filters: streams and contexts the shift does not keep primary collapse behind one "Paused for Travel: Tokyo" group, items in the streams and contexts it keeps primary come first, and recurring routines follow their policy. Nothing is deleted or rescheduled.
+3. On return the user ends the shift. Every effect of the shift is derived while it is in force, so ending it is the whole restore. Sunrise then opens "While you were away": routine occurrences missed during the shift, deadlines that passed, and tasks captured during it (ADR-0073 §6).
 
-**Routine behavior during a context shift.** Each active Routine evaluates against the active context's policy (a per-routine field, synced like any other, default `pause`):
+At most one shift is in force at a time: of those covering the moment, the one started latest, a tie going to the greater id, so two devices that start shifts concurrently agree once synced.
+
+**Routine behavior during a context shift.** Each routine's `shift_policy` (a per-routine field, synced like any other, default `pause`) is evaluated at generation time for each occurrence the shift in force covers. No stored occurrence is tombstoned or rewritten (ADR-0073 §4):
 
 | Policy | Routine behavior during the shift |
 |---|---|
-| `pause` | Generation horizon stops advancing; existing future occurrences are tombstoned. On resume, generation resumes from `now` (no backfill). |
-| `shift_tz` | Future occurrences are re-anchored to the user's *new* TZ. The local time of the rule (e.g. `09:00`) stays; the UTC time changes. DST in either zone follows the standard "wall-clock preserved" rule. |
-| `skip` | Occurrences that would fire during the shift are tombstoned with `cause: "context_shift"`. The streak counter applies the routine's `forgiveness_in_window` rule (see [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)). |
+| `pause` | Covered occurrences are not generated and not missed; the generation horizon resumes at the shift's end with no backfill. |
+| `shift_tz` | Covered occurrences keep their wall-clock time (e.g. `09:00`) in the shift's destination zone; the UTC time changes and the occurrence key does not. DST in the destination follows the one DST rule ([`../10-cross-cutting/time.md`](../10-cross-cutting/time.md) §3). A floating routine already follows the user and is unaffected. |
+| `skip` | Covered occurrences are generated as skipped with cause `context_shift`. The streak excuses them: neither counted nor missed, spending no forgiveness (see [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md) §Streak). |
 | `unchanged` | Routine ignores the shift. |
+
+The rules are built as pure functions in `crates/sunrise-domain/src/shift.rs`. Storing shifts, the per-routine field, the CLI's `sunrise shift start|end|status` and the macOS "Start shift…" action are not built yet (ADR-0073 §Build status, [#1244](https://github.com/justin13888/Sunrise/issues/1244)).
 
 ## 6. Recover / move device
 
