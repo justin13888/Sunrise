@@ -291,6 +291,21 @@ token rejects the whole line**. A capture line is a title, so unrecognised text
 belongs in it; an edit line is not, and a script that mistyped one token is
 better served by a non-zero exit than by four of its five changes landing.
 
+**Annotate has no core entry point yet, by decision.** Unlike capture, whose
+orchestration lives in `Core::capture`, `edit` gathers the live Stream and
+Context names, parses the line and builds each task's patch in the CLI
+(`crates/sunrise-cli/src/cmd/tasks.rs`), then submits `UpdateTask` and, for a
+`#stream` token, `PromoteToStream` as **two commits per task**. Two
+consequences follow and are accepted: a `PromoteToStream` that fails leaves the
+patch applied, and undoing the edit takes two undo steps. The alternative — a
+public `Core::annotate` with a client-core lowering to one `BulkTasks` (patch
+plus promote) per task — is **deferred until a second client adopts
+annotate** (#766). With the CLI the only caller there is nothing to keep two
+copies of in step, and a public entry point shaped by one caller would fix its
+signature before the second caller can say what it needs. The client that
+adopts annotate second builds that entry point, and the CLI moves onto it in
+the same change.
+
 `retitle` is the title, and it is a **separate verb** precisely so that refusal
 can stand. A title is free text that will sooner or later contain a `#` or a
 `!`, so a title token inside the annotate grammar — or a `--title` flag, which
