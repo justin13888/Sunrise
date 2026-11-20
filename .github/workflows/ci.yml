@@ -1901,6 +1901,52 @@ jobs:
         # they share the one database without sharing a row or a notice.
         run: cargo test -p sunrise-server --lib store::postgres
 
+  s3:
+    name: S3 blob backend
+    runs-on: ubuntu-latest
+    # Not observed on a runner yet. Sized as `postgres` is: one debug build of
+    # `sunrise-server`'s unit tests on the shared warm cache, then suites that
+    # finish in under a second against the MinIO below.
+    timeout-minutes: 30
+    # Off the pull-request path (#1117), with `deploy-test`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    services:
+      minio:
+        # MinIO's own images left Docker Hub; `alpine/minio` rebuilds its
+        # releases. Pinned by digest as well as tag, because the publisher is
+        # not MinIO. The image's default command is `server /data`, and its
+        # root credentials default to `minioadmin`, which the tests assume.
+        image: alpine/minio:RELEASE.2025-10-15T17-29-55Z@sha256:cf23643a6cf9ce159c57643ceb88279e431262282428c9e0bf3a7ef1a97e84b4
+        ports:
+          - 9000:9000
+    env:
+      # ADR-0062 §1: the S3 suites run where a job provides a store and skip
+      # with a printed reason everywhere else. Set, an unreachable store fails
+      # them rather than skipping them.
+      SUNRISE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # A reader of the `rust` gate's entry, for the reason
+          # `openapi-current` gives.
+          shared-key: rust
+          save-if: false
+      - name: Wait for MinIO to answer
+        # The image has no health command to hand the service, so the job
+        # asks the liveness endpoint itself, for at most a minute.
+        run: curl -fsS --retry 60 --retry-delay 1 --retry-all-errors -o /dev/null http://127.0.0.1:9000/minio/health/live
+      - name: Blob backend conformance, finalize through the router, sweeps and backup, on MinIO
+        # Each test creates a bucket of its own, so they share the one store
+        # without sharing an object.
+        run: cargo test -p sunrise-server --lib blob::s3
+
   tokens-current:
     name: Design token gate
     runs-on: ubuntu-latest
