@@ -19,9 +19,9 @@ what an `Ack` means.
 
 ### What the relay actually keys on
 
-`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:370#batch_ops_hash`) is a
+`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:397#batch_ops_hash`) is a
 domain-separated BLAKE3 over the op count and each op's length-prefixed bytes.
-`Store::relay_append` (`crates/sunrise-server/src/relay_log/append.rs:92#relay_append`) looks that
+`Store::relay_append` (`crates/sunrise-server/src/relay_log/append.rs:95#relay_append`) looks that
 hash up in `relay_batches` inside the append transaction and returns
 `Appended::Duplicate` on a hit, which the handler answers with the **first**
 copy's `server_first_seen_ms` and no fan-out

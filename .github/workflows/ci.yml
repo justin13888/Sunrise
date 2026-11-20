@@ -1854,6 +1854,53 @@ jobs:
         # asserts every claim from client containers with their own addresses.
         run: python3 deploy/test/run.py --server target/debug/sunrise-server
 
+  postgres:
+    name: Postgres backend
+    runs-on: ubuntu-latest
+    # Not observed on a runner yet. One debug build of `sunrise-server`'s unit
+    # tests on the shared warm cache (`deploy-test`'s figures: under a minute
+    # warm, ~4m cold), then suites that finish in seconds against the service
+    # container below.
+    timeout-minutes: 30
+    # Off the pull-request path (#1117), with `deploy-test`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    services:
+      postgres:
+        # A version tag, as `deploy/test/run.py` pins its images.
+        image: postgres:18.6
+        env:
+          POSTGRES_PASSWORD: sunrise
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      # ADR-0062 §1: the Postgres suites run where a job provides a database
+      # and skip with a printed reason everywhere else. Set, an unreachable
+      # database fails them rather than skipping them.
+      SUNRISE_TEST_POSTGRES_URL: postgres://postgres:sunrise@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # A reader of the `rust` gate's entry, for the reason
+          # `openapi-current` gives.
+          shared-key: rust
+          save-if: false
+      - name: Metadata, session and limiter conformance, and the two-node tests, on Postgres
+        # Each test takes a schema and a notification channel of its own, so
+        # they share the one database without sharing a row or a notice.
+        run: cargo test -p sunrise-server --lib store::postgres
+
   tokens-current:
     name: Design token gate
     runs-on: ubuntu-latest

@@ -73,6 +73,12 @@ maintenance_interval_secs = 3600          # default 3600; how often the maintena
 encrypt  = true                           # default false; SQLCipher-encrypt sunrise.db at rest
 key_file = "/etc/sunrise/db.key"          # required with encrypt; 64 hex digits, mode 0600,
                                           # outside data_dir (openssl rand -hex 32)
+backend  = "sqlite"                       # default "sqlite"; "postgres" runs the relay as
+                                          # several nodes (see "Several nodes over Postgres")
+postgres_url_file = "/etc/sunrise/pg.url" # postgres only, and required there; one connection
+                                          # URL, mode 0600
+postgres_ca_file  = "/etc/sunrise/pg-ca.pem"  # postgres only, optional; set = every connection
+                                          # is TLS, verified against these PEM roots alone
 
 [limits]                                  # api.md §Rate limits; every key defaults
 enabled              = true               # false turns every limit off (load tests only)
@@ -154,6 +160,9 @@ The server exits 78 rather than starting, when:
 | `key_file` is missing, not 64 hex digits, readable by group or others, or inside `data_dir` | It opens the whole database; inside the data dir, every copy of the data dir would carry it |
 | `sunrise.db` is encrypted and `encrypt` is off, or `key_file` holds a different key | The relay cannot read it; the log names which (see "Encryption at rest") |
 | `sunrise.db` is at a schema version newer than this binary's | A newer release migrated it; writing to it could corrupt what that release relies on (see "Upgrade") |
+| `backend = "postgres"` without `postgres_url_file`, without `data_dir`, or beside `encrypt = true`; a `postgres_*` key beside `backend = "sqlite"` | The relay would have no database to reach, blobs in a private temp dir on each node, or an encryption switch that encrypts nothing; a Postgres key on SQLite reads nothing |
+| `postgres_url_file` is missing, readable by group or others, or not a Postgres URL; the URL asks for `sslmode=require` with no `postgres_ca_file`; the CA file holds no PEM certificate | It holds the database password; TLS with nothing to verify the server against would be TLS in name only |
+| The Postgres database cannot be reached, or is at a schema version newer than this binary's | As for `sunrise.db`: nothing is written to a database a newer release migrated |
 | `[push.apns] key_path` is readable by group or others, missing, or not a P-256 `.p8` key | It signs pushes for the whole app; a key that cannot sign would fail every push instead of the start |
 | `[push.apns] key_id` or `team_id` is not 10 uppercase letters and digits, or `topic` is empty | APNs would refuse every provider token or push |
 | `[observability] endpoint` is not an `http://` or `https://` URL with a host, `sample_ratio` is outside `0.0`–`1.0`, or `service_name` is empty | The exporter could not send, or would sample a fraction that is not one |
@@ -253,9 +262,10 @@ than `[push.apns]`, `[quotas]`, `[storage] mode` / `sqlite_pool_size` / `postgre
 `sunrise-server admin doctor` (see "Admin CLI"). The scaled deployment's keys
 are `[storage] backend`, `postgres_url_file`, `[blobs] backend` and
 `s3_credentials_file`, as
-[ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) §6 decides; they are
-refused too until that deployment is built, and the draft names above stay
-refused after it.
+[ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) §6 decides. The
+first two are built (see "Several nodes over Postgres"); `[blobs] backend` and
+`s3_credentials_file` are refused until the object-store backend is (#482).
+The draft names above stay refused.
 
 ## Stopping, health and readiness
 
@@ -305,6 +315,121 @@ readiness instead. The OCI image's `HEALTHCHECK` runs it, so `docker ps` shows
 does, so a config passed only with `--config` on the server's command line is
 not seen by the probe: put the path in `$SUNRISE_CONFIG`, or mount the file at
 `/etc/sunrise/sunrise.toml`.
+
+## Several nodes over Postgres
+
+`[storage] backend = "postgres"` runs the relay as several identical nodes
+behind one load balancer, all on one Postgres database
+([ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md)). Any node serves
+any account, and a node can stop at any time without its clients losing an op.
+SQLite stays the default; nothing below applies to a single-binary relay.
+
+```toml
+[storage]
+data_dir          = "/srv/sunrise"        # blobs/ under it, on a mount every node shares
+backend           = "postgres"
+postgres_url_file = "/etc/sunrise/pg.url" # postgres://sunrise:…@db.internal:5432/sunrise
+postgres_ca_file  = "/etc/sunrise/pg-ca.pem"
+```
+
+```text
+clients ──► load balancer ──► node 1 ─┐
+                          ├─► node 2 ─┼─► Postgres (metadata, relay log, sessions, rate cells)
+                          └─► node 3 ─┘
+                                      └─► shared blob mount (data_dir/blobs)
+```
+
+**The connection.** `postgres_url_file` holds one Postgres URL or `key=value`
+connection string, password included, so the relay refuses it unless only its
+owner can read it (`chmod 600`); a config file or the environment is readable
+by more than the process. With `postgres_ca_file` every connection is TLS and
+the server's certificate must chain to the PEM roots in that file, and to
+nothing else: no public CA is trusted by default, because a database
+certificate is as often from a private CA. For a database whose certificate
+comes from a public CA, point it at the system bundle
+(`/etc/ssl/certs/ca-certificates.crt` on Debian). Without the file connections
+are plaintext, and a URL asking for `sslmode=require` is refused rather than
+quietly downgraded. Each node holds up to 16 pooled connections plus one for
+its notice listener and, on the maintenance leader, one more.
+
+**What the nodes share.** Accounts, devices, push tokens, cursors, tombstones,
+the blob ledger, the pins, the durable relay log, sync sessions and rate
+limits all live in Postgres:
+
+- A session opened on one node is honoured on every other. Sessions are rows
+  keyed by a hash of the id, so neither a read of the table nor a backup of it
+  holds an id anyone could present.
+- An op batch accepted on any node reaches every stream subscribed to its
+  channel on every node: the append notifies `sunrise_relay` when it commits,
+  and each node reads the frames it has not published yet out of the shared
+  log. Each live event carries its log id, the same number on every node, so a
+  client whose node stops resumes on another from its `Last-Event-ID` with no
+  gap and nothing applied twice.
+- A device revoked through one node is shut out by every node at once for new
+  requests. A stream the device already holds on another node ends within
+  `device_recheck_ms` (30 s by default): that is the bound, and lowering it
+  costs one indexed read per open stream per interval.
+- Rate limits are one budget per client across the cluster.
+- The maintenance pass runs on one node at a time: whichever takes the
+  maintenance lock for that pass. A node that dies releases it with its
+  connection, and the next pass runs on another.
+
+**What stays per node.** These count what one process holds, so a cluster's
+ceiling is the per-node value times the node count:
+
+- `[limits] streams` and `open_uploads`.
+- The pairing rendezvous (`/api/v1/pairing/*`): both devices of one pairing
+  must reach the same node, so route that prefix to one node or pin it with
+  sticky sessions. Moving it into Postgres is #1262.
+- Which devices are online, for push: a device streaming on one node can be
+  sent a wake-up push by another. It wakes, finds its stream current, and
+  sleeps again.
+- `sunrise_sync_fanout_latency_seconds` is not observed on a Postgres node:
+  it times the single-binary relay's in-process fan-out, which a cluster does
+  not use.
+
+**Blobs** stay on the filesystem under `data_dir/blobs`, which every node must
+mount (NFS, a cluster filesystem) until the object-store backend lands (#482).
+
+**Migrations.** The database carries its own numbered history in a
+`schema_version` table. Every node migrates on start, one at a time under an
+advisory lock, so starting several new nodes together applies each step once.
+A node refuses a database a newer release migrated and exits 78, as it does
+for `sunrise.db`.
+
+**Rolling restart.** Restart one node at a time; each stop is the drain
+described in "Stopping, health and readiness":
+
+1. Take the node out of the balancer's rotation, or let its readiness probe
+   (`/api/v1/health?deep=1`) fail it out once `SIGTERM` lands.
+2. `SIGTERM` it. Its streams end with a retryable `closed`, and their clients
+   reconnect through the balancer to another node, which finds the session in
+   the shared table and replays from the client's last event id.
+3. Start it again, and wait for its readiness probe to pass before the next.
+
+The first node of a newer release to start applies that release's
+migrations, and the relay makes no promise that the older nodes still serving
+keep working against the newer schema. Upgrade a cluster across a release
+that adds a Postgres migration by stopping every node, then starting the new
+ones; one that adds none rolls node by node.
+
+**Admin CLI.** `stats`, `gc`, `account` and `device` work against Postgres.
+`backup`, `rekey` and the doctor's `quick_check` are SQLite's and say so; back
+Postgres up with its own tools (`pg_dump`, or base backups with WAL archiving)
+and the blob mount with yours.
+
+**Trying it locally.** A throwaway Postgres in Docker is enough for a
+two-node cluster and for the backend's tests:
+
+```sh
+docker run -d --name sunrise-pg -e POSTGRES_PASSWORD=sunrise -p 127.0.0.1:5432:5432 postgres:18
+SUNRISE_TEST_POSTGRES_URL=postgres://postgres:sunrise@127.0.0.1:5432/postgres \
+  cargo test -p sunrise-server --lib store::postgres
+docker rm -f sunrise-pg
+```
+
+Without `SUNRISE_TEST_POSTGRES_URL` those tests print why they did nothing and
+pass; CI's `postgres` job runs them on every push to `master`.
 
 ## Operator surfaces
 
@@ -454,8 +579,9 @@ plaintext.
 - **What is in a backup.** Without encryption, everything the relay database
   holds, in plaintext: treat the backup accordingly. With it, ciphertext.
   Neither carries the key file or the APNs key, which are config.
-- Scaled: standard Postgres + S3 backup tooling. There is no scaled deployment
-  yet; [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) is its design.
+- Several nodes over Postgres: Postgres's own backup tooling for the database,
+  and yours for the shared blob mount. `admin backup` copies a SQLite database
+  only.
 
 ### Restore
 
@@ -493,13 +619,9 @@ between backups is the relay history you accept losing.
 - On every start the server also runs SQLite's `PRAGMA quick_check`, stopped
   after 10 s, and logs `srv.store.quick_check`. A result other than `ok` does
   not stop the server; it is the signal to restore a backup.
-- Zero-downtime upgrade for scaled deployments via standard rolling restart.
-  (No scaled deployment exists.) As designed in
-  [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md), a node stopped by
-  `SIGTERM` drains as above and ends its streams with a retryable close; the
-  client reconnects through the balancer to another node, which knows its
-  session from the shared table and replays from its cursor out of the shared
-  log.
+- A relay running as several nodes over Postgres restarts node by node, and
+  upgrades that way across a release that adds no Postgres migration; see
+  "Several nodes over Postgres" §Rolling restart.
 
 ## Testing the install
 

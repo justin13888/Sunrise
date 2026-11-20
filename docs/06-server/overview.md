@@ -7,10 +7,13 @@ status: accepted
 The Sunrise server is a thin, untrusted-for-content relay. It is an open-source single binary plus optional dependencies.
 
 > **Implementation status.** What `crates/sunrise-server` builds today is the
-> self-host single-binary shape and nothing else: `rusqlite` against one SQLite
-> file (`store/`) and blobs on the local filesystem (`sunrise_storage::BlobStore`).
-> There is **no** Postgres, S3, Redis, or pub/sub anywhere in `crates/` — no
-> `sqlx` or `aws-sdk-s3` appears in any `Cargo.toml` — and push delivery is
+> self-host single-binary shape — `rusqlite` against one SQLite file (`store/`)
+> and blobs on the local filesystem (`sunrise_storage::BlobStore`) — and, as an
+> opt-in, several relay nodes over one Postgres database (`store/postgres/`,
+> `tokio-postgres`; [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md),
+> [`self-hosting.md`](./self-hosting.md) §Several nodes over Postgres). There is
+> **no** S3, Redis or external pub/sub — no `aws-sdk-s3` appears in any
+> `Cargo.toml`; the nodes' fan-out is Postgres `LISTEN/NOTIFY` — and push delivery is
 > APNs only, over the `hyper` client already in the tree
 > ([`push-notifications.md`](./push-notifications.md)). The managed and scale-out sections below are design targets;
 > each unbuilt piece is marked. Two accepted ADRs moved this document's ground
@@ -61,7 +64,9 @@ There is no admin HTTP surface: nothing under `/api/v1/admin/` is routed.
 Stateless except for:
 
 - One SQLite database (`rusqlite`), holding accounts, devices, push tokens
-  **and** the durable relay op log. There is no Postgres.
+  **and** the durable relay op log; or, with `[storage] backend = "postgres"`,
+  one Postgres database holding the same and the sync sessions and rate
+  limits several nodes share.
 - A local-filesystem blob root (`ServerConfig::blob_root`). There is no object
   store.
 - No Redis, and no presence/session cache of any kind.
@@ -71,7 +76,7 @@ Stateless except for:
 | Layer | Choice | Built |
 |---|---|---|
 | Server core | Rust, `kynos` over `hyper` ([ADR-0021](../11-adr/0021-kynos-openapi-server.md)); the sync stream is `kynos::response::stream::sse`, and the routing, the security schemes and the OpenAPI 3.2 document all come off the handlers | yes |
-| DB access | `rusqlite` (workspace feature set `bundled-sqlcipher`, `blob`, `trace`) | yes |
+| DB access | `rusqlite` (workspace feature set `bundled-sqlcipher`, `blob`, `trace`); `tokio-postgres` with a `deadpool-postgres` pool for the opt-in Postgres backend | yes |
 | Object storage | `sunrise_storage::BlobStore` — chunk files on the local filesystem | yes |
 | Push | `push::PushProvider` trait; `push::ApnsProvider` (HTTP/2, `.p8` provider tokens) behind the `push::Dispatcher` queue. FCM and Web Push are not built | APNs only |
 | HTTPS client (JWKS/discovery, APNs) | `hyper` + `hyper-rustls` | yes |
@@ -84,31 +89,32 @@ with no payload field.
 
 Why Rust: shares the wire-format crate with the client core (one source of truth for the protocol) and is operationally cheap.
 
-## Stateless scale-out (design target — not implemented)
+## Stateless scale-out
 
-Nothing in this section is built. There is no pub/sub layer, no second
-instance, and no external store to share. It records the intended shape.
-
-The server scales horizontally. Each instance:
+Built for metadata as [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md)
+decides; blobs on an object store are not (#482). The server scales
+horizontally over one Postgres database. Each instance:
 
 - Holds the open event streams.
-- Reads/writes Postgres for op metadata.
-- Reads/writes S3 for op envelopes (and blobs).
-- Publishes "new op" notifications to a shared topic (Redis pub/sub or NATS) so other instances holding the receiving device's connection can fan out.
+- Reads/writes Postgres for metadata, sync sessions, rate limits and the
+  durable relay log, op envelopes included.
+- Learns of ops another instance accepted from Postgres `LISTEN/NOTIFY`, and
+  reads them out of the shared log to fan out to its own streams.
+- Reads/writes blobs on a filesystem every instance mounts, until #482.
 
-Single-instance self-host omits the pub/sub layer.
+Single-instance self-host has none of this.
 
 ## Self-host single binary
 
-For T2 deployments, a "single binary" mode bundles SQLite and disk-backed blob storage. **This is the only mode that exists**: `sunrise-server` has no external dependencies and runs as `./sunrise-server -c sunrise.toml` on a small VM.
+For T2 deployments, a "single binary" mode bundles SQLite and disk-backed blob storage. It is the default: `sunrise-server` has no external dependencies and runs as `./sunrise-server -c sunrise.toml` on a small VM.
 
 ## Operational requirements
 
 - TLS termination handled by a reverse proxy; the binary terminates none.
 - Backup: as built, `sunrise-server admin backup <dest_dir>` while the relay
   runs — it copies the SQLite database (op log included) and then the blob
-  tree; see [`self-hosting.md`](./self-hosting.md#backup). A Postgres dump plus
-  an S3 snapshot is the scaled shape, and there is no scaled deployment.
+  tree; see [`self-hosting.md`](./self-hosting.md#backup). Several nodes over
+  Postgres back up with Postgres's own tools and the shared blob mount's.
 - Monitoring: `/metrics` Prometheus endpoint with content-free metrics. The
   metrics and any admin surface MUST be reachable on loopback only, or behind
   operator authentication; a public bind MUST NOT serve them. `build_service`

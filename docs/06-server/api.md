@@ -323,8 +323,8 @@ material the relay handles already. See
 
 #### Revocation is a soft delete
 
-Revocation does **not** delete a row, and there is no Postgres. `Store::revoke_device`
-runs one SQLite transaction that sets `revoked = 1, revoked_at_ms = <now>` on
+Revocation does **not** delete a row. `Store::revoke_device` (and its Postgres
+twin) runs one transaction that sets `revoked = 1, revoked_at_ms = <now>` on
 the matching row and deletes that device's `push_tokens` entries. The device row
 survives on purpose: `DeviceMeta.revoked` and `revoked_at_ms` are part of the
 `GET /api/v1/devices` contract, so a listing has to be able to report a device
