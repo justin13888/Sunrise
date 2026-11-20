@@ -284,10 +284,22 @@ impl Routine {
             window
         };
         let in_window = |at: Timestamp| window.0 <= at && at < window.1;
+        // Only a shift naming a zone this build knows decides where an
+        // occurrence fires: one with none (a conference inside a trip) leaves
+        // the enclosing shift's zone in force for the days it covers.
+        let zoned: Vec<(&K, Shift)> = if reanchors {
+            shifts
+                .iter()
+                .filter(|(_, s)| s.zone.as_deref().is_some_and(|z| TimeZone::get(z).is_ok()))
+                .map(|(k, s)| (k, s.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut out = ShiftGeneration::default();
         for occ in self.occurrences_in(expanded, reader)? {
             if reanchors {
-                if let Some((zone, at)) = reanchor(&occ, shifts) {
+                if let Some((zone, at)) = reanchor(&occ, &zoned) {
                     if in_window(at) {
                         out.generate.push(ShiftedOccurrence {
                             planned_at: SunriseTime::zoned(occ.civil, zone),
@@ -353,7 +365,9 @@ impl Routine {
 /// Where a `shift_tz` shift moves `occ`: the zone of the shift that, with the
 /// key re-anchored to its zone by the one DST rule, is the one in force at
 /// the re-anchored instant, and that instant. `None` when no shift with a
-/// zone this build knows covers it re-anchored.
+/// zone this build knows covers it re-anchored. The caller passes only the
+/// shifts with such a zone, so a zoneless shift neither moves an occurrence
+/// nor hides the zone of a shift it sits inside.
 fn reanchor<K: Ord>(occ: &Occurrence, shifts: &[(K, Shift)]) -> Option<(String, Timestamp)> {
     let mut by_precedence: Vec<&(K, Shift)> = shifts.iter().collect();
     by_precedence

@@ -113,7 +113,9 @@ skips first: `Routine::occurrences_in`), at the instant it would fire:
   before the trip begins at a time the trip chose.
 - **A floating routine is not re-anchored.** It already follows the reader
   (ADR-0066 §1): on a device in Tokyo, "09:00 wherever I am" is 09:00 Tokyo.
-  A shift with no `zone` re-anchors nothing.
+  A shift with no `zone` re-anchors nothing, and inside a shift that names
+  one it leaves that zone in force: during a conference with no zone inside
+  a trip to Tokyo, a `shift_tz` routine still fires at its Tokyo time.
 - **The streak** treats an occurrence a `pause` or `skip` policy held back as
   neutral, as it treats an explicit skip: it is neither counted nor missed,
   and spends no forgiveness. This is the `forgiveness_in_window` behaviour the
@@ -171,6 +173,9 @@ it is still running):
 - **Decide `shift_tz` membership on the occurrence's original instant.**
   Rejected: an occurrence the original zone puts just inside the shift could
   re-anchor to a time before the shift began.
+- **Let a shift with no zone, while in force, re-anchor nothing even inside a
+  zoned shift.** Rejected: the user is still at the trip's destination during
+  a conference inside it, so the routine would fire at its home time.
 - **Count a skipped occurrence as a forgiven miss** (spending the one
   allowance per 30 days). Rejected: a two-week trip would always end a streak,
   which is what the policy exists to prevent.
