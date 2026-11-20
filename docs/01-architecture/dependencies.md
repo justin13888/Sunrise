@@ -25,7 +25,7 @@ superseding decision named in the **Governing decision** column.
 | Handshake (Noise) | `snow` | 0.9.6 | [ADR-0004](../11-adr/0004-crypto-primitives.md), [pairing-and-onboarding.md](../03-crypto/pairing-and-onboarding.md) | `sunrise-pairing` only. |
 | Hashing / KDF context | `blake3` | 1.8.5 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Content hashing + SQLCipher key derivation. |
 | Password hashing | `argon2` | 0.5.3 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | `sunrise-crypto` only, and on **one** path: stretching the recovery code in `recovery.rs`. Not used at unlock — there is no passphrase unlock; the vault root is 32 random bytes from a keystore. See [`../03-crypto/identity-and-device-keys.md`](../03-crypto/identity-and-device-keys.md). |
-| Local database | `rusqlite` | 0.43.0 | [local-database.md](../04-storage/local-database.md) | `bundled-sqlcipher` feature — statically links SQLCipher v4 (encrypted SQLite); no system SQLite dependency. SQLCipher's crypto is CommonCrypto on Apple targets and the system `libcrypto` on Linux; on Windows `sunrise-storage` adds `bundled-sqlcipher-vendored-openssl`, which builds OpenSSL from source and links it statically. See §Windows. |
+| Local database | `rusqlite` | 0.43.0 | [local-database.md](../04-storage/local-database.md) | `bundled-sqlcipher` feature — statically links SQLCipher v4 (encrypted SQLite); no system SQLite dependency. SQLCipher's crypto is CommonCrypto on Apple targets and the system `libcrypto` on Linux; on Windows `sunrise-sqlcipher` adds `bundled-sqlcipher-vendored-openssl`, which builds OpenSSL from source and links it statically. See §Windows. |
 | Relay database, several nodes | `tokio-postgres` | 0.7.18 | [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md), issue #481 | `sunrise-server` only, `default-features = false` + `runtime`; inert unless `[storage] backend = "postgres"`. Chosen over `sqlx` and the `postgres` blocking client: it speaks the protocol natively on the tokio runtime the relay already runs, with no compile-time query macros, no `libpq` and no second async stack. Its TLS is not one of the published adapters, which link OpenSSL or add an X.509 parser: `store/postgres/tls.rs` drives the `rustls` + `tokio-rustls` already in the tree, verified against the operator's CA file alone. Pooled by `deadpool-postgres` 0.14.2 (`rt_tokio_1` only). Together they add `postgres-protocol`, `postgres-types`, `deadpool`, `deadpool-runtime`, `fallible-iterator`, `phf`, `stringprep`, `md-5`, `whoami` and their dependencies to the lock, each under MIT or Apache-2.0 among its options (`unicode-properties` adds Unicode-3.0, which `deny.toml` already allows); `cargo deny check` is clean. |
 | Relay blobs on an object store (SigV4) | `hmac` + `sha2` | 0.12.1 / 0.10.9 | [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) §7, issue #482 | `sunrise-server` direct dependencies for `blob/s3/sign.rs`, inert unless `[blobs] backend = "s3"`. Chosen over `aws-sdk-s3` and `rust-s3`: a dozen object calls signed by hand over the `hyper` client the JWKS fetcher and APNs already use, rather than an SDK with its own HTTP and credential stacks. Both versions were already in the lock through other members, so the lock gains no crate. |
 | CBOR serialization | `ciborium` | 0.2.2 | [wire-protocol.md](../05-sync/wire-protocol.md), [data-encryption-format.md](../03-crypto/data-encryption-format.md) | Canonical op / envelope encoding. |
@@ -70,7 +70,8 @@ listed.
 CI's `rust-windows` job builds and tests the portable core on
 `windows-latest`: `sunrise-core`, `sunrise-core-bindings`, `sunrise-storage`,
 `sunrise-crypto`, `sunrise-sync`, `sunrise-domain`, `sunrise-auth`,
-`sunrise-cli` (issue #369) and `sunrise-private-file` (issue #486). It is not a required check until it has a record of
+`sunrise-cli` (issue #369), `sunrise-private-file` (issue #486) and
+`sunrise-sqlcipher` (issue #775). It is not a required check until it has a record of
 passing. No Windows client ships, and `release.yml` builds no Windows binary.
 
 - **SQLCipher's OpenSSL is vendored on Windows.** `libsqlite3-sys` builds
@@ -82,7 +83,9 @@ passing. No Windows client ships, and `release.yml` builds no Windows binary.
   `bundled-sqlcipher-vendored-openssl` builds OpenSSL from source
   (`openssl-src`, Apache-2.0) and links it statically, so a Windows build needs
   Perl and nothing else. It is a target-specific dependency of
-  `sunrise-storage`, because a workspace dependency cannot vary by target, and
+  `sunrise-sqlcipher`, which every crate that keys a SQLCipher database
+  (`sunrise-storage` and `sunrise-server`) depends on, because a workspace
+  dependency cannot vary by target, and
   Apple and Linux builds do not change. `openssl-src` and `openssl-sys` are in
   `Cargo.lock` for every target, and compiled only for Windows.
 - **`sunrise-server` is Linux-only.** The relay ships as a Linux container

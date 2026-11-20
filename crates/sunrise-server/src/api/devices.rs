@@ -24,7 +24,7 @@ const PLATFORMS: [&str; 6] = ["ios", "android", "macos", "windows", "linux", "we
 /// alone makes the pairing path mint certs this route refuses; raising it alone
 /// registers a device whose cert no peer can decode. This crate has no direct
 /// dependency on `sunrise-crypto` — it is reached only transitively, through
-/// `sunrise-pairing` and `sunrise-storage`, and never called; the relay never
+/// `sunrise-pairing`, and never called; the relay never
 /// parses a cert, it stores it as opaque text — so the agreement is asserted
 /// from `sunrise-e2e`, which depends on both: see
 /// `sunrise-e2e/tests/nickname_bound_agreement.rs`. It is `pub` so that test
