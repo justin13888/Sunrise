@@ -215,6 +215,7 @@ stays at production strength.
   - Capture → save → see in Today.
   - Mark done → state persists across relaunch.
 - Platform-specific tooling: XCTest on macOS; Espresso and Playwright when Android and Web are scheduled. The CLI needs none — `crates/sunrise-cli/tests/cli.rs` runs the real binary against a real vault, which covers the same three critical paths without a UI harness at all.
+- The web client has no browser run yet. Its worker is unit-tested without one: `apps/web/src/worker-core.ts` takes the OPFS directory, the reply channel and the message source as arguments, and `apps/web/src/worker-core.test.ts` covers a vault-root file of the wrong length being refused, a root minted on first run, replies in arrival order with no two calls overlapping, and a throw answered with `ok:false`. `apps/web/src/wasm.test.ts` covers the page side against a fake worker. Nothing yet runs the real page, worker, wasm bundle and OPFS together in a browser; that is #1257.
 
 ### 5. Network / chaos tests
 
