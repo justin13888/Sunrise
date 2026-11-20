@@ -319,6 +319,31 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         now_ms: u64,
         caps: DurableCaps,
     ) -> Result<Appended, MetadataError>;
+    /// [`relay_append`](Self::relay_append), recording that the session
+    /// connection `from` published the frame.
+    ///
+    /// A backend whose frames reach other nodes keeps `from` beside the frame,
+    /// so the node that delivers it can drop it from its author's own stream
+    /// as the accepting node does. One that serves a single node needs
+    /// nothing of it: the accepting node publishes with `from` in hand, which
+    /// is what the default does by ignoring it.
+    #[allow(clippy::too_many_arguments)]
+    async fn relay_append_from(
+        &self,
+        from: crate::relay::ConnId,
+        key: StreamKey,
+        bytes: &[u8],
+        heads: &[FrameHead],
+        n_ops: u64,
+        ops_h: Option<&[u8; 32]>,
+        batch_id: u64,
+        now_ms: u64,
+        caps: DurableCaps,
+    ) -> Result<Appended, MetadataError> {
+        let _ = from;
+        self.relay_append(key, bytes, heads, n_ops, ops_h, batch_id, now_ms, caps)
+            .await
+    }
     /// [`Store::relay_replay_after`].
     async fn relay_replay_after(
         &self,

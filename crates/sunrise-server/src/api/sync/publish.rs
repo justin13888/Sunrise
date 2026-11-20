@@ -171,11 +171,12 @@ pub async fn ops(
         .await
         .unwrap_or_default();
 
+    let _order = publish_order(&state, (session.account, stream_id)).await;
     let appended = append(
         &state,
+        &session,
         (session.account, stream_id),
-        &frame,
-        &heads,
+        (&frame, &heads),
         &batch,
         now_ms,
     )
@@ -199,6 +200,7 @@ pub async fn ops(
         Appended::Fresh {
             first_seen_ms,
             evicted,
+            frame_id,
         } => {
             // What retention deleted to make room, in the same transaction
             // that stored this batch.
@@ -207,8 +209,8 @@ pub async fn ops(
                     .metrics
                     .add("sunrise_relay_log_evicted_total", evicted);
             }
-            let n_ops = batch.ops.len() as u64;
-            fan_out(&state, &session, stream_id, (frame, heads, n_ops), accepted);
+            let out = (frame_id, frame, heads, batch.ops.len() as u64);
+            fan_out(&state, &session, stream_id, out, accepted);
             wake_offline_peers(&state, &session, stream_id);
             // Fresh by the whole-batch key, and yet carrying ops this channel
             // already holds: the re-partitioned re-send ADR-0033 accepted and
@@ -243,15 +245,38 @@ pub async fn ops(
     }))
 }
 
+/// The channel's publish order, held by the caller until its fan-out has
+/// published, so the channel's frames reach the hub in the order the log
+/// numbered them (`RelayHub::ordered`). `None` on a hub the cluster's bus
+/// feeds: nothing is published from the request there, and the bus reads each
+/// channel in log order itself.
+async fn publish_order(
+    state: &ServerState,
+    key: crate::relay::StreamKey,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    if state.relay.fed() {
+        None
+    } else {
+        Some(state.relay.ordered(key).await)
+    }
+}
+
 /// Broadcast a freshly stored batch to the channel's live streams, timed from
 /// `accepted` by the frame's [`FanoutClock`].
+///
+/// Not on a hub the cluster's bus feeds: there the bus delivers this frame to
+/// every node, this one included, in log order (`crate::relay`'s §Several
+/// nodes).
 fn fan_out(
     state: &ServerState,
     session: &crate::sync_session::Session,
     stream_id: [u8; 16],
-    (frame, heads, n_ops): (Vec<u8>, Vec<FrameHead>, u64),
+    (id, frame, heads, n_ops): (u64, Vec<u8>, Vec<FrameHead>, u64),
     accepted: tokio::time::Instant,
 ) {
+    if state.relay.fed() {
+        return;
+    }
     tracing::debug!(
         ev = "srv.relay.fanout",
         stream_h = %crate::logging::id_h(&stream_id),
@@ -262,6 +287,7 @@ fn fan_out(
         (session.account, stream_id),
         RelayFrame {
             from: session.conn,
+            id,
             bytes: frame,
             n_ops,
             heads,
@@ -279,9 +305,9 @@ fn fan_out(
 /// about which stream or whose.
 async fn append(
     state: &ServerState,
+    session: &crate::sync_session::Session,
     key: crate::relay::StreamKey,
-    frame: &[u8],
-    heads: &[FrameHead],
+    (frame, heads): (&[u8], &[FrameHead]),
     batch: &OpBatchPayload,
     now_ms: u64,
 ) -> Result<Appended, crate::store::MetadataError> {
@@ -296,7 +322,8 @@ async fn append(
     let ops_h = batch_ops_hash(&batch.ops);
     let appended = state
         .store
-        .relay_append(
+        .relay_append_from(
+            session.conn,
             key,
             frame,
             heads,

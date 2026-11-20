@@ -342,7 +342,8 @@ GET  /sync/events           X-Sunrise-Session, optional Last-Event-ID
                                    after the first, {"kind":"backlog", …}
                                    with the ops the rest will send
   ← data: {"kind":"caught_up", …}  per stream, once its backlog is drained
-  ← data: {"kind":"ops", …}        live frames as peers publish them, no `id:`
+  ← data: {"kind":"ops", …}        live frames as peers publish them, each
+                                   carrying `id: <relay_frames.id>` too
   ← : sunrise                      sent after 15 s of silence, not on a
                                    15 s interval: see below
   ← data: {"kind":"closed", …}     terminal; the body ends after it
@@ -403,7 +404,8 @@ replaced or the app restarts. A refused
 — so the client logs the relay's code and reconnects as it does for a drop.
 
 **A non-zero `Last-Event-ID` takes precedence over the cursors for frame
-selection.** Replayed `ops` events carry the relay's durable per-channel id, so
+selection.** Replayed and live `ops` events carry the relay's durable id, the
+same number on every relay node (ADR-0062 §2), so
 a reconnect that presents the last id it saw resumes after that frame instead of
 replaying the retained backlog from the start. When it does, the cursors stop
 selecting anything: `relay_replay_after` sends every frame with

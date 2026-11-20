@@ -62,8 +62,24 @@
 //! still bounds its own memory, but the gap a *client* is told about comes
 //! from durable retention, not from this.
 //!
+//! # Order and log ids
+//!
+//! A live frame carries its durable `relay_frames.id` ([`RelayFrame::id`]),
+//! and a live SSE event carries it as its `id:`, so a client resumes on a log
+//! position whichever path delivered the frame. That makes live order
+//! load-bearing: a stream that delivered id 11 before id 10 and then dropped
+//! would resume after 11 and never see 10. On one node, [`RelayHub::ordered`]
+//! holds a channel's append and its publish together, so the hub publishes a
+//! channel's frames in the order the log numbered them.
+//!
+//! # Several nodes
+//!
 //! Multi-node fan-out is ADR-0062 §2 (#481): Postgres `LISTEN/NOTIFY` as a
-//! wake-up, with the durable relay log as the payload.
+//! wake-up, with the durable relay log as the payload. A hub with a
+//! [`LiveFeed`] installed is fed by it alone: the node that accepts a batch
+//! does not publish it locally, because a local publish could overtake an
+//! earlier frame another node committed and the feed has not read yet. The
+//! feed reads each channel in log order, so every node's hub publishes in it.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -72,7 +88,9 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 mod fanout;
+mod live;
 pub use fanout::FanoutClock;
+pub use live::{new_conn, LiveFeed};
 
 /// Capacity per relay channel's live broadcast buffer. Senders never block —
 /// they overflow into `RecvError::Lagged(n)` for slow receivers, which is
@@ -85,7 +103,13 @@ pub const DEFAULT_MAX_RETAINED_FRAMES: usize = 4096;
 /// Default cap on the total retained bytes per channel (16 MiB).
 pub const DEFAULT_MAX_RETAINED_BYTES: usize = 16 * 1024 * 1024;
 
-/// Monotonic connection id; unique per sync session (`Session::conn`).
+/// A sync session's connection id (`Session::conn`), so the live path can
+/// drop the session's own frames: 64 random bits drawn per session.
+///
+/// Random rather than a per-process counter because sessions are shared
+/// between relay nodes (ADR-0062 §2): two counters starting at zero on two
+/// nodes would collide at once, and a collision hides one session's peer
+/// frames from it. Two random ids collide with probability about 2⁻⁶⁴.
 pub type ConnId = u64;
 
 /// Bounds for a channel's retained-frame ring. Whichever cap binds first
@@ -125,6 +149,10 @@ pub struct FrameHead {
 pub struct RelayFrame {
     /// Sender connection id (so the live receiver can filter self-emits).
     pub from: ConnId,
+    /// Its durable `relay_frames.id`, which a live SSE event carries as its
+    /// `id:` exactly as a replayed one does. 0 for a frame that never reached
+    /// the log, which is sent without an id.
+    pub id: u64,
     /// Raw wire-frame bytes (full 11-byte header + payload). Forwarded
     /// verbatim to subscribers.
     pub bytes: Vec<u8>,
@@ -154,6 +182,7 @@ impl RelayFrame {
     pub const fn opaque(from: ConnId, bytes: Vec<u8>) -> Self {
         Self {
             from,
+            id: 0,
             bytes,
             n_ops: 0,
             heads: Vec::new(),
@@ -220,6 +249,8 @@ struct Channel {
     /// Highest `seq` per device that has fallen out of the ring. Monotonic:
     /// eviction only ever moves it up.
     evicted_through: HashMap<[u8; 16], u64>,
+    /// Held across this channel's append and publish: [`RelayHub::ordered`].
+    order: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Channel {
@@ -229,6 +260,7 @@ impl Channel {
             retained: VecDeque::new(),
             retained_bytes: 0,
             evicted_through: HashMap::new(),
+            order: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -283,6 +315,9 @@ impl Channel {
 pub struct RelayHub {
     inner: Arc<Mutex<RelayInner>>,
     caps: RingCaps,
+    /// What feeds this hub frames other nodes accepted; `None` on a single
+    /// node, where every frame is published by the request that stored it.
+    feed: Option<Arc<dyn LiveFeed>>,
 }
 
 impl Default for RelayHub {
@@ -294,7 +329,6 @@ impl Default for RelayHub {
 #[derive(Debug, Default)]
 struct RelayInner {
     channels: HashMap<StreamKey, Channel>,
-    next_conn: u64,
 }
 
 impl RelayHub {
@@ -311,15 +345,8 @@ impl RelayHub {
         Self {
             inner: Arc::new(Mutex::new(RelayInner::default())),
             caps,
+            feed: None,
         }
-    }
-
-    /// Allocate a fresh connection id.
-    pub fn next_conn(&self) -> ConnId {
-        let mut inner = self.inner.lock();
-        let id = inner.next_conn;
-        inner.next_conn = inner.next_conn.wrapping_add(1);
-        id
     }
 
     /// Subscribe to a `(account, stream)` channel, creating it if needed.
@@ -437,6 +464,7 @@ mod tests {
     fn frame(from: ConnId, device: [u8; 16], seq: u64, byte: u8) -> RelayFrame {
         RelayFrame {
             from,
+            id: 0,
             bytes: vec![byte],
             n_ops: 1,
             heads: vec![FrameHead {
@@ -537,6 +565,7 @@ mod tests {
             key(),
             RelayFrame {
                 from: 1,
+                id: 0,
                 bytes: vec![7],
                 n_ops: 2,
                 heads: vec![
@@ -601,6 +630,7 @@ mod tests {
                 key(),
                 RelayFrame {
                     from: 0,
+                    id: 0,
                     bytes: vec![i; 4],
                     n_ops: 1,
                     heads: vec![FrameHead {
@@ -755,14 +785,5 @@ mod tests {
         hub.publish(key(), timed(&metrics));
         let sub = hub.subscribe(key(), &none());
         assert!(sub.retained.iter().all(|f| f.fanout.is_none()));
-    }
-
-    #[tokio::test]
-    async fn fresh_conn_ids_are_monotonic() {
-        let hub = RelayHub::new();
-        let a = hub.next_conn();
-        let b = hub.next_conn();
-        let c = hub.next_conn();
-        assert!(b > a && c > b);
     }
 }
