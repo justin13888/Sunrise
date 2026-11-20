@@ -5,7 +5,7 @@
 use super::*;
 use crate::engine::PlanError;
 use crate::inner_op::InnerOp;
-use sunrise_domain::planner::{PlanIntent, PlanPosition, SlotTarget};
+use sunrise_domain::planner::{PlanIntent, PlanPosition, PlanRule, PlanSeverity, SlotTarget};
 use sunrise_domain::{BlockKind, BlockSource};
 
 const NOW_MS: u64 = 1_700_000_000_000;
@@ -616,11 +616,24 @@ mod recurring {
         e.assert_rebuild_identity(&db);
     }
 
+    fn thursday() -> SunriseTime {
+        SunriseTime::floating(jiff::civil::date(2026, 3, 5).at(9, 0, 0, 0))
+    }
+
+    fn move_to_thursday(id: EntityRef) -> PlanIntent {
+        PlanIntent::MoveBlock {
+            block: id,
+            to_start: thursday(),
+        }
+    }
+
     /// A rule that holds the weekday (`BYDAY=WE`) does not follow an anchor
     /// the planner moves to Thursday, so neither could its cancelled week:
-    /// the commit is refused as invalid and writes nothing.
+    /// the preview flags the move as a Blocking `Invalid` violation the diff
+    /// introduces, so the diff is not committable, and its commit writes
+    /// nothing.
     #[test]
-    fn a_planner_move_that_would_strand_an_exception_is_refused() {
+    fn a_planner_move_that_would_strand_an_exception_is_not_committable() {
         let e = engine();
         let mut db = db();
         let (id, _) = standup(&e, &mut db);
@@ -628,13 +641,51 @@ mod recurring {
         let before = read_block_row(&db, id);
         let ops = op_count(&db);
 
-        let thursday = SunriseTime::floating(jiff::civil::date(2026, 3, 5).at(9, 0, 0, 0));
+        let diff = e.plan_preview(&db, &move_to_thursday(id), NOW_MS).unwrap();
+        assert!(diff.moves.iter().any(|m| m.item == id), "{diff:#?}");
+        assert!(!diff.committable, "{diff:#?}");
+        assert!(
+            diff.violations.iter().any(|v| v.item == id
+                && v.rule == PlanRule::Invalid
+                && v.severity == PlanSeverity::Blocking
+                && v.introduced),
+            "{diff:#?}"
+        );
+        assert_eq!(
+            e.plan_preview(&db, &move_to_thursday(id), NOW_MS)
+                .unwrap()
+                .id,
+            diff.id,
+            "the flagged diff's id is deterministic"
+        );
         assert!(matches!(
-            commit_move(&e, &mut db, id, thursday),
-            Err(PlanError::Invalid(_))
+            e.plan_apply(&mut db, &diff, NOW_MS),
+            Err(PlanError::NotCommittable)
         ));
         assert_eq!(read_block_row(&db, id), before);
         assert_eq!(op_count(&db), ops, "a refused commit writes nothing");
         assert!(grid(&e, &db, 11).is_empty());
+    }
+
+    /// A rule changed after the preview, in a way the diff's base does not
+    /// digest, is still caught at commit: the move that now strands the
+    /// cancelled week is refused as invalid and writes nothing.
+    #[test]
+    fn a_strand_the_preview_could_not_see_is_refused_at_commit() {
+        let e = engine();
+        let mut db = db();
+        let (id, _) = standup(&e, &mut db);
+        let diff = e.plan_preview(&db, &move_to_thursday(id), NOW_MS).unwrap();
+        assert!(diff.committable, "{diff:#?}");
+        recur(&e, &mut db, id, "FREQ=WEEKLY;BYDAY=WE");
+        let before = read_block_row(&db, id);
+        let ops = op_count(&db);
+
+        assert!(matches!(
+            e.plan_apply(&mut db, &diff, NOW_MS),
+            Err(PlanError::Invalid(_))
+        ));
+        assert_eq!(read_block_row(&db, id), before);
+        assert_eq!(op_count(&db), ops, "a refused commit writes nothing");
     }
 }

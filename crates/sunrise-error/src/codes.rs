@@ -154,7 +154,9 @@ pub enum ErrorCode {
     PlanUnknown,
     /// The diff carries a Blocking violation.
     PlanNotCommittable,
-    /// The intent names nothing the vault holds, or the wrong kind.
+    /// The intent names nothing the vault holds, or the wrong kind; or, at
+    /// commit, a block move would leave a recurring block's exception
+    /// applying to nothing.
     PlanInvalid,
     /// The vault is closed.
     PlanClosed,

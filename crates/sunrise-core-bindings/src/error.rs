@@ -231,8 +231,10 @@ pub enum BindingError {
     /// preview again.
     #[error("PLAN_UNKNOWN: no such plan is remembered")]
     PlanUnknown,
-    /// The planner refused the gesture: a diff with a Blocking violation, or
-    /// an intent naming nothing the vault holds. Carries the core's words.
+    /// The planner refused the gesture: a diff with a Blocking violation, an
+    /// intent naming nothing the vault holds, or a block move that would
+    /// leave a recurring block's exception applying to nothing. Carries the
+    /// core's words.
     #[error("plan: {0}")]
     PlanRefused(String),
 }

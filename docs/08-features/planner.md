@@ -277,7 +277,7 @@ pub enum PlanError {
     Stale,        // PLAN_STALE (commit only): an input changed since the preview; preview again
     Unknown,      // PLAN_UNKNOWN: a diff evicted or the vault reopened, or no such commit
     NotCommittable, // the diff carries a Blocking violation
-    Invalid(String), // the intent names nothing, or the wrong kind
+    Invalid(String), // the intent names nothing, or the wrong kind; or, at commit, a block move would strand a recurring block's exception
 }
 ```
 
@@ -356,7 +356,8 @@ The name match serves this annotation and nothing else.
 
 - **Blocking**: the write would be rejected by an ordinary submit. That is
   either a failure of the entity's own invariants (for example a block whose
-  end precedes its start after a resize) or a violation of a `hard` time
+  end precedes its start after a resize, or a recurring block whose move
+  would leave an exception applying to nothing) or a violation of a `hard` time
   constraint (`OutsideTimeOfDay`, `WrongDayOfWeek`, `OutsideDateRange`), which
   is structural ([`../02-domain/scheduling-constraints.md`](../02-domain/scheduling-constraints.md)
   §Hard and soft). It holds for the subject too: the drop is shown as refused,
@@ -424,7 +425,11 @@ by one snap re-solves one day's movable set and no more.
    a move of the anchor carries its exceptions and occurrence bindings with
    the occurrences they named, through the same path an edit of the whole
    block takes (`time-blocks.md` §Recurring blocks). A move that would leave
-   an exception applying to nothing is refused as `PLAN_INVALID`, and
+   an exception applying to nothing is flagged by the preview, through the
+   same check, as a Blocking `Invalid` violation the diff introduces on the
+   block, so the diff is not committable and step 3 refuses it. The base
+   does not digest a block's rule, so a rule changed since the preview can
+   still strand one here: that commit is refused as `PLAN_INVALID`, and
    nothing is written.
 5. Stores the inverse (each written field's prior value, and the stamp this
    commit wrote) with a commit record in the local database, and returns the

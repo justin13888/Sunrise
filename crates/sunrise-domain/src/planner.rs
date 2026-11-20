@@ -348,6 +348,36 @@ impl PlanDiff {
     pub fn is_empty(&self) -> bool {
         self.moves.is_empty() && self.unscheduled.is_empty()
     }
+
+    /// Refuse the write to `item`, which an invariant the solver does not
+    /// read would refuse at commit (a recurring block whose move would leave
+    /// an exception applying to nothing): add the Blocking
+    /// [`PlanRule::Invalid`] violation the diff introduces on it, keeping the
+    /// violations' order, mark the diff not committable, and derive its id
+    /// again.
+    pub fn refuse(&mut self, item: EntityRef) {
+        let flagged = |v: &PlanViolation| v.item == item && v.rule == PlanRule::Invalid;
+        if let Some(v) = self.violations.iter_mut().find(|v| flagged(v)) {
+            v.introduced = true;
+        } else {
+            self.violations.push(PlanViolation {
+                item,
+                rule: PlanRule::Invalid,
+                severity: PlanSeverity::Blocking,
+                introduced: true,
+                with: None,
+            });
+            self.violations.sort_by(|a, b| {
+                b.severity
+                    .cmp(&a.severity)
+                    .then(a.item.cmp(&b.item))
+                    .then(a.rule.cmp(&b.rule))
+                    .then(a.with.cmp(&b.with))
+            });
+        }
+        self.committable = false;
+        self.id = encode::diff_id(self);
+    }
 }
 
 /// An intent the inputs cannot answer.

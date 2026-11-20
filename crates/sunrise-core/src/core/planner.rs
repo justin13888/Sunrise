@@ -90,7 +90,10 @@ impl Core {
     /// [`PlanError::Unknown`] (`PLAN_UNKNOWN`) for a diff that is not
     /// remembered; [`PlanError::Stale`] (`PLAN_STALE`) when an input changed
     /// since the preview; [`PlanError::NotCommittable`] for a diff with a
-    /// Blocking violation; [`PlanError::Closed`] after close.
+    /// Blocking violation; [`PlanError::Invalid`] for a block move that would
+    /// leave a recurring block's exception applying to nothing, which the
+    /// preview flags unless the block changed since; [`PlanError::Closed`]
+    /// after close.
     pub fn plan_commit(&self, id: PlanDiffId) -> Result<PlanCommitResult, PlanError> {
         if self.is_closed() {
             return Err(PlanError::Closed);
