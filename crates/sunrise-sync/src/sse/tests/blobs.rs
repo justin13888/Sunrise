@@ -26,7 +26,7 @@ use super::*;
 /// mechanism itself is pinned in milliseconds against `Scripted` in `body_bounds`.
 ///
 /// The double's media type says JSON where a blob would say octets;
-/// `call_bytes` never reads it, and the stall is the subject.
+/// the bounded read never looks at it, and the stall is the subject.
 #[tokio::test]
 async fn a_stalled_blob_fetch_is_reported_rather_than_parking_the_caller() {
     let relay = relay::start(vec![relay::Canned::json_then_stall(
@@ -110,8 +110,8 @@ async fn an_attachment_larger_than_the_event_cap_is_still_fetched_whole() {
 
 /// A refused blob fetch is a document, and is capped like one.
 ///
-/// `call_bytes` has the status in hand before it reads a byte, and the
-/// bounds its caller passed describe the reply that caller asked for. A
+/// The bounded read has the status in hand before it reads a byte, and the
+/// bounds the route states describe the reply that route asked for. A
 /// `404` is not that reply. Reading it under the fetch's own bounds let a
 /// relay answer "no such blob" with a hundred megabytes and have this
 /// client hold all of it — [`super::SseTransport::blob_fetch`] would then
@@ -207,7 +207,7 @@ async fn a_stalled_blob_refusal_is_cut_off_on_the_document_deadline() {
 #[tokio::test]
 async fn a_blob_upload_signs_its_chunks_and_reads_back_the_commit() {
     let relay = relay::start(vec![
-        relay::Canned::json(200, r#"{"upload_id":"up-1"}"#),
+        relay::Canned::json(200, r#"{"upload_id":"up-1","chunk_urls":[]}"#),
         relay::Canned::empty(204),
         relay::Canned::json(
             200,
@@ -263,8 +263,9 @@ async fn a_blob_upload_signs_its_chunks_and_reads_back_the_commit() {
 
 /// A chunk upload's *ack* is read under the event cap, not the blob cap.
 ///
-/// `call_bytes` has two callers and only one of them receives content. The
-/// cap used to be chosen inside `call_bytes`, and the comment that chose it
+/// The chunk upload and the blob fetch both carry bytes, and only one of them
+/// receives content. The cap used to be chosen in the read they shared, and
+/// the comment that chose it
 /// named `blob_fetch` alone — so the reply to every chunk `PUT`, which is
 /// an empty `204` or a short JSON document, was read under a hundred-
 /// megabyte ceiling. A relay answering an upload with a hundred megabytes
@@ -313,8 +314,8 @@ async fn a_chunk_upload_ack_past_the_event_cap_is_refused_rather_than_held() {
 /// deadline was asserted nowhere at all, so a mutant passing
 /// [`super::BLOB_IDLE_TIMEOUT`] here survived the whole suite. It is the
 /// same omission one site along as the two the previous round carried a
-/// lower bound to, on the more frequently driven of `call_bytes`' two
-/// callers — an upload writes one of these per chunk.
+/// lower bound to, on the more frequently driven of the two byte routes — an
+/// upload writes one of these per chunk.
 ///
 /// Pinned by the diagnostic rather than by a timing window alone, because
 /// the window that separates two seconds from fifteen is exactly the window
@@ -348,25 +349,27 @@ async fn a_stalled_chunk_upload_ack_is_cut_off_on_the_document_deadline() {
     );
 }
 
-/// A commit the relay under-described still names its blob, and reads as
-/// zero rather than as a size nobody sent.
+/// A commit the relay under-described or overstated is a malformed reply,
+/// not a commit of zero.
 ///
-/// `size_bytes` and `chunk_count` are read with `unwrap_or(0)`, and
-/// `chunk_count` narrows to `u32` first. All three fallbacks are reachable
-/// from a relay that answers the route and omits or overflows a field, and
-/// none of them was executed: the blob id is the only part of the commit
-/// this build refuses to guess at, which is the distinction the fallbacks
-/// encode.
+/// `size_bytes` and `chunk_count` are required fields of the description's
+/// `FinalizeResponse`. The hand-written reader this route had took a missing
+/// one as zero and a `chunk_count` past `u32` as zero too, which made a
+/// commit the relay never stated indistinguishable from an empty one (#774).
+/// Each case below is reachable from a relay that answers the route and
+/// omits, overflows or negates a field, and each is refused.
 #[tokio::test]
-async fn a_commit_with_fields_missing_or_too_large_reads_as_zero() {
+async fn a_commit_with_fields_missing_or_out_of_range_is_a_protocol_error() {
+    let blob = format!("blb_{}", "0f".repeat(16));
     let relay = relay::start(vec![
-        relay::Canned::json(200, &format!(r#"{{"blob_id":"blb_{}"}}"#, "0f".repeat(16))),
+        relay::Canned::json(200, &format!(r#"{{"blob_id":"{blob}"}}"#)),
         relay::Canned::json(
             200,
-            &format!(
-                r#"{{"blob_id":"blb_{}","size_bytes":9,"chunk_count":4294967297}}"#,
-                "0f".repeat(16)
-            ),
+            &format!(r#"{{"blob_id":"{blob}","size_bytes":9,"chunk_count":4294967297}}"#),
+        ),
+        relay::Canned::json(
+            200,
+            &format!(r#"{{"blob_id":"{blob}","size_bytes":-1,"chunk_count":1}}"#),
         ),
         relay::Canned::json(200, r#"{"size_bytes":9,"chunk_count":1}"#),
     ])
@@ -376,20 +379,29 @@ async fn a_commit_with_fields_missing_or_too_large_reads_as_zero() {
     let bare = t
         .blob_finalize("up-1", &[0x22u8; 32], &[[0x33u8; 32]])
         .await
-        .expect("a commit naming its blob");
-    assert_eq!(bare.blob_id, [0x0fu8; 16]);
-    assert_eq!(bare.size_bytes, 0, "a size nobody sent is not invented");
-    assert_eq!(bare.chunk_count, 0);
+        .expect_err("a size nobody sent is not invented");
+    assert!(
+        matches!(&bare, TransportError::Protocol(m) if m.contains("size_bytes")),
+        "{bare}"
+    );
 
     let wide = t
         .blob_finalize("up-1", &[0x22u8; 32], &[[0x33u8; 32]])
         .await
-        .expect("a commit naming its blob");
-    assert_eq!(wide.size_bytes, 9);
-    assert_eq!(
-        wide.chunk_count, 0,
-        "a count past u32 is refused, not truncated into a plausible one: \
-             the fixture is 2^32 + 1, so a narrowing cast would read 1"
+        .expect_err("a count past u32 is refused");
+    assert!(
+        matches!(&wide, TransportError::Protocol(m) if m.contains("chunk_count")),
+        "not truncated into a plausible one: the fixture is 2^32 + 1, so a narrowing \
+             cast would read 1: {wide}"
+    );
+
+    let negative = t
+        .blob_finalize("up-1", &[0x22u8; 32], &[[0x33u8; 32]])
+        .await
+        .expect_err("a negative size is refused");
+    assert!(
+        matches!(&negative, TransportError::Protocol(m) if m.contains("size_bytes")),
+        "{negative}"
     );
 
     let err = t
@@ -397,7 +409,7 @@ async fn a_commit_with_fields_missing_or_too_large_reads_as_zero() {
         .await
         .expect_err("a commit with no blob id names nothing");
     assert!(
-        matches!(&err, TransportError::Protocol(m) if m.contains("blob id")),
+        matches!(&err, TransportError::Protocol(m) if m.contains("blob_id")),
         "{err}"
     );
 }
@@ -442,8 +454,7 @@ async fn a_blob_fetch_separates_the_bytes_from_the_deliberate_404() {
     assert_eq!(
         seen[0].header("content-type"),
         None,
-        "and advertises no media type it is not sending, which is what \
-             `content_type: None` on `call_bytes` is for"
+        "and advertises no media type it is not sending"
     );
     assert_byte_binding(&seen[0]);
 }
@@ -505,7 +516,7 @@ async fn an_upload_the_relay_named_nothing_is_a_protocol_error() {
         .await
         .expect_err("no blob id");
     assert!(
-        matches!(&err, TransportError::Protocol(m) if m.contains("blob id")),
+        matches!(&err, TransportError::Protocol(m) if m.contains("blob_id")),
         "{err}"
     );
 }

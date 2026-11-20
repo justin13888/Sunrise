@@ -199,136 +199,22 @@ impl SseTransport {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<Vec<(&'static str, String)>, TransportError> {
-        let Some(signer) = &self.signer else {
-            return Ok(Vec::new());
-        };
-        let date = sunrise_http_sig::date_header(signer.now_ms());
-        // The `?` is unreachable from this module and stays for the signature's
-        // sake. `sign_with` fails only with `SigError::NotCanonicalizable`,
-        // which its own doc records as reachable for a map with non-string keys
-        // — and `body` is a `serde_json::Value`, whose maps are
-        // `Map<String, Value>` by construction. Non-finite floats do not reach
-        // it either: `serde_jcs` follows `serde_json` and writes `null`. So a
-        // mutant that deletes this error path survives because no input can
-        // take it, not because nothing depends on it.
-        let signature =
-            sunrise_http_sig::sign_with(|msg| signer.sign(msg), method, path, &date, body)
-                .map_err(|e| protocol(&e))?;
-        Ok(vec![
-            (sunrise_http_sig::DEVICE_HEADER, signer.device_id()),
-            (sunrise_http_sig::DEVICE_SIG_HEADER, signature),
-            ("date", date),
-        ])
+        Ok(self
+            .sign_json(method, path, body)?
+            .map(|b| {
+                vec![
+                    (sunrise_http_sig::DEVICE_HEADER, b.device),
+                    (sunrise_http_sig::DEVICE_SIG_HEADER, b.signature),
+                    ("date", b.date),
+                ]
+            })
+            .unwrap_or_default())
     }
 
-    /// The three `header_sig_v2` headers for a request whose body is **not**
-    /// JSON, or none if this transport carries no binding.
+    /// Issue one JSON request on a `/sync` route and read the whole reply.
     ///
-    /// Separate from [`Self::binding`] rather than a second parameter on it,
-    /// because the two sign different things: that one canonicalizes a value,
-    /// and here the bytes already are the canonical form. `sign_binary_with` is
-    /// the encoder both sides of that split share with the relay's verifier.
-    pub(super) fn binding_bytes(
-        &self,
-        method: &str,
-        path: &str,
-        body: &[u8],
-    ) -> Vec<(&'static str, String)> {
-        let Some(signer) = &self.signer else {
-            return Vec::new();
-        };
-        let date = sunrise_http_sig::date_header(signer.now_ms());
-        let signature =
-            sunrise_http_sig::sign_binary_with(|msg| signer.sign(msg), method, path, &date, body);
-        vec![
-            (sunrise_http_sig::DEVICE_HEADER, signer.device_id()),
-            (sunrise_http_sig::DEVICE_SIG_HEADER, signature),
-            ("date", date),
-        ]
-    }
-
-    /// Issue one request with a raw byte body (possibly empty) and read the
-    /// whole reply under the bounds the caller states.
-    ///
-    /// The blob surface is the only place this is needed: a chunk `PUT` sends
-    /// opaque ciphertext and a blob `GET` receives it, and neither is
-    /// describable as a JSON value. `content_type` is `None` for a request
-    /// with no body, which is what keeps a bodiless `GET` from advertising a
-    /// media type it is not sending.
-    ///
-    /// `cap` and `idle` belong to the caller because this method's two callers
-    /// do not read the same thing, and only one of them reads content. A blob
-    /// `GET`'s reply is a whole attachment; a chunk `PUT`'s reply is an ack —
-    /// an empty `204` or a short JSON document. Choosing the attachment's
-    /// bounds here for both, as this route did, let a relay answer an upload
-    /// with a hundred megabytes and be waited on per frame for as long as a
-    /// download deserves. Same shape as [`read_body`]'s parameters one level
-    /// down, and for the same reason.
-    ///
-    /// They are the bounds on the reply the caller **asked for**, and only on
-    /// that one. A non-2xx reply is not content on any route: it is the problem
-    /// document [`SseTransport::refuse`] parses, the same few hundred bytes the
-    /// other five routes read, so it is read under the document bounds
-    /// whatever the caller passed. Splitting by caller alone left the blob
-    /// route's `404` — which [`SseTransport::fetch_blob`] handles as "not here,
-    /// try later" — being read under a hundred-megabyte cap and fifteen seconds
-    /// of patience per frame, which is the upload route's own defect one status
-    /// along.
-    ///
-    /// `head` is the caller's for the same reason, one await earlier: the
-    /// chunk upload's head waits on the chunk being sent and stored, and a
-    /// bodiless fetch's does not, so the upload waits [`CHUNK_HEAD_TIMEOUT`]
-    /// and the fetch waits [`HEAD_TIMEOUT`]. Unlike `cap` and `idle` it cannot
-    /// be chosen by status, because until it arrives there is no status.
-    pub(super) async fn call_bytes(
-        &self,
-        method: &str,
-        path: &str,
-        content_type: Option<&str>,
-        body: &[u8],
-        head: std::time::Duration,
-        cap: usize,
-        idle: std::time::Duration,
-    ) -> Result<Reply, TransportError> {
-        let mut request = hyper::Request::builder()
-            .method(method)
-            .uri(format!("{}{path}", self.base));
-        if let Some(bearer) = &self.bearer {
-            request = request.header(hyper::header::AUTHORIZATION, format!("Bearer {bearer}"));
-        }
-        for (name, value) in self.binding_bytes(method, path, body) {
-            request = request.header(name, value);
-        }
-        if let Some(ct) = content_type {
-            request = request.header(hyper::header::CONTENT_TYPE, ct);
-        }
-        let request = request
-            .body(Full::new(Bytes::copy_from_slice(body)))
-            .map_err(|e| protocol(&e))?;
-
-        let response = await_head(self.client.request(request), head).await?;
-        let status = response.status();
-        let date = server_date(response.headers());
-        let retry_after = retry_after(response.headers());
-        // The status is already in hand, so the kind of body about to arrive is
-        // known before a byte of it is read. The caller's bounds size the reply
-        // it asked for; a refusal is a document on every route, and is read
-        // like one.
-        let (cap, idle) = if status.is_success() {
-            (cap, idle)
-        } else {
-            (MAX_EVENT_BYTES, BODY_IDLE_TIMEOUT)
-        };
-        let bytes = read_body(response.into_body(), cap, idle).await?;
-        Ok(Reply {
-            status,
-            date,
-            retry_after,
-            bytes,
-        })
-    }
-
-    /// Issue one JSON request and read the whole reply.
+    /// The account and blob routes do not come through here: they go through
+    /// the generated client, under the same bounds (`rest`).
     pub(super) async fn call(
         &self,
         method: &str,
@@ -453,29 +339,24 @@ pub(super) struct Reply {
 
 /// Read a response body whole, under a size cap and an idle deadline.
 ///
-/// The one place this client reads a body it did not write. Three routes need
-/// it — the JSON control plane ([`SseTransport::call`]), the blob surface
-/// ([`SseTransport::call_bytes`]) and a refused stream open
-/// ([`SseTransport::open_events`]) — and each of them used to hand-roll the
-/// read. That is how *one* of them came to have a cap and a deadline and the
-/// other two neither: a bound nobody can see is missing is a bound that goes
-/// missing, and stating it once per route is what made the omission invisible.
-/// (One, counted against the tree rather than remembered: before the reads
-/// were shared, `open_events` held both bounds and `call` and `call_bytes`
-/// each collected without either. Further back still, on `master`,
-/// `open_events` did not read the refusal body at all, so the count there is
-/// none of three.)
+/// The one place the hyper half of this client reads a body it did not write.
+/// Two routes need it — the JSON control plane ([`SseTransport::call`]) and a
+/// refused stream open ([`SseTransport::open_events`]) — and each of them used
+/// to hand-roll the read, as did the blob surface before it moved onto the
+/// generated client. That is how *one* of them came to have a cap and a
+/// deadline and the others neither: a bound nobody can see is missing is a
+/// bound that goes missing, and stating it once per route is what made the
+/// omission invisible. The account and blob routes are read under the same
+/// numbers by `sunrise_relay_client::bounded`, which `rest` hands them to.
 ///
 /// `cap` is a parameter because the routes carry different things — a problem
 /// document and an attachment are not bounded by the same number — and `idle`
 /// is one for the same reason and not merely as a courtesy: a fetched
 /// attachment is read under [`BLOB_IDLE_TIMEOUT`] where every document is read
 /// under [`BODY_IDLE_TIMEOUT`], because an idle bound is a minimum arrival
-/// rate and content and documents do not arrive alike. Both are now stated at
-/// the call rather than assembled out of a `timeout` and a `Limited` at each
-/// site. The split is by *body*, not by route: the blob route reaches this
-/// function with both pairs, one per side of `is_success`, which
-/// [`SseTransport::call_bytes`] chooses between.
+/// rate and content and documents do not arrive alike. The split is by
+/// *body*, not by route: the blob fetch is bounded by both pairs, one per side
+/// of `is_success` (`rest::BLOB_FETCH`).
 ///
 /// What a failure *means* is deliberately not decided here, because it differs:
 /// a refusal whose problem document did not arrive is still a refusal and
@@ -564,10 +445,13 @@ pub(super) fn server_date(headers: &hyper::HeaderMap) -> Option<String> {
 /// absent: the driver then falls back to its own backoff schedule, which is
 /// where it was before it read the header at all.
 pub(super) fn retry_after(headers: &hyper::HeaderMap) -> Option<std::time::Duration> {
-    headers
-        .get(hyper::header::RETRY_AFTER)?
-        .to_str()
-        .ok()?
+    retry_after_value(headers.get(hyper::header::RETRY_AFTER)?.to_str().ok()?)
+}
+
+/// [`retry_after`] over the header's value, for a reply the generated client
+/// read (`rest`).
+pub(super) fn retry_after_value(value: &str) -> Option<std::time::Duration> {
+    value
         .trim()
         .parse::<u64>()
         .ok()

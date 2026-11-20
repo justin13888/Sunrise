@@ -57,6 +57,8 @@ pub(super) struct Canned {
     abort: bool,
     /// Never end the body at all: write `chunks`, then hold.
     stall: bool,
+    /// Headers beyond the media type.
+    headers: Vec<(&'static str, &'static str)>,
 }
 
 impl Canned {
@@ -68,7 +70,14 @@ impl Canned {
             chunks: vec![Bytes::copy_from_slice(body.as_bytes())],
             abort: false,
             stall: false,
+            headers: Vec::new(),
         }
+    }
+
+    /// The same reply, carrying one more header.
+    pub(super) fn with_header(mut self, name: &'static str, value: &'static str) -> Self {
+        self.headers.push((name, value));
+        self
     }
 
     /// A reply with a status and nothing else.
@@ -79,6 +88,7 @@ impl Canned {
             chunks: Vec::new(),
             abort: false,
             stall: false,
+            headers: Vec::new(),
         }
     }
 
@@ -90,6 +100,7 @@ impl Canned {
             chunks: vec![Bytes::copy_from_slice(body)],
             abort: false,
             stall: false,
+            headers: Vec::new(),
         }
     }
 
@@ -101,6 +112,7 @@ impl Canned {
             chunks,
             abort: false,
             stall: false,
+            headers: Vec::new(),
         }
     }
 
@@ -121,6 +133,7 @@ impl Canned {
             chunks: vec![Bytes::copy_from_slice(prefix.as_bytes())],
             abort: false,
             stall: true,
+            headers: Vec::new(),
         }
     }
 
@@ -152,6 +165,7 @@ impl Canned {
             chunks,
             abort: true,
             stall: false,
+            headers: Vec::new(),
         }
     }
 }
@@ -312,6 +326,9 @@ pub(super) async fn start(script: Vec<Canned>) -> Relay {
                             .status(StatusCode::from_u16(canned.status).expect("a status"));
                         if let Some(ct) = canned.content_type {
                             reply = reply.header(hyper::header::CONTENT_TYPE, ct);
+                        }
+                        for (name, value) in canned.headers {
+                            reply = reply.header(name, value);
                         }
                         Ok::<_, Infallible>(
                             reply

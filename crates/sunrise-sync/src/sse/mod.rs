@@ -58,7 +58,11 @@
 //!
 //! # Where each concern lives
 //!
-//! - `http`: the bounds, the device binding, and one request and its reply;
+//! - `http`: the bounds, the device binding, and one `/sync` request and its
+//!   reply;
+//! - `rest`: the account and blob routes' way onto the wire, which is the
+//!   generated `sunrise_relay_client::api` client under the same bounds
+//!   (ADR-0023 §Consequences, #774);
 //! - `events`: opening the stream and turning its events into frames;
 //! - `session`: the [`Transport`] impl, the frame-to-operation table above, and
 //!   the read loop;
@@ -72,6 +76,7 @@ mod account;
 mod blobs;
 mod events;
 mod http;
+mod rest;
 mod session;
 #[cfg(test)]
 mod tests;
@@ -111,6 +116,9 @@ pub struct SseTransport {
     >,
     /// Origin, no trailing slash: `http://127.0.0.1:8443`.
     base: String,
+    /// The generated client the account and blob routes go through, over its
+    /// own connection pool, or why it could not be built.
+    rest: Result<sunrise_relay_client::bounded::BoundedRelay, String>,
     bearer: Option<String>,
     /// The device binding this transport presents, when it has one.
     signer: Option<Arc<dyn DeviceSigner>>,
@@ -173,9 +181,11 @@ impl SseTransport {
             .https_or_http()
             .enable_http1()
             .build();
+        let base = base.trim_end_matches('/');
         Self {
             client: Client::builder(TokioExecutor::new()).build(https),
-            base: base.trim_end_matches('/').to_owned(),
+            base: base.to_owned(),
+            rest: sunrise_relay_client::bounded::BoundedRelay::new(base, bearer),
             bearer: bearer.map(ToOwned::to_owned),
             signer: None,
             session: None,
