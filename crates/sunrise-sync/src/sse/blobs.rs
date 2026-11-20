@@ -106,7 +106,10 @@ impl SseTransport {
             .fetch_blob(id, bind!(api::FetchBlobParams::default(), binding))
             .await;
         let reply = match settle(&exchange, result)? {
-            Settled::Value(bytes) => return Ok(Some(bytes.to_vec())),
+            // `Vec::from` takes the buffer over when this `Bytes` is its sole
+            // owner, which a freshly fetched body is; `to_vec` would copy the
+            // whole attachment while the original was still alive.
+            Settled::Value(bytes) => return Ok(Some(Vec::from(bytes))),
             Settled::Refused(reply) => reply,
         };
         // The relay answers "no such blob", "not yours" and "not finished yet"
