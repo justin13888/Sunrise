@@ -33,7 +33,7 @@ Each line names what exists; the section it points to holds the rule, and the AD
 
 ## Before a blob is sealed, the vault is the only copy
 
-Every device admitted by pairing gets `dh_secret: None`: `PairingPayload` stopped carrying the identity's X25519 secret in [#76](https://github.com/justin13888/Sunrise/issues/76), so `ID_D_priv` lives only on the device that created the account and in the recovery blob. Where a blob has been sealed, that is the second copy, and losing the creating device is survivable. Where it has not, because the upload never completed or the device has no relay configured, **`ID_D_priv` is gone with that machine**: every `Recipient::Identity` copy in the op log becomes permanently unopenable, and no recovery feature added later can retrieve it, because sealing a blob needs the key it would carry.
+Every device admitted by pairing gets `dh_secret: None`: `PairingPayload` stopped carrying the identity's X25519 secret in [#76](https://github.com/justin13888/Sunrise/issues/76), so `ID_D_priv` lives only on the device that created the account, on a vault restored from the recovery code (§Recovery flow step 6), and in the recovery blob. Where a blob has been sealed, that is the second copy, and losing the creating device is survivable. Where it has not, because the upload never completed or the device has no relay configured, **`ID_D_priv` is gone with that machine**: every `Recipient::Identity` copy in the op log becomes permanently unopenable, and no recovery feature added later can retrieve it, because sealing a blob needs the key it would carry.
 
 So both clients seal at account creation, and both say so when they have not:
 
