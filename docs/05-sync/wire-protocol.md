@@ -172,15 +172,28 @@ load-bearing for anyone reading the code:
 |---|---|
 | `Hello`, `HelloAck`, `OpBatch`, `Ack`, `Subscribe`, `Ping`, `Pong`, `Error`, `Close`, `RefreshToken`, `RefreshTokenAck` | Handled end to end. |
 | `StreamUpdate` (`0x07`) | Carries `CaughtUpPayload` or `BacklogPayload`, **not** an `OpBatch`. The relay forwards live op frames **verbatim**, so they keep `msg_kind = OpBatch`; `StreamUpdate` is otherwise unused, which is why `CaughtUp` reuses it rather than claiming a fresh discriminator in a fully-allocated kind space. `BacklogPayload` (`{ ops, stream_id }`, #459) shares it and is told apart by shape: a reader decodes it first, since a `CaughtUpPayload` reader ignores the `ops` key and would accept it. |
-| `Nack` (`0x05`) | Defined, typed (`NackPayload`), and **never sent by the server**. Every server-side rejection goes out as `Error`. Switching is blocked on the *client*, not the server: `sync_driver` treats `Nack` as non-fatal and ignores it, so emitting one today would convert a rejection the client currently surfaces into one it silently discards. |
-| `SnapshotReq` / `SnapshotResp` (`0x08`/`0x09`), `PresenceBeacon` / `PresenceUpdate` (`0x0A`/`0x0B`) | Defined, unimplemented, and now **refused with a typed `Error`** rather than dropped. Dispatch is exhaustive over `MsgKind`: a client-sent server-to-client kind ends the session, and a defined-but-unserved kind is answered with `SYNC_OP_INVALID`. Adding a kind to `MsgKind` no longer compiles until it is placed on one side of that line. |
+| `Nack` (`0x05`) | **Reserved.** Defined and typed (`NackPayload`), and **never produced**: no relay route emits it and the client transport never synthesizes it. A refused batch is the relay's HTTP problem response to `POST /api/v1/sync/ops`; the client transport (`SseTransport::send_frame` in `crates/sunrise-sync/src/sse/session.rs`) returns it as `TransportError::Server`, and the driver ends the session and re-sends the batch from the outbox on reconnect. Producing a `Nack` is blocked on the *client*: `sync_driver`'s inbound dispatch (`crates/sunrise-core/src/sync_driver.rs`) treats `Nack` as non-fatal and ignores it, so synthesizing one would turn a refusal the client acts on into one it silently discards. |
+| `SnapshotReq` / `SnapshotResp` (`0x08`/`0x09`), `PresenceBeacon` / `PresenceUpdate` (`0x0A`/`0x0B`) | **Reserved and unserved.** Defined, with no payload type and no producer. Since ADR-0023's transport move no frame dispatch runs on the relay: the client transport maps each frame kind to an HTTP operation, and refuses any kind no operation carries with `TransportError::Protocol` before anything leaves the device. The relay never emits the server-to-client kinds, and the driver ignores them if one arrives. |
 
-**The contract, now implemented.** Dispatch MUST be exhaustive over
-`MsgKind`. A kind the server has decided not to serve MUST be
-refused with a typed `Error` naming it — silence is the one response a client
+**The contract.** A kind with no operation behind it MUST be refused with a
+typed error naming it, never dropped — silence is the one response a client
 cannot act on, because it is also what a dropped frame, an overloaded relay and
-a hung task look like. ADR-0023 lists the `_ => true` arm among the five
-defects it records and fixes in place, independently of the transport move.
+a hung task look like. ADR-0023 lists the old relay dispatch's `_ => true` arm
+among the five defects it records; the transport move retired that dispatch,
+and the client transport's frame-to-operation table is where the rule now
+holds. That table ends in a catch-all arm, so adding a kind to `MsgKind`
+compiles without placing it; the arm refuses the new kind until an operation
+carries it.
+
+**Decision: the reserved kinds stay (Q-C-09, #773).** Wire v1 keeps `Nack`,
+`SnapshotReq`, `SnapshotResp`, `PresenceBeacon` and `PresenceUpdate` assigned,
+and keeps `NackPayload`. The set of kinds is a serialized format: dropping one
+would free its byte for reuse, and a peer built before the drop would read a
+reused byte as the old kind. Each stays reserved, so no other message ever takes
+its discriminator, and unserved, as the table above says. Serving one is a
+feature with its own issue, not an edit of this table: `Nack` needs the driver
+to act on it first, and the snapshot and presence kinds need a payload type and
+a relay operation.
 
 `RefreshToken` presents a fresh bearer token on an **already open** session. It
 is out of band on purpose: a token expires mid-session because that is what

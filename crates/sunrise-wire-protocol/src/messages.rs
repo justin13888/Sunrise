@@ -25,6 +25,11 @@
 //! `0x10` and `0x11` are deliberately unassigned; `RefreshToken` takes `0x12`
 //! so the v1 block `0x01..=0x0F` stays contiguous and a new kind is visibly a
 //! later addition rather than an edit of the original table.
+//!
+//! `Nack`, `SnapshotReq`, `SnapshotResp`, `PresenceBeacon` and
+//! `PresenceUpdate` are **reserved**: assigned so no other message takes their
+//! bytes, and served by nothing. The wire-protocol spec's "Which kinds are
+//! live" table records what happens to each, and why they stay (Q-C-09).
 
 use thiserror::Error;
 
@@ -40,19 +45,23 @@ pub enum MsgKind {
     OpBatch = 0x03,
     /// `0x04` Server → Client: positive ack for a batch.
     Ack = 0x04,
-    /// `0x05` Server → Client: rejection for a batch.
+    /// `0x05` Server → Client: rejection for a batch. Reserved: never
+    /// produced, and ignored by the driver.
     Nack = 0x05,
     /// `0x06` Client → Server: subscribe to stream updates.
     Subscribe = 0x06,
     /// `0x07` Server → Client: server-pushed stream update.
     StreamUpdate = 0x07,
-    /// `0x08` Client → Server: request a snapshot.
+    /// `0x08` Client → Server: request a snapshot. Reserved: the client
+    /// transport refuses to send it.
     SnapshotReq = 0x08,
-    /// `0x09` Server → Client: deliver a snapshot.
+    /// `0x09` Server → Client: deliver a snapshot. Reserved: never produced.
     SnapshotResp = 0x09,
-    /// `0x0A` Client → Server: presence beacon.
+    /// `0x0A` Client → Server: presence beacon. Reserved: the client
+    /// transport refuses to send it.
     PresenceBeacon = 0x0A,
-    /// `0x0B` Server → Client: aggregated presence update.
+    /// `0x0B` Server → Client: aggregated presence update. Reserved: never
+    /// produced.
     PresenceUpdate = 0x0B,
     /// `0x0C` Bidirectional: liveness probe.
     Ping = 0x0C,
