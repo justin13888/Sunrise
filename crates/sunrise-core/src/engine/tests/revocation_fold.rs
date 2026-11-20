@@ -311,14 +311,17 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
     // `the_read_bound_is_the_same_whichever_order_an_authority_revocation_arrives`
     // in `revocation_authority.rs` asserts it
     // ([#411](https://github.com/justin13888/Sunrise/issues/411)). Here
-    // `A -> C` is an ordinary row, and closing
-    // [#1167](https://github.com/justin13888/Sunrise/issues/1167) means these
-    // assertions turn red, which is the point of writing them down rather than
-    // leaving the gap undiscovered.
+    // `A -> C` is an ordinary row. ADR-0074
+    // (`docs/11-adr/0074-device-read-bounds-replicate-as-a-fact.md`) decides
+    // how it closes: `two` emits a `device.read_bound` claim for C, and `one`
+    // believes it because `two` is ungated. Building that,
+    // [#1246](https://github.com/justin13888/Sunrise/issues/1246), turns these
+    // assertions into `assert_eq!`, which is the point of writing them down
+    // rather than leaving the gap undiscovered.
     assert_eq!(
         read_bound_row(&one, &c_id),
         None,
-        "known gap (#1167): the replica that learned of A's own revocation first \
+        "known gap (#1246): the replica that learned of A's own revocation first \
          never bounds C, so it goes on sealing C every epoch it mints"
     );
     assert!(

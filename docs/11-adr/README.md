@@ -90,6 +90,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0070 | [A recovery code survives a rotation that carries it, and a rotation that does not issues the next one](./0070-a-recovery-code-survives-a-rotation-that-carries-it.md) | accepted (amends 0024 decision 4, 0037, 0069 and `recovery.md` §Recovery code rotation; built by #583) |
 | 0071 | [Sunrise reads and writes external calendars: series in the vault, edits as synced intents, and no lease](./0071-calendar-read-write-through-synced-intents.md) | accepted (amends 0049 decisions 1 and 4, `non-goals.md`, and the accepted pages that restated them, listed in its header) |
 | 0072 | [Delight is functional motion on the shared motion tokens; a boredom screen and stress-relief tools are non-goals](./0072-delight-is-functional-motion-on-the-shared-tokens.md) | accepted (amends `non-goals.md` and the shared UI system's §What is not shared; depends on 0029; answers #13) |
+| 0074 | [A replica that bounds a device says so in an op, and an ungated sender's word bounds it everywhere](./0074-device-read-bounds-replicate-as-a-fact.md) | accepted (answers #1167; amends the read-bound section of `refold_device_revocations`; depends on 0041, 0045, 0056 and 0058; built by #1246) |
 
 ## When to write a new ADR
 
