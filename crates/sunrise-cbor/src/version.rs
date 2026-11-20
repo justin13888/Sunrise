@@ -784,7 +784,13 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 ///
 /// `52` is migration `0052_places.sql` (#1128, ADR-0051): `places`, the Place
 /// entity's projection. It starts empty; no row is rewritten.
-pub const STORAGE_V: u16 = 52;
+///
+/// `53` is migration `0053_device_revoke_ops_kind.sql` (#383, ADR-0056 §2):
+/// `device_revoke_ops` gains `kind`, `revoke` on every existing row, and the
+/// column joins the row's unique identity, so a revocation and a withdrawal at
+/// one stamp are two rows. No row is otherwise rewritten, and no projection
+/// moves.
+pub const STORAGE_V: u16 = 53;
 
 #[cfg(test)]
 mod tests;
