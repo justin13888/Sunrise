@@ -11,9 +11,11 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 > and blobs on the local filesystem (`sunrise_storage::BlobStore`) — and, as an
 > opt-in, several relay nodes over one Postgres database (`store/postgres/`,
 > `tokio-postgres`; [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md),
-> [`self-hosting.md`](./self-hosting.md) §Several nodes over Postgres). There is
-> **no** S3, Redis or external pub/sub — no `aws-sdk-s3` appears in any
-> `Cargo.toml`; the nodes' fan-out is Postgres `LISTEN/NOTIFY` — and push delivery is
+> [`self-hosting.md`](./self-hosting.md) §Several nodes over Postgres), and blobs
+> on an S3-compatible object store (`blob/s3/`, signed requests over the
+> `hyper` client; §Blobs on an object store). There is **no** Redis or external
+> pub/sub and no AWS SDK — no `aws-sdk-s3` appears in any `Cargo.toml`; the
+> nodes' fan-out is Postgres `LISTEN/NOTIFY` — and push delivery is
 > APNs only, over the `hyper` client already in the tree
 > ([`push-notifications.md`](./push-notifications.md)). The managed and scale-out sections below are design targets;
 > each unbuilt piece is marked. Two accepted ADRs moved this document's ground

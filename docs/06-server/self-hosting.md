@@ -262,9 +262,8 @@ than `[push.apns]`, `[quotas]`, `[storage] mode` / `sqlite_pool_size` / `postgre
 `sunrise-server admin doctor` (see "Admin CLI"). The scaled deployment's keys
 are `[storage] backend`, `postgres_url_file`, `[blobs] backend` and
 `s3_credentials_file`, as
-[ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) §6 decides. The
-first two are built (see "Several nodes over Postgres"); `[blobs] backend` and
-`s3_credentials_file` are refused until the object-store backend is (#482).
+[ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) §6 decides. All
+are built (see "Several nodes over Postgres" and "Blobs on an object store").
 The draft names above stay refused.
 
 ## Stopping, health and readiness
@@ -389,7 +388,8 @@ ceiling is the per-node value times the node count:
   not use.
 
 **Blobs** stay on the filesystem under `data_dir/blobs`, which every node must
-mount (NFS, a cluster filesystem) until the object-store backend lands (#482).
+mount (NFS, a cluster filesystem), or move to an object store every node
+reaches (see "Blobs on an object store"), which needs no `data_dir`.
 
 **Migrations.** The database carries its own numbered history in a
 `schema_version` table. Every node migrates on start, one at a time under an
@@ -430,6 +430,51 @@ docker rm -f sunrise-pg
 
 Without `SUNRISE_TEST_POSTGRES_URL` those tests print why they did nothing and
 pass; CI's `postgres` job runs them on every push to `master`.
+
+## Blobs on an object store
+
+`[blobs] backend = "s3"` keeps attachment ciphertext in one bucket of an
+S3-compatible object store (AWS S3, MinIO, and others that speak path-style
+requests and Signature Version 4) instead of under `data_dir/blobs`
+([ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) §7). The
+filesystem stays the default.
+
+```toml
+[blobs]
+backend             = "s3"
+s3_endpoint         = "https://s3.us-east-1.amazonaws.com" # scheme, host, port; nothing after
+s3_bucket           = "sunrise-blobs"                       # created beforehand
+s3_region           = "us-east-1"                           # MinIO's default too
+s3_credentials_file = "/etc/sunrise/s3.toml"
+```
+
+`s3_credentials_file` is TOML holding `access_key_id` and `secret_access_key`,
+and the relay refuses it unless only its owner can read it (`chmod 600`), for
+the reason `postgres_url_file` is. The key pair needs `GetObject`,
+`PutObject`, `DeleteObject` and `ListBucket` on the bucket, nothing else. The
+relay writes under `blobs/` and its readiness probe under `probes/`; give it a
+bucket of its own. `http://` endpoints are accepted for a store on a private
+network: what crosses it is ciphertext, and the signature never carries the
+secret.
+
+Each chunk is one object of at most 1 MiB, so no multipart upload is ever
+started. Finalize re-reads and re-hashes every chunk and writes the manifest
+last, as on the filesystem; the maintenance pass sweeps abandoned uploads,
+orphaned account trees and collected blobs in the bucket. `admin backup`
+copies the committed blobs into the backup's `blobs/` in the filesystem
+layout, so a backup restores onto either backend. The readiness probe writes,
+reads back and removes one object; there is no free-space check.
+
+**Trying it locally.** A throwaway MinIO runs the backend's tests:
+
+```sh
+docker run -d --name sunrise-minio -p 127.0.0.1:9000:9000 alpine/minio:RELEASE.2025-10-15T17-29-55Z
+SUNRISE_TEST_S3_ENDPOINT=http://127.0.0.1:9000 cargo test -p sunrise-server --lib blob::s3
+docker rm -f sunrise-minio
+```
+
+Without `SUNRISE_TEST_S3_ENDPOINT` the store tests print why they did nothing
+and pass; CI's `s3` job runs them on every push to `master`.
 
 ## Operator surfaces
 

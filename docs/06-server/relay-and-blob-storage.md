@@ -22,7 +22,7 @@ status: accepted
 > fan-out bus is the hub's `LiveFeed` seam with its Postgres `LISTEN/NOTIFY`
 > implementation (`store/postgres/fanout.rs`). `BlobBackend`
 > (`crates/sunrise-server/src/blob/mod.rs`) has its filesystem implementation
-> only; the S3 one is #482.
+> and an S3-compatible one (`blob/s3/`, `[blobs] backend = "s3"`).
 
 ## Relay model
 
