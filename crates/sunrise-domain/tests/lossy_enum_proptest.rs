@@ -28,8 +28,8 @@ use std::path::Path;
 use sunrise_cbor::{decode_canonical, encode_canonical};
 use sunrise_domain::{
     BlockKind, BlockSource, ConstraintSeverity, Energy, FocusKind, Frequency, InterruptionReason,
-    LatenessPart, RRule, RoutineCatchupPolicy, StreamColor, StreamReviewCadence, TaskState,
-    ViewKind, ViewSort, Weekday, WindowField,
+    LatenessPart, RRule, RoutineCatchupPolicy, ShiftPolicy, StreamColor, StreamReviewCadence,
+    TaskState, ViewKind, ViewSort, Weekday, WindowField,
 };
 
 /// Arbitrary strings, weighted toward `known` spellings and near misses.
@@ -141,6 +141,7 @@ lossless_enums! {
     constraint_severity, ConstraintSeverity, ["hard", "soft"];
     stream_review_cadence, StreamReviewCadence, ["weekly", "biweekly", "monthly", "none"];
     routine_catchup_policy, RoutineCatchupPolicy, ["skip", "merge", "queue"];
+    shift_policy, ShiftPolicy, ["pause", "shift_tz", "skip", "unchanged"];
     focus_kind, FocusKind, ["work", "break"];
     interruption_reason, InterruptionReason, ["self", "meeting", "blocked", "other"];
     stream_color, StreamColor,

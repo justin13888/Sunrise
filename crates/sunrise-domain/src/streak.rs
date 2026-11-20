@@ -241,6 +241,16 @@ impl Routine {
     /// occurrences after the newest key ([`Routine::streak_as_of`]).
     #[must_use]
     pub fn derived_streak(&self) -> DerivedStreak {
+        self.derived_streak_excusing(&|_| false)
+    }
+
+    /// [`Routine::derived_streak`], with every occurrence `excused` holds
+    /// neutral as a skipped one is: neither counted nor missed. A context
+    /// shift excuses what it held back ([`crate::shift`]).
+    pub(crate) fn derived_streak_excusing(
+        &self,
+        excused: &dyn Fn(&crate::routine_gen::Occurrence) -> bool,
+    ) -> DerivedStreak {
         let utc = jiff::tz::TimeZone::UTC;
         let zone = self.occurrence_zone(&utc);
         // Keys are minute-precision civil times, `YYYY-MM-DDTHH:MM`, so their
@@ -279,7 +289,8 @@ impl Routine {
             .unwrap_or_default()
         {
             let counted = keyed.contains_key(o.key.as_str());
-            if o.key.as_str() > newest || (!counted && self.is_skipped(&o, &zone)) {
+            if o.key.as_str() > newest || (!counted && (self.is_skipped(&o, &zone) || excused(&o)))
+            {
                 continue;
             }
             walk.insert(o.key.clone(), (o.at, counted));
@@ -312,6 +323,18 @@ impl Routine {
     /// lapsed before the next completion says so.
     #[must_use]
     pub fn streak_as_of(&self, now: Timestamp, reader: &jiff::tz::TimeZone) -> DerivedStreak {
+        self.streak_as_of_excusing(now, reader, &|_| false)
+    }
+
+    /// [`Routine::streak_as_of`], with no occurrence `excused` holds applied
+    /// as a miss. A context shift excuses what it held back
+    /// ([`crate::shift`]).
+    pub(crate) fn streak_as_of_excusing(
+        &self,
+        now: Timestamp,
+        reader: &jiff::tz::TimeZone,
+        excused: &dyn Fn(&crate::routine_gen::Occurrence) -> bool,
+    ) -> DerivedStreak {
         let held = DerivedStreak::of(self);
         if self.streak_counter == 0 {
             return held;
@@ -344,7 +367,7 @@ impl Routine {
             .occurrences_in((start, closed_before), reader)
             .unwrap_or_default()
         {
-            if !self.streak_key_seen(&o.key) {
+            if !self.streak_key_seen(&o.key) && !excused(&o) {
                 out.miss_occurrence(o.at);
             }
         }
