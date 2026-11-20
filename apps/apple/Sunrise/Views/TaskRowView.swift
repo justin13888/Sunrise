@@ -22,6 +22,8 @@ struct TaskRowView: View {
     /// would do (Upcoming) learns what is being dragged here.
     var onDrag: (() -> Void)?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Button {
@@ -31,6 +33,12 @@ struct TaskRowView: View {
                     .foregroundStyle(facets.isDone ? .green : .secondary)
             }
             .buttonStyle(.plain)
+            // Completing a task: the circle becomes a check once the core has
+            // written the op, and the swap is drawn rather than cut. The
+            // same on the first completion as on the hundredth (ADR-0072
+            // decision 4), and `nil` under Reduce Motion.
+            .contentTransition(.symbolEffect(.replace))
+            .animation(Motion.fast(reduceMotion: reduceMotion), value: facets.isDone)
             .accessibilityLabel(
                 facets.isDone ? L10n.TaskRow.completed : L10n.TaskRow.complete(title: facets.title)
             )

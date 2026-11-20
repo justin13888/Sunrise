@@ -55,6 +55,7 @@ struct TaskRows: View {
     /// Which row a drag is over, for the drop-target treatment.
     @State private var targeted: EntityRef?
     @State private var foldedSections: Set<Int> = [TodaySection.overdue.rank]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The rows the keyboard can reach: what is drawn, folded sections
     /// excluded. A cursor inside a collapsed section would be a cursor nobody
@@ -74,6 +75,7 @@ struct TaskRows: View {
                     .foregroundStyle(.orange)
                     .padding(.horizontal, 12)
                     .padding(.top, 6)
+                    .transition(.opacity)
             }
 
             if model.showsNothing {
@@ -86,6 +88,13 @@ struct TaskRows: View {
                 list
             }
         }
+        // Feedback motion, on the token scale only (ADR-0072 decision 4). Each
+        // presents a change the core has already made: nothing here delays a
+        // write or the next keystroke, and every one is `nil` under Reduce
+        // Motion. A failure the user needs to notice is `fast`; the empty
+        // state and the list trading places is a whole surface, so `slow`.
+        .animation(Motion.fast(reduceMotion: reduceMotion), value: model.errorMessage)
+        .animation(Motion.slow(reduceMotion: reduceMotion), value: model.showsNothing)
         // The list is a query result, so it can change under the cursor at any
         // moment — a sync, a completion, a fold. The selection is told every
         // time, which is the only reason a cursor survives completing the row
@@ -109,6 +118,9 @@ struct TaskRows: View {
             }
         }
         .listStyle(.inset)
+        // A reorder, a drop, a completion that leaves the list, a fold: rows
+        // move rather than jump, at `standard`, because they move.
+        .animation(Motion.standard(reduceMotion: reduceMotion), value: visible.map(\.id))
         // The second way out of the capture keyboard, beside the Done button
         // the bar puts above it. Reaching for the list is what someone does
         // when they have finished typing and want to see what they wrote, so

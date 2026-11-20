@@ -10,6 +10,7 @@ struct CommandPaletteView: View {
     let run: (AppAction) -> Void
 
     @FocusState private var focused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
@@ -69,7 +70,9 @@ struct CommandPaletteView: View {
                 }
                 .onChange(of: model.highlighted) { _, index in
                     guard results.indices.contains(index) else { return }
-                    withAnimation(.linear(duration: 0.1)) {
+                    // `fast`: the user moved the highlight and is watching it.
+                    // `nil` under Reduce Motion, so the list jumps instead.
+                    withAnimation(Motion.fast(reduceMotion: reduceMotion)) {
                         proxy.scrollTo(results[index].id, anchor: .center)
                     }
                 }
