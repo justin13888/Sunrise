@@ -3,10 +3,11 @@
 //!
 //! Every module here is a descendant of `sse`, which is what lets a case
 //! reach the private items it pins -- `take_event`, `frame_for`,
-//! `binding_bytes`, the stream buffer -- and why none of them lives under
+//! `sign_bytes`, the stream buffer -- and why none of them lives under
 //! the crate's `tests/`. A child's `super::` paths resolve through
 //! the imports here, so a case reads `super::read_body` wherever it sits.
 
+mod account;
 mod binding;
 mod blobs;
 mod body_bounds;
