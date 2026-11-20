@@ -443,6 +443,15 @@ inverse **per field**, in one local transaction:
   the prior value back as a new write, whatever has changed since;
 - a restored deferral writes `-1` on `deferred_count`.
 
+Undos of successive commits on one item restore newest-first. Undoing the
+newer commit writes the field back to the older commit's value, and the older
+commit then counts the field as its own again, so its undo restores it. This
+holds only where the newer commit wrote over the older one's write directly,
+and where the newer undo wrote the field back. A write by anyone else in
+between, or a newer undo that left the field as it was, keeps the older
+commit's field skipped. Undoing the older commit while the newer one's write
+stands skips the field.
+
 Undo never refuses as stale and never re-solves.
 
 ## Client contract

@@ -260,10 +260,145 @@ async fn the_oldest_commit_past_the_undo_history_is_unknown() {
     ));
     let newest = core.plan_undo(*commits.last().unwrap()).unwrap();
     assert_eq!(newest.restored, 2);
-    // The one before it wrote the fields the newest wrote over since.
+    // The one before it is restorable again once the newest is undone.
     let older = core.plan_undo(commits[commits.len() - 2]).unwrap();
-    assert_eq!(older.restored, 0);
-    assert_eq!(older.skipped.len(), 2);
+    assert_eq!(older.restored, 2);
+    assert!(older.skipped.is_empty(), "{:?}", older.skipped);
+    core.close().await.unwrap();
+}
+
+/// Move a block to `starts`..`ends`, on the hour, as an edit outside the
+/// planner.
+async fn edit_span(core: &Core, block: sunrise_id::EntityRef, starts: i8, ends: i8) {
+    core.submit(Command::UpdateBlock {
+        id: block,
+        scope: sunrise_domain::EditScope::All,
+        patch: sunrise_domain::BlockPatch {
+            starts_at: Some(at(starts)),
+            ends_at: Some(at(ends)),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+}
+
+/// Successive undos of commits on one item restore newest-first, each to
+/// the position the commit before it left, back to where the item began.
+#[tokio::test]
+async fn successive_undos_restore_newest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let block = one_block(&core).await;
+    let mut spans = vec![block_span(&core, block)];
+    let mut commits = Vec::new();
+    for h in [11, 13, 15] {
+        let diff = core.plan_preview(&move_to(block, h)).unwrap();
+        commits.push(core.plan_commit(diff.id).unwrap().commit);
+        spans.push(block_span(&core, block));
+    }
+    spans.pop();
+    for commit in commits.into_iter().rev() {
+        let undone = core.plan_undo(commit).unwrap();
+        assert_eq!(undone.restored, 2, "starts_at and ends_at");
+        assert!(undone.skipped.is_empty(), "{:?}", undone.skipped);
+        assert_eq!(Some(block_span(&core, block)), spans.pop());
+    }
+    core.close().await.unwrap();
+}
+
+/// An older commit undone while a newer one's write over it stands is
+/// skipped, and the newer one then restores what the older one wrote.
+#[tokio::test]
+async fn an_older_commit_undone_first_is_skipped_under_a_newer_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let block = one_block(&core).await;
+    let older = core
+        .plan_commit(core.plan_preview(&move_to(block, 11)).unwrap().id)
+        .unwrap()
+        .commit;
+    let at_eleven = block_span(&core, block);
+    let newer = core
+        .plan_commit(core.plan_preview(&move_to(block, 13)).unwrap().id)
+        .unwrap()
+        .commit;
+    let at_thirteen = block_span(&core, block);
+
+    let undone = core.plan_undo(older).unwrap();
+    assert_eq!(undone.restored, 0);
+    assert_eq!(undone.skipped.len(), 2);
+    assert_eq!(block_span(&core, block), at_thirteen);
+    let undone = core.plan_undo(newer).unwrap();
+    assert_eq!(undone.restored, 2);
+    assert_eq!(block_span(&core, block), at_eleven);
+    core.close().await.unwrap();
+}
+
+/// An edit between two commits stands: undoing the newer restores the edit,
+/// and the older, whose write the edit replaced, is then skipped.
+#[tokio::test]
+async fn an_edit_between_two_commits_keeps_the_older_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let block = one_block(&core).await;
+    let older = core
+        .plan_commit(core.plan_preview(&move_to(block, 11)).unwrap().id)
+        .unwrap()
+        .commit;
+    edit_span(&core, block, 12, 13).await;
+    let edited = block_span(&core, block);
+    let newer = core
+        .plan_commit(core.plan_preview(&move_to(block, 15)).unwrap().id)
+        .unwrap()
+        .commit;
+
+    assert_eq!(core.plan_undo(newer).unwrap().restored, 2);
+    assert_eq!(block_span(&core, block), edited);
+    let undone = core.plan_undo(older).unwrap();
+    assert_eq!(undone.restored, 0);
+    assert_eq!(undone.skipped.len(), 2);
+    assert_eq!(block_span(&core, block), edited, "the edit stands");
+    core.close().await.unwrap();
+}
+
+/// A newer commit whose undo leaves its write standing keeps the older one
+/// under it skipped: the newer write is still the one the register holds.
+#[tokio::test]
+async fn a_newer_undo_skipped_whole_keeps_the_older_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let block = one_block(&core).await;
+    let older = core
+        .plan_commit(core.plan_preview(&move_to(block, 13)).unwrap().id)
+        .unwrap()
+        .commit;
+    let newer = core
+        .plan_commit(core.plan_preview(&move_to(block, 9)).unwrap().id)
+        .unwrap()
+        .commit;
+    // Ending at 09:30 keeps the newer 09:00 start, but would end the block
+    // before the 13:00 start its undo restores, so that undo writes nothing.
+    // The older commit's prior 09:00 start would fit, and is still skipped.
+    let end = SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(9, 30, 0, 0));
+    core.submit(Command::UpdateBlock {
+        id: block,
+        scope: sunrise_domain::EditScope::All,
+        patch: sunrise_domain::BlockPatch {
+            ends_at: Some(end),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+    let resized = block_span(&core, block);
+
+    let undone = core.plan_undo(newer).unwrap();
+    assert_eq!(undone.restored, 0, "{:?}", undone.skipped);
+    let undone = core.plan_undo(older).unwrap();
+    assert_eq!(undone.restored, 0);
+    assert_eq!(undone.skipped.len(), 2);
+    assert_eq!(block_span(&core, block), resized);
     core.close().await.unwrap();
 }
 
