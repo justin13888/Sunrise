@@ -92,3 +92,25 @@ fn rows_with(t: Task) -> Rows {
         ..Rows::default()
     }
 }
+
+/// Each refusal has its own sentence, and the two never read the same: the
+/// status line has to say *why* nothing went on the stack.
+#[test]
+fn each_refusal_explains_itself_in_its_own_words() {
+    assert_eq!(
+        NotUndoable::Unsupported.explanation(),
+        "This cannot be undone."
+    );
+    assert_eq!(
+        NotUndoable::Deleted.explanation(),
+        "Deleting cannot be undone \u{2014} the vault keeps a tombstone."
+    );
+}
+
+/// The refusal [`invert`] actually produces is `Unsupported`, so that is the
+/// sentence a client shows for a command with no inverse.
+#[test]
+fn a_command_with_no_inverse_explains_itself_as_unsupported() {
+    let refusal = invert(&Rows::default(), &[Command::CompleteTask(tid(1))]).unwrap_err();
+    assert_eq!(refusal.explanation(), "This cannot be undone.");
+}

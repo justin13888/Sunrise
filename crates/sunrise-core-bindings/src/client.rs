@@ -71,20 +71,39 @@ impl From<NotUndoable> for UndoRefusal {
     }
 }
 
+impl From<UndoRefusal> for NotUndoable {
+    fn from(r: UndoRefusal) -> Self {
+        match r {
+            UndoRefusal::Deleted => Self::Deleted,
+            UndoRefusal::Unsupported => Self::Unsupported,
+        }
+    }
+}
+
 /// What to tell the user when a step could not be recorded.
 ///
-/// Exported rather than left to each client's `switch`. "Deleting cannot be
-/// undone" is one sentence and therefore exactly the sort of thing two clients
-/// word differently — and the two wordings would then disagree about *why*,
-/// which is the only part that matters.
+/// Exported rather than left to each client's `switch`; the wording is
+/// [`NotUndoable::explanation`]'s, so the sentence lives beside the refusal
+/// it explains rather than in the seam.
 #[uniffi::export]
 #[must_use]
 pub fn undo_refusal_explanation(refusal: UndoRefusal) -> String {
-    match refusal {
-        UndoRefusal::Deleted => {
-            "Deleting cannot be undone \u{2014} the vault keeps a tombstone.".into()
+    NotUndoable::from(refusal).explanation().into()
+}
+
+#[cfg(test)]
+mod undo_refusal_tests {
+    use super::*;
+
+    /// The seam's sentence is client-core's, for every refusal, and the two
+    /// enums map onto each other one to one in both directions.
+    #[test]
+    fn the_seam_says_what_client_core_says() {
+        for n in [NotUndoable::Deleted, NotUndoable::Unsupported] {
+            let r = UndoRefusal::from(n);
+            assert_eq!(NotUndoable::from(r), n);
+            assert_eq!(undo_refusal_explanation(r), n.explanation());
         }
-        UndoRefusal::Unsupported => "This cannot be undone.".into(),
     }
 }
 
