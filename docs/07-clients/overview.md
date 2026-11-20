@@ -219,6 +219,84 @@ that does not answer, or will not open a session, is reported with the file
 exchange — `pair offer`, `request`, `issue`, `accept` — as the way that still
 works; Ctrl-C cancels and drops the relay session.
 
+#### Two devices on one machine
+
+Pairing is what makes two vaults two *devices* of one account rather than two
+accounts ([ADR-0024](../11-adr/0024-key-hierarchy.md)); a shared
+`SUNRISE_VAULT_ROOT` does not (§Multi-account, on the CLI). The file exchange
+takes three messages and four commands because the account's signing key does
+not travel ([#105](https://github.com/justin13888/Sunrise/issues/105)), so the
+device with the vault certifies keys the joining device has already minted.
+B's directory must not exist yet: the account a vault belongs to is decided
+when it is created.
+
+```bash
+# Terminal 0 — run the self-host relay:
+cargo run -p sunrise-server
+# → "sunrise-server listening on 127.0.0.1:8443" (plain HTTP, in-memory store)
+
+# Terminal 1 — vault A writes something, then offers to add a device:
+SUNRISE_VAULT=/tmp/vault-a cargo run -p sunrise-cli -- capture 'Written on A'
+SUNRISE_VAULT=/tmp/vault-a cargo run -p sunrise-cli -- pair offer --out /tmp/offer.cbor
+
+# Terminal 2 — vault B mints its own device keys and asks to be certified:
+SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- \
+  pair request --offer /tmp/offer.cbor --out /tmp/request.cbor
+
+# Terminal 1 — A certifies those keys and hands over the vault.
+#              This file carries your vault key; the first two did not.
+SUNRISE_VAULT=/tmp/vault-a cargo run -p sunrise-cli -- \
+  pair issue --request /tmp/request.cbor --out /tmp/grant.cbor
+
+# Terminal 2 — B adopts the certificate and opens its vault for the first time:
+SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- \
+  pair accept --response /tmp/grant.cbor
+
+# Both are now devices on one account. Sync them:
+SUNRISE_VAULT=/tmp/vault-a SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
+  cargo run -p sunrise-cli -- sync --once
+SUNRISE_VAULT=/tmp/vault-b SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
+  cargo run -p sunrise-cli -- sync --once
+SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- today
+```
+
+Each step prints the next one. `pair request` parks B's freshly minted device
+keys in `/tmp/vault-b/pending-pairing` (mode 0600) because its two steps are two
+processes; `pair accept` consumes and deletes them. If B's directory already
+holds a vault the exchange refuses it, so delete `/tmp/vault-b` and start again.
+
+The same pairing through the relay, with the six digits confirmed on each
+device as above:
+
+```bash
+# Terminal 2 — B prints a pairing code and waits:
+SUNRISE_VAULT=/tmp/vault-b SUNRISE_SYNC_URL=http://127.0.0.1:8443 SUNRISE_SYNC_TOKEN=self-host \
+  cargo run -p sunrise-cli -- pair join
+
+# Terminal 1 — A takes it; both then ask for the digits the other one shows:
+SUNRISE_VAULT=/tmp/vault-a SUNRISE_SYNC_URL=http://127.0.0.1:8443 SUNRISE_SYNC_TOKEN=self-host \
+  cargo run -p sunrise-cli -- pair add '<the code B printed>'
+```
+
+Against a relay with an OIDC issuer configured, `sunrise login` obtains a
+bearer and stores it mode-0600 in the vault directory, `sunrise whoami` reports
+its state and `sunrise logout` forgets it. A stored login feeds sync, and
+`SUNRISE_SYNC_TOKEN` overrides it for CI:
+
+```bash
+export SUNRISE_OIDC_ISSUER=https://auth.example.com
+export SUNRISE_OIDC_CLIENT_ID=sunrise
+cargo run -p sunrise-cli -- login     # opens a browser, waits on a loopback redirect
+```
+
+The relay's configuration is
+[`../06-server/self-hosting.md`](../06-server/self-hosting.md); with none it
+binds loopback, single-tenant, over an in-memory store. Each walk is proven
+headlessly: `cargo test -p sunrise-cli --test live_sync`,
+`cargo test -p sunrise-e2e --test cli_pair_relay`, and, with offline catch-up,
+LWW conflicts and routine dedup,
+`cargo test -p sunrise-e2e --test two_core_relay_convergence`.
+
 ### Undo across processes
 
 `undo` reverses the most recent write this vault recorded, and `redo` replays

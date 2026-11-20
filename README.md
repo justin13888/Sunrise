@@ -126,7 +126,7 @@ same one CI's Bun jobs install. With no Node on `PATH`, vitest falls back to Bun
 where `navigator.languages` is undefined, and the run fails a test that CI
 passes.
 
-Then confirm the toolchain is wired up by running the full automated gate (see [End-to-end QA](#end-to-end-qa) for the complete walkthrough):
+Then confirm the toolchain is wired up by running the full automated gate (see [Manual QA](#manual-qa) for the complete walkthrough):
 
 ```bash
 mise run validate     # JS/TS: Biome CI + typecheck + coverage
@@ -184,232 +184,37 @@ Every surface parses that line with the same function
 (`sunrise_domain::capture::parse`), so a task captured from a script and one
 captured from the app are the same task.
 
-### End-to-end QA
+### Manual QA
 
-This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual runs are for visual/interaction QA. Run each command from the repo root.
+The automated gates above decide correctness. The manual walk through every
+surface — headless, live sync, the Apple apps, benchmarks, chaos and the web
+PWA — is [`docs/10-cross-cutting/testing.md`](docs/10-cross-cutting/testing.md#manual-end-to-end-qa).
+Pairing two vaults and syncing them through a local relay is
+[`docs/07-clients/overview.md`](docs/07-clients/overview.md#two-devices-on-one-machine).
 
-> **Maturity note:** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents, drag-and-drop, iCal import/export, print and PDF export, and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26`. The **iOS/iPadOS** app is the same shared view layer behind a tab shell: it builds, runs that same suite a second time against the iOS product, and runs UI tests on the simulator — all in CI's `ios-app` job on every push to `master`, and locally through `mise run apple-app` before a change that reaches the app merges. It carries the phone/tablet column of the matrix at MUST level ([ADR-0042](docs/11-adr/0042-v0-forever.md)); all 24 graded rows are met. Run either app with `mise run macos-run` / `mise run ios-run`. Both apps' status against every parity requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#status-audit), where every graded MUST is met on the CLI and iOS, 23 of 24 are met on macOS (the widget is built but nobody has yet watched a signed Mac offer it, [#1116](https://github.com/justin13888/Sunrise/issues/1116)), and the unbuilt ones (sharing, calendar integration) are ranked on the [roadmap](docs/roadmap.md) — read the "what is still narrow" notes there rather than the verdict column alone. The **web** client runs the real `sunrise-core`, compiled to wasm, in a worker over OPFS, with no sync yet, and falls back to a `localStorage` stub where the browser cannot host it ([ADR-0055](docs/11-adr/0055-web-wasm-core.md)). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
+### Apple clients
 
-#### 1. Toolchain check
-
-Confirm the toolchains are present. The exact Rust version is pinned in `rust-toolchain.toml`; `rustup` will honor it automatically inside the repo.
-
-```bash
-cargo --version     # Rust toolchain (pinned via rust-toolchain.toml)
-bun --version       # JS/TS runtime + package manager
-mise --version      # task runner (all tasks live in mise.toml)
-
-mise run setup          # one-time: bun install + lefthook install (git hooks)
-```
-
-#### 2. Automated gates (the source of truth)
-
-Run the full JS/TS gate, the full Rust suite, and the lint/format checks. A green run here is the "is everything correct?" answer.
-
-```bash
-bun run validate                          # Biome CI + typecheck + Vitest coverage
-cargo test --workspace --all-targets      # entire Rust workspace
-cargo clippy --workspace --all-targets -- -D warnings   # pedantic-clean
-cargo fmt --check                         # formatting clean
-cargo deny check                          # advisories, bans, licences, sources
-```
-
-`mise run validate && mise run rust-test` is the same pass wrapped in mise tasks. `mise run pre-push` runs both suites whole too; the git hook runs no tests (see [Git hooks](#git-hooks)). The `sunrise-e2e` crate is the cross-crate release-gate proof: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, runs two independent `Core` vaults side by side to prove vault-lock isolation, and — in `two_core_relay_convergence` — drives two synced `Core`s through the relay to prove live convergence, offline catch-up, LWW conflict resolution, and routine dedup.
-
-#### 3. Headless, no client at all
-
-Every layer is drivable with no UI. `cargo test -p sunrise-cli` runs the real
-`sunrise` binary against a real vault in a separate process, and boots a real
-relay in-process to watch two replicas converge.
-
-```bash
-cargo test -p sunrise-cli     # the whole stack, headless
-cargo test -p sunrise-e2e     # relay convergence, pairing, four chaos scenarios
-```
-
-#### 4. Live sync demo (server + two vaults)
-
-`sunrise` wires live sync through two optional env vars: `SUNRISE_SYNC_URL` starts the sync driver and `SUNRISE_VAULT_ROOT` supplies a vault's at-rest key outright. Both unset = fully offline, with each vault on its own key. Making a second vault a second *device* is `sunrise pair`, a real command rather than a variable.
-
-**Pairing** is what makes this a demo of two *devices* rather than two accounts, and since [ADR-0024](docs/11-adr/0024-key-hierarchy.md) nothing else does. Sharing a vault root no longer suffices: each vault mints its own account identity and its Stream keys are random rather than derived, so two vaults on one root are two accounts holding the same at-rest key and neither can read the other's ops.
-
-It takes three messages and four commands, because the account's Ed25519 signing key does **not** travel ([#105](https://github.com/justin13888/Sunrise/issues/105)). A `DeviceCert` names only its subject and carries only the account's signature, so any device holding that key could mint a valid certificate for any device id it invented — which is how a *revoked* device used to rejoin. The device holding the vault issues the joining device's certificate instead, and it cannot sign one for keys that device has not minted yet. Hence the round trip. The consequence is deliberate: **a device added by pairing cannot add another**, and neither can a device you revoke.
-
-B's directory must not exist yet: the account a vault belongs to is decided when it is created. Every vault otherwise gets its own random root, minted on first open and kept in the keystore (`SUNRISE_KEYSTORE`, default `$XDG_DATA_HOME/sunrise/keys`) — `SUNRISE_VAULT` names separate accounts, not separate folders.
-
-```bash
-# Terminal 0 — run the self-host relay:
-cargo run -p sunrise-server
-# → "sunrise-server listening on 127.0.0.1:8443" (plain HTTP, in-memory store)
-
-# Terminal 1 — vault A writes something, then offers to add a device:
-SUNRISE_VAULT=/tmp/vault-a cargo run -p sunrise-cli -- capture 'Written on A'
-SUNRISE_VAULT=/tmp/vault-a cargo run -p sunrise-cli -- pair offer --out /tmp/offer.cbor
-
-# Terminal 2 — vault B mints its own device keys and asks to be certified:
-SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- \
-  pair request --offer /tmp/offer.cbor --out /tmp/request.cbor
-
-# Terminal 1 — A certifies those keys and hands over the vault.
-#              This file carries your vault key; the first two did not.
-SUNRISE_VAULT=/tmp/vault-a cargo run -p sunrise-cli -- \
-  pair issue --request /tmp/request.cbor --out /tmp/grant.cbor
-
-# Terminal 2 — B adopts the certificate and opens its vault for the first time:
-SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- \
-  pair accept --response /tmp/grant.cbor
-
-# Both are now devices on one account. Sync them:
-SUNRISE_VAULT=/tmp/vault-a SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
-  cargo run -p sunrise-cli -- sync --once
-SUNRISE_VAULT=/tmp/vault-b SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
-  cargo run -p sunrise-cli -- sync --once
-SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- today
-```
-
-With a relay running, the same pairing goes through the relay instead, with the six-digit SAS printed on both devices and confirmed on each — the path the Apple apps take, through the same client-layer code. The device being added shows the code:
-
-```bash
-# Terminal 2 — B prints a pairing code and waits:
-SUNRISE_VAULT=/tmp/vault-b SUNRISE_SYNC_URL=http://127.0.0.1:8443 SUNRISE_SYNC_TOKEN=self-host \
-  cargo run -p sunrise-cli -- pair join
-
-# Terminal 1 — A takes it; both then ask for the digits the other one shows:
-SUNRISE_VAULT=/tmp/vault-a SUNRISE_SYNC_URL=http://127.0.0.1:8443 SUNRISE_SYNC_TOKEN=self-host \
-  cargo run -p sunrise-cli -- pair add '<the code B printed>'
-```
-
-`--yes` or `--confirm-sas <digits>` answers the digits without a prompt, and `--json` prints the code, the digits and the outcome as one JSON object per line; [`docs/07-clients/overview.md`](docs/07-clients/overview.md) §Pairing has the rest. `cargo test -p sunrise-e2e --test cli_pair_relay` runs it end to end through the real binary.
-
-> Upgrading from a build before per-vault keys? Every vault was written under one constant then, so this build refuses such a vault rather than guessing it — and the refusal quotes the old root, which opens it once so the work can be moved. `sunrise vaults` lists what this machine holds keys for.
-
-Each step prints the next one, so the sequence is discoverable from the first command. `pair request` parks B's freshly minted device keys in `/tmp/vault-b/pending-pairing` (mode 0600) because its two steps are two processes; `pair accept` consumes and deletes them. If B's directory already holds a vault the exchange refuses it — there is no account left to decide — so delete `/tmp/vault-b` and start again. The old `SUNRISE_EXPORT_PAIRING_FILE` / `SUNRISE_PAIRING_FILE` variables are **gone**: the single file they moved was the whole account including the signing key, which is exactly what stopped travelling. `sunrise sync --once` drains the outbox and exits, bounded — a scheduled job that hangs because the relay is down is worse than one that fails. The same flow is proven headlessly by `cargo test -p sunrise-cli --test live_sync` and, more thoroughly (offline catch-up, LWW conflicts, routine dedup), by:
-
-```bash
-cargo test -p sunrise-e2e --test two_core_relay_convergence -- --nocapture
-```
-
-Against a relay with an OIDC issuer configured, `sunrise login` obtains a bearer and stores it mode-0600 in the vault directory; `sunrise whoami` reports its state and `sunrise logout` forgets it. A stored login feeds sync automatically, and `SUNRISE_SYNC_TOKEN` overrides it for CI:
-
-```bash
-export SUNRISE_OIDC_ISSUER=https://auth.example.com
-export SUNRISE_OIDC_CLIENT_ID=sunrise
-cargo run -p sunrise-cli -- login     # opens a browser, waits on a loopback redirect
-```
-
-> The server reads `sunrise.toml` (`-c <path>` → `$SUNRISE_CONFIG` → `./sunrise.toml` → `/etc/sunrise/sunrise.toml`); with no config it runs on defaults, which bind loopback in single-tenant mode with an in-memory store. Setting `[auth] oidc_issuer` + `oidc_client_id` installs the JWKS verifier. See `docs/06-server/self-hosting.md`.
-
-#### 5. Apple clients (macOS + iOS)
-
-**To actually see an app on screen, use a `-run` task.** Everything else here
-builds or tests; nothing else launches anything, which is the single most common
-way to conclude these apps do not work.
+**To see an app on screen, use a `-run` task.** No other Apple task launches
+anything:
 
 ```bash
 mise run macos-run            # build the macOS app and open it
 mise run ios-run              # build the iOS app and launch it on the simulator
 ```
 
-Both take a minute or two the first time (`apple-xcframework` runs first) and
-seconds after that. `macos-run` optionally takes a scratch-vault directory, which
-opens a throwaway vault and an in-memory key store instead of your real one — so
-a demo, or a walk through first-run, touches nothing you care about:
+Every Apple task, and what each one does *not* do, is in
+[`docs/07-clients/mobile-ios.md`](docs/07-clients/mobile-ios.md#the-apple-tasks);
+the macOS app's build and UI tests are in
+[`docs/07-clients/desktop.md`](docs/07-clients/desktop.md#build).
 
-```bash
-mise run macos-run /tmp/sunrise-demo
-```
-
-`ios-run` starts from a fresh vault whenever the app is not installed; to get
-back there, `xcrun simctl uninstall 'iPhone 17 Pro' dev.sunrise.SunriseiOS`.
-
-> If you go looking for the product yourself, launch the bundle with `open`, not
-> by executing `Sunrise.app/Contents/MacOS/Sunrise`. Running the binary directly
-> starts the process without registering it as a foreground app: it runs, opens
-> no window, and looks exactly like a hang.
-
-The rest of the Apple tasks, and what each one does *not* do:
-
-| Task | What it does | Launches the app? |
-| --- | --- | --- |
-| `mise run apple-xcframework` | cargo build → uniffi-bindgen → lipo → `SunriseCore.xcframework` | no |
-| `mise run macos-run` | + xcodegen, xcodebuild build, `open` | **yes** |
-| `mise run ios-run` | + xcodegen, xcodebuild build, `simctl install` + `launch` | **yes** |
-| `mise run macos-app` | + xcodegen, swiftlint `--strict`, `xcodebuild test` | no — tests only |
-| `mise run ios-app` | the same against the iOS simulator | no — tests only |
-| `mise run apple-app` | `macos-app` then `ios-app`, sequentially | no |
-| `mise run macos-open` / `ios-open` | generate the project and open Xcode | no — Xcode's ⌘R does |
-| `mise run macos-uitest` | the XCUITest target, which `macos-app` does not run | it drives one |
-
-`mise run macos-app` and `mise run ios-app` are exactly what CI runs on
-`macos-26`, across two of its three Apple jobs. The third,
-`apple-xcframework`, builds `out/SunriseCore.xcframework` once and hands it to
-both as an artefact — locally each task still builds it first, because only CI
-sets the `SUNRISE_FFI_PREBUILT` flag that says otherwise.
-
-CI runs those jobs on a push to `master`, nightly, and on
+CI runs the Apple jobs on a push to `master`, nightly, and on
 `gh workflow run ci.yml --ref <branch>`, but **not on a pull request**, where
 they report `skipped` (ADR-0028). So before merging a change that touches
 anything the apps are built from — `crates/`, `tools/`, `schemas/`, any
 `Cargo.toml`/`Cargo.lock`, a `.rs` file, `rust-toolchain*`, `.cargo/`,
 `apps/apple/`, `mise.toml`, the generated `tokens.swift`, `Strings.swift` or
 `Localizable.xcstrings`, or the CI workflow and actions — run
-`mise run apple-app` on a Mac. Before any build work, every Apple task checks
-that this is a Mac with Xcode selected (the Command Line Tools alone are not
-enough) and the iOS Rust targets installed; `macos-app` and `ios-app` also
-check XcodeGen, SwiftLint and, for iOS, the `ios_sim` simulator. A missing one
-stops the task there, naming the command that fixes it.
-
-Note that the macOS UI test target is
-`skipped: true` in the `Sunrise` scheme, so `mise run macos-uitest` — which has a
-scheme of its own, because `-only-testing` cannot select a skipped testable — is
-the only thing that drives the real macOS window, and it runs on a developer
-machine only. It needs **two** one-time grants, not one:
-`sudo DevToolsSecurity -enable`, and then accepting the automation prompt the
-runner raises the first time. Without the second it fails with "Timed out while
-enabling automation mode". The iOS UI tests have no such requirement and run on
-every `mise run ios-app`.
-
-`apple-xcframework` builds the release slices, generates the Swift bindings from
-the built library, and packages the framework both apps link. The bindings generator lives
-in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with its own
-lockfile. It is out there for feature unification, not MSRV: as a workspace
-member it would ask `uniffi` for the `cli` feature, and resolver 2 would then
-build `sunrise-core-bindings` against a `uniffi` carrying the whole generator —
-20 extra third-party crates on every workspace build
-([ADR-0026](docs/11-adr/0026-msrv-bump.md)).
-
-`out/` and `build/` are gitignored: the Swift is generated from the Rust on
-every build, so committing it would let the two drift. The `-run` tasks build
-into `out/dd` rather than Xcode's default DerivedData, so the product has a path
-you can name.
-
-#### 6. Benchmarks (manual)
-
-Populate this platform's performance baselines. `bench/baseline.json` already carries `linux-x86_64` numbers; `bench-baseline` runs the criterion suite (the benches in `crates/sunrise-bench/benches`) and merges the results back for your platform.
-
-```bash
-mise run bench            # run the criterion suite only
-mise run bench-baseline   # run benches, then update bench/baseline.json for this platform
-```
-
-#### 7. Chaos suite (manual)
-
-Four fault-injection scenarios — heavy drop, corruption, delay, and partition — each proving the cores reconverge after the transport heals:
-
-```bash
-cargo test -p sunrise-e2e --test chaos -- --nocapture
-```
-
-#### 8. Web PWA (manual E2E)
-
-```bash
-mise run web-wasm                     # build the core into apps/web/public/wasm/
-bun run --filter @sunrise/web dev     # dev server at http://localhost:5174
-bun run --filter @sunrise/web build   # production build
-bun run --filter @sunrise/web preview # serve the production build
-```
-
-> **Web core ([ADR-0055](docs/11-adr/0055-web-wasm-core.md)):** `loadCore()` in `apps/web/src/wasm.ts` runs the real `sunrise-core`, compiled to wasm by `mise run web-wasm`, in a dedicated worker with its vault in OPFS. There is no sync yet. Where the browser cannot host it (no workers, OPFS or `navigator.locks`), or no wasm bundle was built, it falls back to a `localStorage` stub with the same surface, which exercises the UI only. Data lives in browser storage; clear it via DevTools to reset.
+`mise run apple-app` on a Mac.
 
 ### Common tasks
 
