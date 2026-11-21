@@ -200,9 +200,10 @@ pub struct DeviceListRow {
     /// may withdraw with `CoreCommand::WithdrawRevocation` (ADR-0056 §6).
     ///
     /// The only rows on which to offer "Withdraw revocation". A revocation
-    /// another device made is that device's to withdraw, and so is one this
-    /// device signed as the account identity, which the command does not
-    /// withdraw. Last and defaulted, so the seam changes additively.
+    /// another device made is that device's to withdraw. One this device
+    /// signed as the account identity counts only while this device holds the
+    /// identity in force, which signs the withdrawal (ADR-0058 §6). Last and
+    /// defaulted, so the seam changes additively.
     #[uniffi(default = false)]
     pub withdrawable: bool,
 }

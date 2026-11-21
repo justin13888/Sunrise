@@ -470,6 +470,13 @@ pub enum Command {
     /// that is not revoked, or the device being reinstated, does not
     /// advertise it; there is no override (§7).
     ///
+    /// A revocation this device signed as the account identity is withdrawn
+    /// by the identity in force (ADR-0058 §6): on the device that holds the
+    /// head's `ID_S_priv`, the command signs a `device_revoke_withdraw_by_identity`
+    /// too, behind `core.revoke_withdraw_authority`. While some device lacks
+    /// that feature it withdraws the ordinary claim alone, and it is refused
+    /// only where the authority claim is the one it holds.
+    ///
     /// In the same transaction it cancels this device's unsent telling of
     /// the relay, and, where this replica releases the device's read bound,
     /// seals it every epoch this device holds (§4). [`Withdrawal`] on the
