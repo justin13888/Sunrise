@@ -220,13 +220,19 @@ document's intent, not yet implemented).
   are **views**, and nothing schedules a notification for them.
 - **built — Keychain** holds the unlock material. Nothing else does. The
   account is **per vault**, so a second vault gets its own item rather than
-  overwriting the first. Three items hold something of the user's, under three
-  services, and **all three** ask for
+  overwriting the first. Four services hold something of the user's, and
+  **all four** ask for
   `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
-  `dev.sunrise.Sunrise.vault-root`, `dev.sunrise.Sunrise.oidc-credentials` and
-  `dev.sunrise.Sunrise.relay-device-id`.
+  `dev.sunrise.Sunrise.vault-root`, `dev.sunrise.Sunrise.oidc-credentials`,
+  `dev.sunrise.Sunrise.relay-device-id`, and
+  `dev.sunrise.Sunrise.vault-root.set-aside`. The last holds the root of a vault
+  a recovery-code restore moved aside (#1222), under the account
+  `<vault>/<set-aside directory name>`, written before the restore stores its
+  new root, so the directory moved aside still has the key that opens it. The
+  app never deletes one, as it never deletes the directory, except where a
+  restore that wrote nothing put the vault back under the root still in use.
 
-  A **fourth** service is written, and it is not one of those three.
+  A **fifth** service is written, and it is not one of those four.
   `KeychainDomain.probe()` adds one fixed non-secret byte under
   `dev.sunrise.Sunrise.keychain-domain-probe` on every cold launch to find out
   which keychain this binary can reach, and deletes it again — sweeping the
@@ -261,8 +267,8 @@ document's intent, not yet implemented).
   **The Mac does not honour the class yet**: without the App Sandbox or an
   authorised keychain-access-group entitlement the app uses the file-based
   login keychain, which stores no protection class at all, so a Mac moved by
-  Migration Assistant or restored from Time Machine carries all three items
-  with it. iOS enforces the class; see
+  Migration Assistant or restored from Time Machine carries all four services'
+  items with it. iOS enforces the class; see
   [`../03-crypto/recovery.md`](../03-crypto/recovery.md#device-backups-do-not-carry-the-vault-root).
 - **built — App Intents / Shortcuts.** Eight intents — capture, complete,
   defer, today, inbox, stream summary, start focus, end focus — plus a
