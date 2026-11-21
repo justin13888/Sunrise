@@ -288,6 +288,167 @@ struct DeviceListModelTests {
         await vault.bridge.shutdown()
     }
 
+    /// **The offer.** Every row carries whether this device may withdraw its
+    /// removal, and a fresh vault's one device has removed nothing, so it
+    /// reads `false` and the row offers no "Withdraw removal". Its truth on a
+    /// removed row is asserted by `sunrise-core`'s `revocation_withdraw` tests
+    /// and its crossing by `seam_device_rows.rs`; this pins that the model
+    /// reads it rather than deriving it from ``DeviceListModel/DeviceRow/revoked``.
+    @Test
+    func everyRowCarriesWhetherThisDeviceMayWithdrawItsRemoval() async throws {
+        let vault = try await TestVault()
+        let model = DeviceListModel(bridge: vault.bridge)
+        await model.refresh()
+
+        let me = try #require(model.rows.first)
+        #expect(!me.withdrawable)
+        await vault.bridge.shutdown()
+    }
+
+    /// A withdrawal this device has nothing to withdraw for reports that
+    /// nothing happened, over the real seam.
+    ///
+    /// The core answers `notAuthor` rather than failing, because the list's
+    /// removed rows include removals other devices made; the report says
+    /// "Nothing was withdrawn" and nothing after it — no keys, no relay line.
+    @Test
+    func withdrawingARemovalThisDeviceNeverMadeWithdrawsNothing() async throws {
+        let vault = try await TestVault()
+        let model = DeviceListModel(bridge: vault.bridge)
+        await model.refresh()
+        let stranger = DeviceListModel.DeviceRow(
+            id: "dev_00000000000000000000000001",
+            deviceID: String(repeating: "0", count: 31) + "1",
+            nickname: "Old laptop",
+            platform: "macos",
+            revoked: true,
+            readBounded: true,
+            current: true,
+            admittedAfterRevocation: false,
+            revokedByAuthority: false,
+            withdrawable: true,
+            isThisDevice: false
+        )
+
+        await model.withdraw(stranger)
+
+        #expect(model.errorMessage == nil)
+        let done = try #require(model.lastWithdrawal)
+        #expect(done.outcome == .notAuthor)
+        #expect(
+            done.lines(device: "Mac") == [
+                L10n.Devices.withdrawNotAuthorTitle,
+                L10n.Devices.withdrawNotAuthor(device: "Mac", name: "Old laptop")
+            ]
+        )
+        #expect(!model.busy)
+        model.dismissWithdrawal()
+        #expect(model.lastWithdrawal == nil)
+        await vault.bridge.shutdown()
+    }
+
+    /// A device cannot withdraw a removal of itself; the refusal reaches the
+    /// user and no report claims a withdrawal.
+    @Test
+    func aRefusedWithdrawalSaysSoRatherThanReportingOne() async throws {
+        let vault = try await TestVault()
+        let model = DeviceListModel(bridge: vault.bridge)
+        await model.refresh()
+        let me = try #require(model.rows.first)
+
+        await model.withdraw(me)
+
+        #expect(model.lastWithdrawal == nil)
+        #expect(model.errorMessage != nil)
+        #expect(!model.busy)
+        await vault.bridge.shutdown()
+    }
+
+    /// **Each outcome's copy** (ADR-0056 §6). Only `reinstated` says the
+    /// device is back, and the relay's half is said on every emitted outcome.
+    ///
+    /// Synthetic, because each outcome but `notAuthor` needs a second device
+    /// this seam's test vault does not have; `sunrise-core`'s
+    /// `revocation_withdraw` tests assert the core reaches each one.
+    @Test
+    func eachWithdrawalOutcomeSaysWhatItDid() {
+        func lines(
+            _ kind: WithdrawalOutcomeKind,
+            keys: UInt32 = 0,
+            released: Bool = true,
+            cancelled: Bool = true
+        ) -> [String] {
+            let outcome = CommandOutcome(
+                entity: "dev_00000000000000000000000001",
+                state: nil,
+                opId: String(repeating: "0", count: 32),
+                seq: 1,
+                softViolations: [],
+                unrotatedStreams: [],
+                revocationGated: false,
+                revocationUnwound: [],
+                withdrawal: WithdrawalReport(
+                    outcome: kind,
+                    readBoundReleased: released,
+                    keysResent: keys,
+                    relayIntentCancelled: cancelled
+                )
+            )
+            return DeviceListModel.Withdrawal(nickname: "Old laptop", outcome: outcome).lines(device: "Mac")
+        }
+        let back = L10n.Devices.withdrawnReinstated(name: "Old laptop")
+
+        #expect(
+            lines(.reinstated, keys: 3) == [
+                back,
+                L10n.Devices.withdrawnKeys(count: 3, device: "Mac"),
+                L10n.Devices.withdrawnRelayCancelled
+            ]
+        )
+        #expect(
+            lines(.reinstated, released: false).contains(L10n.Devices.withdrawnStillBounded(device: "Mac")),
+            "back on the register while this replica sends it nothing must say so"
+        )
+        #expect(
+            lines(.stillClaimed, cancelled: false) == [
+                L10n.Devices.withdrawnStillClaimedTitle(name: "Old laptop"),
+                L10n.Devices.withdrawnStillClaimed,
+                L10n.Devices.withdrawnRelayTold(name: "Old laptop")
+            ]
+        )
+        #expect(
+            lines(.repairRequired) == [
+                L10n.Devices.withdrawnRepairTitle(name: "Old laptop"),
+                L10n.Devices.withdrawnRepair(name: "Old laptop"),
+                L10n.Devices.withdrawnRelayCancelled
+            ]
+        )
+        for kind in [WithdrawalOutcomeKind.notAuthor, .stillClaimed, .repairRequired] {
+            #expect(!lines(kind).contains(back), "only a reinstated device may be called back")
+        }
+    }
+
+    /// **The feature refusal** (ADR-0056 §7). A vault with a device that would
+    /// drop the op refuses the withdrawal, with no override; the user is told
+    /// how many devices to update rather than the core's English.
+    ///
+    /// Synthetic, because the refusal needs a second device without the
+    /// feature. The message is `EngineError::FeatureUnsupportedByDevices`'s
+    /// display as `BindingError.Core` carries it. Anything else falls back to
+    /// the error's own description, never to a withdrawal.
+    @Test
+    func aWithdrawalTheFeatureGateRefusesSaysWhatToUpdate() {
+        let refusal = BindingError.Core(
+            message: "enabling `core.revoke_withdraw` needs 2 other device(s) to update first"
+        )
+        #expect(DeviceListModel.withdrawalRefusal(refusal) == L10n.Devices.withdrawAwaitsUpdate(count: 2))
+
+        let other = BindingError.Core(
+            message: "a device cannot withdraw a revocation of itself: it never made one"
+        )
+        #expect(DeviceListModel.withdrawalRefusal(other) == other.localizedDescription)
+    }
+
     /// The disclosure is dismissible and the error is too, so neither becomes
     /// a permanent fixture of the settings screen.
     @Test

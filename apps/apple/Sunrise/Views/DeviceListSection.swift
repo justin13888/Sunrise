@@ -19,6 +19,7 @@ struct DeviceListSection: View {
     @Bindable var model: DeviceListModel
 
     @State private var revoking: DeviceListModel.DeviceRow?
+    @State private var withdrawing: DeviceListModel.DeviceRow?
 
     var body: some View {
         Section(L10n.Devices.title) {
@@ -32,6 +33,7 @@ struct DeviceListSection: View {
             }
             identityKeyDisclosure
             revocationDisclosure
+            withdrawalReport
             if let error = model.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.caption)
@@ -60,6 +62,22 @@ struct DeviceListSection: View {
         } message: {
             Text(L10n.Devices.removeConfirmMessage)
         }
+        // ADR-0056 §6: the three things a withdrawal does that a user would
+        // not guess, stated before the button rather than after it.
+        .confirmationDialog(
+            Self.withdrawConfirmTitle(nickname: withdrawing?.nickname),
+            isPresented: Binding(get: { withdrawing != nil }, set: { if !$0 { withdrawing = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(L10n.Devices.withdrawConfirm) {
+                if let row = withdrawing { Task { await model.withdraw(row) } }
+                withdrawing = nil
+            }
+            .accessibilityIdentifier("devices.withdrawConfirm")
+            Button(L10n.Devices.cancel, role: .cancel) { withdrawing = nil }
+        } message: {
+            Text(Self.withdrawConfirmMessage(device: Platform.deviceName))
+        }
     }
 
     /// The confirmation dialog's title. A nickname is a non-optional `String`,
@@ -68,6 +86,25 @@ struct DeviceListSection: View {
     nonisolated static func removeConfirmTitle(nickname: String?) -> String {
         guard let nickname, !nickname.isEmpty else { return L10n.Devices.removeConfirmTitleUnnamed }
         return L10n.Devices.removeConfirmTitle(name: nickname)
+    }
+
+    /// The withdrawal confirmation's title, unnamed on the same terms as
+    /// ``removeConfirmTitle(nickname:)``.
+    nonisolated static func withdrawConfirmTitle(nickname: String?) -> String {
+        guard let nickname, !nickname.isEmpty else { return L10n.Devices.withdrawConfirmTitleUnnamed }
+        return L10n.Devices.withdrawConfirmTitle(name: nickname)
+    }
+
+    /// ADR-0056 §6's three warnings, in its order: the keys the device is sent,
+    /// the other devices whose removals still stand, and the relay, which
+    /// nothing can tell to readmit a device yet
+    /// ([#1299](https://github.com/justin13888/Sunrise/issues/1299)).
+    nonisolated static func withdrawConfirmMessage(device: String) -> String {
+        [
+            L10n.Devices.withdrawConfirmKeys(device: device),
+            L10n.Devices.withdrawConfirmOthers,
+            L10n.Devices.withdrawConfirmRelay
+        ].joined(separator: "\n\n")
     }
 
     @ViewBuilder
@@ -96,10 +133,20 @@ struct DeviceListSection: View {
                 Button(L10n.Devices.remove, role: .destructive) { revoking = row }
                     .accessibilityIdentifier("devices.revoke")
             }
+            // Only where the core says this device may withdraw: a removal
+            // another device made, or one signed as the account identity, is
+            // not this device's to take back (ADR-0056 §6).
+            if row.withdrawable {
+                Button(L10n.Devices.withdraw) { withdrawing = row }
+                    .accessibilityIdentifier("devices.withdraw")
+            }
         }
         .contextMenu {
             if !row.isThisDevice && !row.revoked {
                 Button(L10n.Devices.removeEllipsis, role: .destructive) { revoking = row }
+            }
+            if row.withdrawable {
+                Button(L10n.Devices.withdrawEllipsis) { withdrawing = row }
             }
         }
     }
@@ -197,6 +244,22 @@ struct DeviceListSection: View {
             }
             .font(.caption)
             .accessibilityIdentifier("devices.revocationResult")
+        }
+    }
+
+    /// What the last withdrawal did, in the model's words: only a reinstated
+    /// device is called back, and the relay's half is said either way.
+    @ViewBuilder
+    private var withdrawalReport: some View {
+        if let done = model.lastWithdrawal {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(done.lines(device: Platform.deviceName), id: \.self) { line in
+                    Text(line)
+                }
+                Button(L10n.Devices.done) { model.dismissWithdrawal() }
+            }
+            .font(.caption)
+            .accessibilityIdentifier("devices.withdrawalResult")
         }
     }
 

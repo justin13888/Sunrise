@@ -41,4 +41,27 @@ struct StringCatalogTests {
         #expect(DeviceListSection.removeConfirmTitle(nickname: nil) == "Remove this device?")
         #expect(DeviceListSection.removeConfirmTitle(nickname: "Mac") == "Remove Mac?")
     }
+
+    @Test
+    func anEmptyNicknameGetsTheUnnamedWithdrawTitle() {
+        let unnamed = "Withdraw your removal of this device?"
+        #expect(DeviceListSection.withdrawConfirmTitle(nickname: "") == unnamed)
+        #expect(DeviceListSection.withdrawConfirmTitle(nickname: nil) == unnamed)
+        #expect(DeviceListSection.withdrawConfirmTitle(nickname: "Mac") == "Withdraw your removal of Mac?")
+    }
+
+    /// ADR-0056 §6's three warnings, each a paragraph, in its order: keys,
+    /// other removals, relay.
+    @Test
+    func theWithdrawMessageGivesTheThreeWarningsInOrder() {
+        let paragraphs = DeviceListSection.withdrawConfirmMessage(device: "Mac")
+            .components(separatedBy: "\n\n")
+        #expect(paragraphs == [
+            L10n.Devices.withdrawConfirmKeys(device: "Mac"),
+            L10n.Devices.withdrawConfirmOthers,
+            L10n.Devices.withdrawConfirmRelay
+        ])
+        #expect(paragraphs.first?.contains("every key this Mac holds") == true)
+        #expect(paragraphs.last?.contains("relay") == true)
+    }
 }
