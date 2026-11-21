@@ -87,9 +87,11 @@ final class SavedViewsModel {
 
     /// One primary view, as somewhere to be.
     ///
-    /// Split out from ``recall(_:contexts:)`` rather than inlined: the store
-    /// now names eleven views, and a function that both resolved context names
-    /// and branched eleven ways was over the complexity the linter allows.
+    /// Split out from ``recall(_:contexts:)`` rather than inlined, and the
+    /// views a filter cannot narrow are mapped by ``PrimaryView/unfiltered``:
+    /// the store names eleven views, and a function that branched eleven ways
+    /// was over the complexity the linter allows. Both switches stay
+    /// exhaustive, so a view added upstream still fails the build here.
     private func destination(
         for view: PrimaryView,
         contexts resolved: [EntityRef],
@@ -97,18 +99,9 @@ final class SavedViewsModel {
     ) -> Destination {
         switch view {
         case .today: .list(.today(contexts: resolved))
-        case .inbox: .list(.inbox)
         case .stream: browse(contexts: resolved, book: book)
-        case .search: .search
-        case .calendar: .calendar
-        // The span is device-local and not saved, so a recalled Upcoming
-        // opens over this device's own span, as the sidebar entry does.
-        case .upcoming: .list(.upcomingDefault)
-        case .focus: .focus
-        case .routines: .routines
-        case .review: .review
-        case .morning: .morning
-        case .evening: .evening
+        case .inbox, .search, .calendar, .upcoming, .focus, .routines, .review, .morning, .evening:
+            view.unfiltered
         }
     }
 
@@ -180,4 +173,26 @@ extension Destination {
 
     /// Whether a saved view of this destination should carry search text.
     var savesQuery: Bool { primary == .search }
+}
+
+extension PrimaryView {
+    /// Where this view opens with no context filter: Today and a browse view
+    /// that name no context both recall as Today, as `browse` does.
+    ///
+    /// Upcoming's span is device-local and not saved, so a recalled Upcoming
+    /// opens over this device's own span, as the sidebar entry does (#1229).
+    var unfiltered: Destination {
+        switch self {
+        case .today, .stream: .list(.todayAll)
+        case .inbox: .list(.inbox)
+        case .search: .search
+        case .calendar: .calendar
+        case .upcoming: .list(.upcomingDefault)
+        case .focus: .focus
+        case .routines: .routines
+        case .review: .review
+        case .morning: .morning
+        case .evening: .evening
+        }
+    }
 }
