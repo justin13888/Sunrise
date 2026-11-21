@@ -317,23 +317,20 @@ final class ScratchVaultStores: @unchecked Sendable {
 final class InMemoryVaultRootStore: VaultRootStore, @unchecked Sendable {
     private let lock = NSLock()
     private var root: Data?
+    private var setAside: [String: InMemoryVaultRootStore] = [:]
 
-    func load() throws -> Data? {
-        lock.lock()
-        defer { lock.unlock() }
-        return root
-    }
+    func load() throws -> Data? { lock.withLock { root } }
 
-    func store(_ root: Data) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        self.root = root
-    }
+    func store(_ root: Data) throws { lock.withLock { self.root = root } }
 
-    func clear() throws {
-        lock.lock()
-        defer { lock.unlock() }
-        root = nil
+    func clear() throws { lock.withLock { root = nil } }
+
+    func forSetAside(_ directoryName: String) -> any VaultRootStore {
+        lock.withLock {
+            let kept = setAside[directoryName] ?? InMemoryVaultRootStore()
+            setAside[directoryName] = kept
+            return kept
+        }
     }
 }
 

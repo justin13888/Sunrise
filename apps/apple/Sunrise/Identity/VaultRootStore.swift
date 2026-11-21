@@ -14,6 +14,15 @@ protocol VaultRootStore: Sendable {
     func store(_ root: Data) throws
     /// Forget the root. The vault on disk becomes unreadable.
     func clear() throws
+    /// Where the root of the vault set aside as `directoryName` is kept: the
+    /// leaf the core named it (`<vault>.set-aside-<n>`, `set_vault_aside`).
+    ///
+    /// A store of its own, so storing a new root here never touches the root
+    /// the set-aside vault was written under (#1222). A recovery-code restore
+    /// moves an unreadable vault aside whole and stores a new root; without
+    /// this, the old root went with the store, and the directory it moved
+    /// aside rather than delete could never be opened again.
+    func forSetAside(_ directoryName: String) -> any VaultRootStore
 }
 
 /// The real one.
@@ -40,26 +49,50 @@ struct KeychainVaultRootStore: VaultRootStore {
     /// down for a user or a support reader.
     static let accessibility = KeychainAccessibility.afterFirstUnlockThisDeviceOnly
 
+    /// Where ``forSetAside(_:)`` keeps the roots of vaults moved aside: a
+    /// service of its own, so no vault's own account can ever name one, and
+    /// so Keychain Access lists them apart from the roots in use.
+    ///
+    /// The same class and domain as the root in use, and nothing else: a
+    /// kept root is the key to a vault exactly as much as the live one is.
+    /// It lives until the user deletes it here, because the directory it
+    /// opens is never deleted by the app either.
+    static let setAsideService = "dev.sunrise.Sunrise.vault-root.set-aside"
+
+    /// The item ``forSetAside(_:)`` builds from.
+    private let vaultName: String
     private let item: KeychainItem
     private let migration: KeychainMigration
 
     init(vaultName: String = "default") {
+        self.init(service: Self.service, account: vaultName)
+    }
+
+    private init(service: String, account: String) {
+        vaultName = account
         item = KeychainItem(
-            service: Self.service,
-            account: vaultName,
+            service: service,
+            account: account,
             accessibility: Self.accessibility,
             domain: KeychainDomain.current
         )
         migration = KeychainMigration(
             kind: .vaultRoot,
             source: KeychainItem(
-                service: Self.service,
-                account: vaultName,
+                service: service,
+                account: account,
                 accessibility: Self.accessibility,
                 domain: .login
             ),
             destination: item
         )
+    }
+
+    /// The account is `<vault name>/<directory name>`: the vault name
+    /// because two vaults are two accounts, and the directory name because
+    /// it is unique among that vault's set-aside directories.
+    func forSetAside(_ directoryName: String) -> any VaultRootStore {
+        Self(service: Self.setAsideService, account: "\(vaultName)/\(directoryName)")
     }
 
     func load() throws -> Data? {

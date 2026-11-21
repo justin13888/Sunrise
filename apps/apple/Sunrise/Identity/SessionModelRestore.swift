@@ -103,8 +103,11 @@ extension SessionModel {
     ///
     /// The order is what keeps the user's data:
     ///
-    /// 1. A vault already here whose key is missing is moved aside, never
-    ///    deleted: a recovery writes a new vault and cannot merge into one.
+    /// 1. A vault already here, whose key is missing or which would not open,
+    ///    is moved aside, never deleted: a recovery writes a new vault and
+    ///    cannot merge into one. The root it was written under, if one is
+    ///    stored, is kept under the set-aside directory's name before anything
+    ///    is written (``keepRoot(of:)``), so the vault moved aside still opens.
     /// 2. The new root is generated and handed over, and stored only once the
     ///    seam reports the vault written. A root stored for a restore that
     ///    wrote nothing would open as a fresh, empty account on the next
@@ -129,6 +132,13 @@ extension SessionModel {
         guard !request.relayURL.isEmpty else { throw RestoreSetupError.relayNotConfigured }
         let directory = location.directory
         let setAside = try Self.setAside(location)
+        let kept: (any VaultRootStore)?
+        do {
+            kept = try keepRoot(of: setAside)
+        } catch {
+            try Self.putBack(setAside, at: directory)
+            throw error
+        }
         let root = try VaultRoot.generate()
         let store = relayDeviceStore
         let scope = RelayDeviceScope(relayURL: request.relayURL, bearer: request.bearer)
@@ -150,8 +160,14 @@ extension SessionModel {
                 await open(with: root)
             } else {
                 // A failed put-back is the louder error: it says where the
-                // original vault is.
+                // original vault is, and its kept root stays with it.
                 try Self.putBack(setAside, at: directory)
+                // Back in place, the vault opens under the root in use,
+                // which nothing replaced, so the copy names a directory
+                // that no longer exists. A copy that will not go is the
+                // same key on the same device, and the restore's own error
+                // is the one to report.
+                try? kept?.clear()
             }
             throw error
         }
@@ -168,6 +184,41 @@ extension SessionModel {
     static func setAside(_ location: VaultLocation) throws -> URL? {
         guard location.exists() else { return nil }
         return try CoreBridge.moveAside(location.directory)
+    }
+
+    /// Keep the root in use under the name of the vault set aside at `aside`,
+    /// before a restore stores a new one over it (#1222), and return where it
+    /// was kept. `nil` when nothing was set aside, or when no root is stored:
+    /// the key-missing route, where there is no root to lose.
+    ///
+    /// The vault was written under that root, so once the new one is stored
+    /// this copy is the only key that opens it. A root that cannot be read
+    /// throws rather than answering `nil`: the restore cannot know whether it
+    /// would replace one, and refuses rather than find out by losing it.
+    func keepRoot(of aside: URL?) throws -> (any VaultRootStore)? {
+        guard let aside, let root = try rootStore.load() else { return nil }
+        let kept = try Self.unoccupiedSetAsideStore(in: rootStore, for: aside.lastPathComponent)
+        try kept.store(root)
+        return kept
+    }
+
+    /// The set-aside store ``keepRoot(of:)`` writes to: the one named for
+    /// `directoryName` while it holds nothing, otherwise one named
+    /// `<directoryName>~<UUID>`.
+    ///
+    /// The core reuses the first `<vault>.set-aside-<n>` no longer on disk,
+    /// so a user who renamed or moved an earlier set-aside directory frees
+    /// its name while the root that opens it is still kept under that name.
+    /// Storing over it would lose the only key to that directory; a fresh
+    /// account keeps both. A name whose item cannot be read throws, for the
+    /// reason ``keepRoot(of:)`` gives.
+    static func unoccupiedSetAsideStore(
+        in store: any VaultRootStore,
+        for directoryName: String
+    ) throws -> any VaultRootStore {
+        let named = store.forSetAside(directoryName)
+        guard try named.load() != nil else { return named }
+        return store.forSetAside("\(directoryName)~\(UUID().uuidString)")
     }
 
     /// Undo ``setAside(_:)`` after a restore that wrote nothing.
