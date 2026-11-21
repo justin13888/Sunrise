@@ -16,19 +16,27 @@ extension TaskRows {
                 Text(L10n.Upcoming.nothingPlanned)
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .upcomingCell()
             }
             ForEach(section.blocks, id: \.gridKey) { block in
                 UpcomingBlockLine(row: block, timeZone: model.timeZone)
+                    .upcomingCell()
             }
             ForEach(section.rows) { item in
                 row(item.task, day: section.target)
-                    .badge(item.badge.map { Text($0) })
+                    .upcomingBadge(item.badge)
                     .accessibilityIdentifier("upcoming-row-\(section.id)")
+                    .upcomingCell(
+                        highlighted: selection.cursor == item.task.id
+                            || selection.explicit.contains(item.task.id)
+                    )
+                    .upcomingIdentity("\(section.id)/\(item.id)")
             }
             if section.more > 0 {
                 Text(L10n.Upcoming.more(count: section.more))
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .upcomingCell()
             }
         } header: {
             UpcomingSectionHeader(
@@ -37,6 +45,7 @@ extension TaskRows {
                 summary: planner.target == section.target ? planner.summary : nil,
                 identifier: "upcoming-\(section.id)"
             )
+            .upcomingHeading()
             .dropDestination(for: String.self) { items, _ in
                 dropUpcoming(items, on: section.target)
             } isTargeted: { hoverUpcoming(section.target, $0) }
@@ -100,6 +109,99 @@ extension TaskRows {
         case .earlier, .later, .shorter, .longer:
             return false
         }
+    }
+}
+
+/// Upcoming's days on iOS: the sections stacked in a scroll view, each
+/// heading pinned while its rows scroll under it.
+///
+/// Not a `List`, because on iOS a `List` refuses every drop inside itself of
+/// a drag one of its own rows started (see `TaskRows.container`). What the
+/// `List` drew for free is drawn by ``upcomingCell(highlighted:)``,
+/// ``upcomingHeading()`` and ``upcomingBadge(_:)`` instead. A row here has no
+/// swipe actions, which only a `List` row has: Defer and Delete are both in
+/// its context menu.
+///
+/// Focusable for keys only (`.edit`), so an iPad's keyboard still reaches the
+/// rows' bindings and Upcoming's planning keys, and a tap on a phone does
+/// what it did.
+struct UpcomingStack<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                content
+            }
+        }
+        .focusable(interactions: .edit)
+        .focusEffectDisabled()
+    }
+}
+
+extension View {
+    /// One line of an Upcoming section: what a `List` cell gives it on the
+    /// Mac, drawn by hand in iOS's ``UpcomingStack``. `highlighted` is the
+    /// keyboard's cursor or a ticked row, which a `List` highlights itself
+    /// and `docs/10-cross-cutting/accessibility.md` requires to be visible.
+    @ViewBuilder
+    func upcomingCell(highlighted: Bool = false) -> some View {
+        #if os(iOS)
+        padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(highlighted ? AnyShapeStyle(.tint.opacity(0.15)) : AnyShapeStyle(.clear))
+        #else
+        self
+        #endif
+    }
+
+    /// An Upcoming section's heading: on iOS a band the rows scroll under,
+    /// and a header to VoiceOver, both of which a `List` section header is.
+    @ViewBuilder
+    func upcomingHeading() -> some View {
+        #if os(iOS)
+        font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.bar)
+            .accessibilityAddTraits(.isHeader)
+        #else
+        self
+        #endif
+    }
+
+    /// A row's identity in iOS's ``UpcomingStack``: its section's and its
+    /// task's together. A lazy stack keys a row by its task alone, so a task
+    /// dropped on another day keeps the view it had under the old one, and
+    /// that view is not drawn again: it shows the old day's "tomorrow" under
+    /// the new day's heading. A `List` draws it afresh, so the Mac needs none.
+    @ViewBuilder
+    func upcomingIdentity(_ identity: String) -> some View {
+        #if os(iOS)
+        id(identity)
+        #else
+        self
+        #endif
+    }
+
+    /// The deadline a row is listed under, beside it. A `List` row's
+    /// `badge` on the Mac; outside a `List` a badge draws nothing, so on iOS
+    /// it is the text itself.
+    @ViewBuilder
+    func upcomingBadge(_ badge: String?) -> some View {
+        #if os(iOS)
+        HStack(spacing: 8) {
+            self
+            if let badge {
+                Text(badge)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        #else
+        self.badge(badge.map { Text($0) })
+        #endif
     }
 }
 

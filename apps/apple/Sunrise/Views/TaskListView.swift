@@ -106,6 +106,65 @@ struct TaskRows: View {
     }
 
     private var list: some View {
+        container
+            .listStyle(.inset)
+            // A reorder, a drop, a completion that leaves the list, a fold:
+            // rows move rather than jump, at `standard`, because they move.
+            .animation(Motion.standard(reduceMotion: reduceMotion), value: visible.map(\.id))
+            // The second way out of the capture keyboard, beside the Done
+            // button the bar puts above it. Reaching for the list is what
+            // someone does when they have finished typing and want to see what
+            // they wrote, so the drag that gets them there is allowed to mean
+            // it. Inert on macOS, which has no software keyboard to dismiss.
+            .scrollDismissesKeyboard(.interactively)
+            .focused(focus, equals: .rows)
+            // Every row-scoped binding in `docs/08-features/keyboard.md`
+            // arrives here, and only here: a focused capture field consumes
+            // its own keystrokes before the list ever sees them, which is what
+            // lets `d` mean Defer and still be a letter you can type.
+            .onKeyChord(
+                scope: .list,
+                vim: preferences.vimMode ? vim : nil,
+                intercept: keyIntercept
+            ) { action in
+                ListCommand.perform(
+                    action,
+                    list: model,
+                    selection: selection,
+                    sheets: sheets,
+                    escapes: escapes
+                )
+            }
+            .accessibilityLabel(model.kind.title)
+    }
+
+    /// What holds the rows: a `List`, except Upcoming on iOS.
+    ///
+    /// Upcoming on iOS is a stack in a scroll view (``UpcomingStack``)
+    /// because the iPhone and iPad `List` never offers a drag one of its own
+    /// rows started to any drop target inside it: not a row's, not a section
+    /// heading's, not `ForEach.dropDestination`'s and not one on the `List`
+    /// itself. The row lifts and the drop is refused. A drag from outside the
+    /// `List` reaches those same targets, and the `List`'s own drag reaches
+    /// targets outside it, so it is the pairing that fails. Upcoming's one
+    /// gesture is a drag from a row to another section, so on iOS it is drawn
+    /// where that drag lands (#1234).
+    @ViewBuilder
+    private var container: some View {
+        #if os(iOS)
+        if model.kind.isUpcoming {
+            UpcomingStack {
+                ForEach(model.upcoming) { upcomingSection($0) }
+            }
+        } else {
+            rowList
+        }
+        #else
+        rowList
+        #endif
+    }
+
+    private var rowList: some View {
         List(selection: selectionBinding) {
             if model.kind.isToday {
                 ForEach(model.groups) { group in
@@ -117,35 +176,6 @@ struct TaskRows: View {
                 ForEach(model.tasks, id: \.id) { row($0) }
             }
         }
-        .listStyle(.inset)
-        // A reorder, a drop, a completion that leaves the list, a fold: rows
-        // move rather than jump, at `standard`, because they move.
-        .animation(Motion.standard(reduceMotion: reduceMotion), value: visible.map(\.id))
-        // The second way out of the capture keyboard, beside the Done button
-        // the bar puts above it. Reaching for the list is what someone does
-        // when they have finished typing and want to see what they wrote, so
-        // the drag that gets them there is allowed to mean it. Inert on macOS,
-        // which has no software keyboard to dismiss.
-        .scrollDismissesKeyboard(.interactively)
-        .focused(focus, equals: .rows)
-        // Every row-scoped binding in `docs/08-features/keyboard.md` arrives
-        // here, and only here: a focused capture field consumes its own
-        // keystrokes before the list ever sees them, which is what lets `d`
-        // mean Defer and still be a letter you can type.
-        .onKeyChord(
-            scope: .list,
-            vim: preferences.vimMode ? vim : nil,
-            intercept: keyIntercept
-        ) { action in
-            ListCommand.perform(
-                action,
-                list: model,
-                selection: selection,
-                sheets: sheets,
-                escapes: escapes
-            )
-        }
-        .accessibilityLabel(model.kind.title)
     }
 
     /// The list's own selection, expressed over the model.
