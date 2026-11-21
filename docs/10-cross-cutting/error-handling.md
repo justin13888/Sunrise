@@ -32,7 +32,9 @@ A finite enum across the system. Examples:
   - `PLAN_STALE` (`permanent`): an input changed since the preview; preview again
   - `PLAN_UNKNOWN` (`permanent`): no such diff is remembered; preview again
   - `PLAN_NOT_COMMITTABLE` (`user`): the diff carries a Blocking violation
-  - `PLAN_INVALID` (`user`): the intent names nothing, or the wrong kind
+  - `PLAN_INVALID` (`user`): the intent names nothing, or the wrong kind; or,
+    at commit, a block move would leave a recurring block's exception applying
+    to nothing (the preview flags it unless the block changed since)
   - `PLAN_CLOSED` (`permanent`): the vault is closed
   - `PLAN_FAILED` (`internal`): the planner's read or write failed
 

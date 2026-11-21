@@ -5,7 +5,7 @@
 use super::*;
 use crate::engine::PlanError;
 use crate::inner_op::InnerOp;
-use sunrise_domain::planner::{PlanIntent, PlanPosition, SlotTarget};
+use sunrise_domain::planner::{PlanIntent, PlanPosition, PlanRule, PlanSeverity, SlotTarget};
 use sunrise_domain::{BlockKind, BlockSource};
 
 const NOW_MS: u64 = 1_700_000_000_000;
@@ -481,4 +481,211 @@ fn an_intent_naming_nothing_is_invalid() {
         e.plan_preview(&db, &intent, NOW_MS),
         Err(PlanError::Invalid(_))
     ));
+}
+
+// ---- a recurring block (#1213, #1276) ----
+
+mod recurring {
+    use super::super::block_recurrence::{key, march, recur, scoped_update, weekly};
+    use super::*;
+    use crate::feature::BLOCK_OCCURRENCE_TASKS_FEATURE;
+    use sunrise_domain::{EditScope, OccurrenceBinding};
+
+    type Row = (Option<String>, Option<String>, Vec<String>);
+
+    /// The weekly standup with week 11 cancelled, week 18 retitled "Retro",
+    /// and a task bound to week 25, in a vault that requires
+    /// `block.occurrence_tasks`.
+    fn standup(e: &Engine, db: &mut Db) -> (EntityRef, EntityRef) {
+        let id = weekly(e, db);
+        e.require_features(db, &[BLOCK_OCCURRENCE_TASKS_FEATURE], true)
+            .unwrap();
+        e.apply(
+            db,
+            Command::DeleteBlock {
+                id,
+                scope: EditScope::This { key: key(11) },
+            },
+        )
+        .unwrap();
+        let retitle = BlockPatch {
+            title: Some(Some("Retro".into())),
+            ..BlockPatch::default()
+        };
+        e.apply(
+            db,
+            scoped_update(id, EditScope::This { key: key(18) }, retitle),
+        )
+        .unwrap();
+        let task = new_task(e, db, "Demo");
+        e.apply(
+            db,
+            Command::BindTask {
+                block: id,
+                task,
+                occurrence: Some(key(25)),
+            },
+        )
+        .unwrap();
+        (id, task)
+    }
+
+    /// Commit the planner's move of block `id` to `to_start`.
+    fn commit_move(
+        e: &Engine,
+        db: &mut Db,
+        id: EntityRef,
+        to_start: SunriseTime,
+    ) -> Result<crate::engine::PlanCommitId, PlanError> {
+        let intent = PlanIntent::MoveBlock {
+            block: id,
+            to_start,
+        };
+        let diff = e.plan_preview(db, &intent, NOW_MS).unwrap();
+        assert!(diff.moves.iter().any(|m| m.item == id), "{diff:#?}");
+        e.plan_apply(db, &diff, NOW_MS).map(|(_, commit)| commit)
+    }
+
+    /// What the day grid of 2026-03-`day` shows: each row's title, key, and
+    /// the titles of the tasks listed on it.
+    fn grid(e: &Engine, db: &Db, day: i8) -> Vec<Row> {
+        day_rows(e, db, march(day))
+            .into_iter()
+            .map(|r| (r.title, r.occurrence_key, r.task_titles))
+            .collect()
+    }
+
+    fn row(title: &str, key: &str, tasks: &[&str]) -> Row {
+        (
+            Some(title.into()),
+            Some(key.into()),
+            tasks.iter().map(|t| (*t).to_owned()).collect(),
+        )
+    }
+
+    /// The block's exception keys and occurrence binding keys.
+    fn keys(block: &sunrise_domain::Block) -> (Vec<String>, Vec<String>) {
+        (
+            block.exceptions.keys().cloned().collect(),
+            block
+                .occurrence_tasks
+                .iter()
+                .map(|b| b.key().to_owned())
+                .collect(),
+        )
+    }
+
+    /// A planner move of the series an hour later moves its exceptions and
+    /// its occurrence binding with their weeks, as an edit of the whole
+    /// block does; its undo moves them back to the keys they had.
+    #[test]
+    fn a_planner_move_carries_exceptions_and_bindings_and_its_undo_restores_them() {
+        let e = engine();
+        let mut db = db();
+        let (id, task) = standup(&e, &mut db);
+        let before = read_block_row(&db, id);
+
+        let commit = commit_move(&e, &mut db, id, at(10, 0)).unwrap();
+        assert!(grid(&e, &db, 11).is_empty(), "the cancelled week stays so");
+        assert_eq!(grid(&e, &db, 18), [row("Retro", "2026-03-18T10:00", &[])]);
+        assert_eq!(
+            grid(&e, &db, 25),
+            [row("Standup", "2026-03-25T10:00", &["Demo"])]
+        );
+        let moved = read_block_row(&db, id);
+        assert_eq!(
+            keys(&moved),
+            (
+                vec!["2026-03-11T10:00".into(), "2026-03-18T10:00".into()],
+                vec!["2026-03-25T10:00".into()],
+            )
+        );
+        assert_eq!(
+            moved.occurrence_tasks,
+            BTreeSet::from([OccurrenceBinding::new("2026-03-25T10:00", task)])
+        );
+
+        let undone = e.plan_undo(&mut db, commit).unwrap();
+        assert_eq!((undone.restored, undone.skipped.len()), (2, 0));
+        let after = read_block_row(&db, id);
+        assert_eq!(keys(&after), keys(&before));
+        assert_eq!(after.occurrence_tasks, before.occurrence_tasks);
+        assert!(grid(&e, &db, 11).is_empty());
+        assert_eq!(grid(&e, &db, 18), [row("Retro", &key(18), &[])]);
+        assert_eq!(grid(&e, &db, 25), [row("Standup", &key(25), &["Demo"])]);
+        e.assert_rebuild_identity(&db);
+    }
+
+    fn thursday() -> SunriseTime {
+        SunriseTime::floating(jiff::civil::date(2026, 3, 5).at(9, 0, 0, 0))
+    }
+
+    fn move_to_thursday(id: EntityRef) -> PlanIntent {
+        PlanIntent::MoveBlock {
+            block: id,
+            to_start: thursday(),
+        }
+    }
+
+    /// A rule that holds the weekday (`BYDAY=WE`) does not follow an anchor
+    /// the planner moves to Thursday, so neither could its cancelled week:
+    /// the preview flags the move as a Blocking `Invalid` violation the diff
+    /// introduces, so the diff is not committable, and its commit writes
+    /// nothing.
+    #[test]
+    fn a_planner_move_that_would_strand_an_exception_is_not_committable() {
+        let e = engine();
+        let mut db = db();
+        let (id, _) = standup(&e, &mut db);
+        recur(&e, &mut db, id, "FREQ=WEEKLY;BYDAY=WE");
+        let before = read_block_row(&db, id);
+        let ops = op_count(&db);
+
+        let diff = e.plan_preview(&db, &move_to_thursday(id), NOW_MS).unwrap();
+        assert!(diff.moves.iter().any(|m| m.item == id), "{diff:#?}");
+        assert!(!diff.committable, "{diff:#?}");
+        assert!(
+            diff.violations.iter().any(|v| v.item == id
+                && v.rule == PlanRule::Invalid
+                && v.severity == PlanSeverity::Blocking
+                && v.introduced),
+            "{diff:#?}"
+        );
+        assert_eq!(
+            e.plan_preview(&db, &move_to_thursday(id), NOW_MS)
+                .unwrap()
+                .id,
+            diff.id,
+            "the flagged diff's id is deterministic"
+        );
+        assert!(matches!(
+            e.plan_apply(&mut db, &diff, NOW_MS),
+            Err(PlanError::NotCommittable)
+        ));
+        assert_eq!(read_block_row(&db, id), before);
+        assert_eq!(op_count(&db), ops, "a refused commit writes nothing");
+        assert!(grid(&e, &db, 11).is_empty());
+    }
+
+    /// A rule changed after the preview, in a way the diff's base does not
+    /// digest, is still caught at commit: the move that now strands the
+    /// cancelled week is refused as invalid and writes nothing.
+    #[test]
+    fn a_strand_the_preview_could_not_see_is_refused_at_commit() {
+        let e = engine();
+        let mut db = db();
+        let (id, _) = standup(&e, &mut db);
+        let diff = e.plan_preview(&db, &move_to_thursday(id), NOW_MS).unwrap();
+        assert!(diff.committable, "{diff:#?}");
+        recur(&e, &mut db, id, "FREQ=WEEKLY;BYDAY=WE");
+        let before = read_block_row(&db, id);
+        let ops = op_count(&db);
+
+        assert!(matches!(
+            e.plan_apply(&mut db, &diff, NOW_MS),
+            Err(PlanError::Invalid(_))
+        ));
+        assert_eq!(read_block_row(&db, id), before);
+        assert_eq!(op_count(&db), ops, "a refused commit writes nothing");
+    }
 }

@@ -35,7 +35,8 @@ pub enum PlanRule {
     /// The subject starts before now.
     InPast,
     /// The write would fail the entity's invariants: a block whose end is not
-    /// after its start.
+    /// after its start, or a recurring block whose move would leave an
+    /// exception applying to nothing ([`super::PlanDiff::refuse`]).
     Invalid,
 }
 

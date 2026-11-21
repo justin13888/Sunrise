@@ -6,7 +6,7 @@
 //! Nothing here decides a position. [`sunrise_domain::planner::solve`] does,
 //! and this module only reads rows into its inputs and writes its answer.
 
-use super::block::read_block;
+use super::block::{move_anchor, read_block};
 use super::day_schedule::schedule_in;
 use super::ids::{blob16, domain_bytes, ms_to_ts, time_from_parts, time_to_parts};
 use super::snapshot::in_tx;
@@ -43,7 +43,8 @@ pub enum PlanError {
     /// The diff carries a Blocking violation.
     #[error("the plan carries a blocking violation")]
     NotCommittable,
-    /// The intent names nothing, or the wrong kind.
+    /// The intent names nothing, or the wrong kind; or, at commit, a block
+    /// move would leave a recurring block's exception applying to nothing.
     #[error("invalid plan intent: {0}")]
     Invalid(String),
     /// The vault is closed.
@@ -166,6 +167,10 @@ impl Engine {
     /// Solve `intent` against the vault as it stands at `now_ms`, in the
     /// reader's zone. Writes nothing.
     ///
+    /// A block move the commit would refuse because it strands a recurring
+    /// block's exception ([`move_anchor`]) is flagged here, as a Blocking
+    /// `Invalid` violation on the block, and the diff is not committable.
+    ///
     /// # Errors
     /// [`PlanError::Invalid`] for an intent naming nothing the vault holds,
     /// or the wrong kind; [`PlanError::Engine`] for a failed read.
@@ -176,14 +181,41 @@ impl Engine {
         now_ms: u64,
     ) -> Result<PlanDiff, PlanError> {
         let inputs = self.plan_inputs(db, intent, now_ms)?;
-        solve(&inputs, intent).map_err(|e| PlanError::Invalid(e.to_string()))
+        let mut diff = solve(&inputs, intent).map_err(|e| PlanError::Invalid(e.to_string()))?;
+        let tz = self.device_zone();
+        let mut stranding = Vec::new();
+        for m in &diff.moves {
+            let PlanPosition::Slot { start, end } = &m.after else {
+                continue;
+            };
+            if m.item.kind() != EntityKind::Block {
+                continue;
+            }
+            let Some(mut block) = read_block(db.conn(), m.item.bytes())? else {
+                continue;
+            };
+            let anchor = block.starts_at.clone();
+            let was = block.series();
+            block.starts_at = start.clone();
+            block.ends_at = end.clone();
+            if let Err(EngineError::Invalid(_)) = move_anchor(&mut block, &anchor, was, &tz) {
+                stranding.push(m.item);
+            }
+        }
+        for item in stranding {
+            diff.refuse(item);
+        }
+        Ok(diff)
     }
 
     /// Write `diff`, previewed at `now_ms`, exactly: `planned_at` for each
     /// task, `starts_at` and `ends_at` for each block, and for a
     /// [`PlanIntent::BulkDefer`] one more `deferred_count` on each task it
-    /// names, as one group (ADR-0065 §6). Returns how many items it moved,
-    /// and the commit whose inverse it stored.
+    /// names, as one group (ADR-0065 §6). A recurring block's write also
+    /// re-keys its `exceptions` and `occurrence_tasks` to the occurrences
+    /// they named, as an edit of the whole block does ([`move_anchor`]).
+    /// Returns how many items it moved, and the commit whose inverse it
+    /// stored.
     ///
     /// In the same transaction it stores the commit's inverse
     /// (`planner_commits`, `planner_commit_fields`): for each field whose
@@ -196,8 +228,12 @@ impl Engine {
     ///
     /// # Errors
     /// [`PlanError::Stale`] when an input changed; [`PlanError::NotCommittable`]
-    /// for a diff with a Blocking violation; [`PlanError::Engine`] for a write
-    /// the domain refuses or a failed transaction.
+    /// for a diff with a Blocking violation; [`PlanError::Invalid`] for a
+    /// block move that would leave a recurring block's exception applying to
+    /// nothing, which [`Self::plan_preview`] flags unless the block changed
+    /// since in a way the diff's base does not digest (its rule);
+    /// [`PlanError::Engine`] for another write the domain refuses or a failed
+    /// transaction.
     #[allow(
         clippy::too_many_lines,
         reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
@@ -273,12 +309,21 @@ impl Engine {
                             undefer: false,
                         });
                     }
+                    let anchor = block.starts_at.clone();
+                    let was = block.series();
                     block.starts_at = start;
                     block.ends_at = end;
                     block.updated_at = ms_to_ts(write_ms.cast_signed());
-                    block
-                        .validate_invariants(&self.device_zone())
-                        .map_err(EngineError::from)?;
+                    // A recurring block's bindings and exceptions move with
+                    // the occurrences they named, as an edit of the whole
+                    // block moves them; a move that would strand one is
+                    // refused, and nothing is written.
+                    move_anchor(&mut block, &anchor, was, &self.device_zone()).map_err(
+                        |e| match e {
+                            EngineError::Invalid(why) => PlanError::Invalid(why),
+                            other => PlanError::Engine(other),
+                        },
+                    )?;
                     blocks.push(block);
                 }
                 _ => return Err(PlanError::Invalid(format!("{item} cannot be planned"))),
@@ -374,6 +419,8 @@ impl Engine {
                     EntityKind::Block => {
                         let block = read_block(tx, item.bytes())?.filter(|b| !b.deleted);
                         block.and_then(|mut block| {
+                            let anchor = block.starts_at.clone();
+                            let was = block.series();
                             for row in &fields {
                                 match (row.field, &row.prior, row.restorable()) {
                                     (PlanField::StartsAt, Some(v), true) => {
@@ -393,7 +440,10 @@ impl Engine {
                                 restored += 1;
                             }
                             block.updated_at = ms_to_ts(write_ms.cast_signed());
-                            block.validate_invariants(&tz).ok()?;
+                            // The restored anchor carries the bindings and
+                            // exceptions back to the occurrences they named;
+                            // one it would strand leaves the block as it is.
+                            move_anchor(&mut block, &anchor, was, &tz).ok()?;
                             let stream = domain_bytes(block.stream_id);
                             Some((InnerOp::BlockUpdate(Box::new(block)), stream))
                         })

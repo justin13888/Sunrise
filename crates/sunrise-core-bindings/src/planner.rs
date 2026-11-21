@@ -412,7 +412,9 @@ impl SunriseCore {
     /// [`BindingError::PlanStale`] or [`BindingError::PlanUnknown`]: preview
     /// again at the same position, and commit the new diff only if its moves
     /// are the same. [`BindingError::PlanRefused`] for a diff with a Blocking
-    /// violation; [`BindingError::BadFixedBytes`] for an id that is not 32
+    /// violation, or a block move that would leave a recurring block's
+    /// exception applying to nothing (the preview flags it unless the block
+    /// changed since); [`BindingError::BadFixedBytes`] for an id that is not 32
     /// hex digits.
     pub fn plan_commit(&self, diff_id: String) -> Result<PlanCommitItem, BindingError> {
         let result = self.inner.plan_commit(self::diff_id(&diff_id)?)?;
