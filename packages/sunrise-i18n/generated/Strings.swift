@@ -120,7 +120,7 @@ enum L10n {
         }
         /// If another device also removed it, it stays removed until that device withdraws its removal too.
         static var withdrawConfirmOthers: String { L10n.tr("apple.devices.withdraw_confirm_others") }
-        /// If the relay has already been told of the removal, it goes on refusing the device: Sunrise cannot yet tell the relay to let it back in, so the device must be paired again as a new device to sync.
+        /// If the relay has already been told of the removal, it goes on refusing the device: Sunrise does not yet ask the relay to let it back in, so the device must be paired again as a new device to sync.
         static var withdrawConfirmRelay: String { L10n.tr("apple.devices.withdraw_confirm_relay") }
         /// Withdraw removal
         static var withdrawConfirm: String { L10n.tr("apple.devices.withdraw_confirm") }
@@ -158,7 +158,7 @@ enum L10n {
         }
         /// The relay had not been told of the removal yet, and that telling is cancelled.
         static var withdrawnRelayCancelled: String { L10n.tr("apple.devices.withdrawn_relay_cancelled") }
-        /// If the relay was already told of the removal, it still refuses {name}, and Sunrise cannot yet tell it otherwise. If {name} cannot sync, pair it again as a new device.
+        /// If the relay was already told of the removal, it still refuses {name}: Sunrise does not yet ask it to let {name} back in. If {name} cannot sync, pair it again as a new device.
         static func withdrawnRelayTold(name: String) -> String {
             L10n.tr("apple.devices.withdrawn_relay_told", name)
         }

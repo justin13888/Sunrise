@@ -3868,7 +3868,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "If the relay has already been told of the removal, it goes on refusing the device: Sunrise cannot yet tell the relay to let it back in, so the device must be paired again as a new device to sync."
+            "value": "If the relay has already been told of the removal, it goes on refusing the device: Sunrise does not yet ask the relay to let it back in, so the device must be paired again as a new device to sync."
           }
         }
       }
@@ -3989,7 +3989,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "If the relay was already told of the removal, it still refuses %1$@, and Sunrise cannot yet tell it otherwise. If %1$@ cannot sync, pair it again as a new device."
+            "value": "If the relay was already told of the removal, it still refuses %1$@: Sunrise does not yet ask it to let %1$@ back in. If %1$@ cannot sync, pair it again as a new device."
           }
         }
       }

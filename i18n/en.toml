@@ -183,8 +183,9 @@ withdraw_confirm_title_unnamed = "Withdraw your removal of this device?"
 # consequence. {device} is the platform's word for this device ("Mac").
 withdraw_confirm_keys = "The device is sent every key this {device} holds, including the keys made while it was removed, so it can read what was written while it was out."
 withdraw_confirm_others = "If another device also removed it, it stays removed until that device withdraws its removal too."
-# Must keep that the relay cannot be told to readmit a device yet (#1299).
-withdraw_confirm_relay = "If the relay has already been told of the removal, it goes on refusing the device: Sunrise cannot yet tell the relay to let it back in, so the device must be paired again as a new device to sync."
+# The relay can readmit a device on its remover's word (#1238), but nothing
+# asks it to yet (#1299). Must keep that a told relay goes on refusing it.
+withdraw_confirm_relay = "If the relay has already been told of the removal, it goes on refusing the device: Sunrise does not yet ask the relay to let it back in, so the device must be paired again as a new device to sync."
 # Confirmation dialog: the button that withdraws.
 withdraw_confirm = "Withdraw removal"
 # The result of a withdrawal. Only `withdrawn_reinstated` may say the device is
@@ -200,8 +201,8 @@ withdraw_not_author = "This {device} holds no removal of {name} it can withdraw.
 withdrawn_keys = "{count, plural, one {This {device} sent it one key, including any made while it was removed: it can read what was written while it was out.} other {This {device} sent it # keys, including those made while it was removed: it can read what was written while it was out.}}"
 withdrawn_still_bounded = "This {device} still sends it no keys: the account does not count this {device}'s word on it, because this {device} has itself been removed."
 withdrawn_relay_cancelled = "The relay had not been told of the removal yet, and that telling is cancelled."
-# Must keep that nothing can tell the relay to readmit it yet (#1299).
-withdrawn_relay_told = "If the relay was already told of the removal, it still refuses {name}, and Sunrise cannot yet tell it otherwise. If {name} cannot sync, pair it again as a new device."
+# Must keep that nothing asks the relay to readmit it yet (#1299).
+withdrawn_relay_told = "If the relay was already told of the removal, it still refuses {name}: Sunrise does not yet ask it to let {name} back in. If {name} cannot sync, pair it again as a new device."
 # A withdrawal refused because {count} devices, possibly including the one
 # being reinstated, run a build that would drop it (ADR-0056 §7). No override.
 withdraw_awaits_update = "{count, plural, one {NOT withdrawn: one device runs a version of Sunrise that would drop a withdrawal and keep the device removed for good. Update Sunrise on it, or remove it if you cannot, then try again.} other {NOT withdrawn: # devices run a version of Sunrise that would drop a withdrawal and keep the device removed for good. Update Sunrise on them, or remove the ones you cannot update, then try again.}}"
