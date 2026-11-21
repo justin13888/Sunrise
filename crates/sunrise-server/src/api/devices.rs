@@ -1,4 +1,5 @@
-//! The device lifecycle: list, register, revoke, and push-token registration.
+//! The device lifecycle: list, register, revoke, reinstate, and push-token
+//! registration.
 //!
 //! A device id in a path or body is only ever a *filter* on the calling
 //! account's rows, never a lookup key on its own — the account half comes from
@@ -8,7 +9,7 @@
 use crate::api::error::{codes, ApiError};
 use crate::api::signed::{Signed, SignedBootstrap, SignedParts};
 use crate::state::ServerState;
-use crate::store::{Device, NewDevice};
+use crate::store::{Device, NewDevice, Reinstatement};
 use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
 use kynos::extract::params::path::Path;
@@ -341,11 +342,15 @@ pub async fn revoke_by_vault_id(
         ));
     }
 
+    // The signing device is recorded as the revoker, and is the only device
+    // `reinstate_by_vault_id` will later take a reinstatement from. An
+    // unsigned request records nobody, so what it revokes stays revoked.
     state
         .store
         .revoke_devices_by_vault_id(
             &caller.principal.account.account_id,
             &path.vault_device_id,
+            caller.device.as_ref().map(|d| d.device_id.as_str()),
             state.clock.now_ms(),
         )
         .await
@@ -358,6 +363,79 @@ pub async fn revoke_by_vault_id(
         })?;
     state.metrics.incr("sunrise_devices_revoke_total");
     Ok(NoContent)
+}
+
+/// Reinstate a device this caller revoked by its vault id (ADR-0056 §5).
+///
+/// The relay's half of a withdrawn revocation. **Only the device recorded as
+/// the revoker may call it, and only device-signed.** The revoke-by-vault-id
+/// route above records the device whose signature it verified on every row it
+/// revokes, and this route reinstates only those rows. A route that let any
+/// device on the account reinstate any other would be the third-party
+/// un-revoke ADR-0056 §3 rejects; one that took an unsigned request would let a
+/// bearer token alone undo a revocation.
+///
+/// - `204` when the caller's revoked rows are active again, **and** when a row
+///   carrying the id is already active, so a retry of a reinstatement that
+///   landed is a success rather than a refusal.
+/// - `403 DEVICE_NOT_REVOKER` when every row carrying the id is revoked and
+///   none by the caller: another device revoked it, or nobody recorded did
+///   (an unsigned revoke, or one made before the relay recorded revokers).
+///   Pairing the device again is the remedy.
+/// - `404 DEVICE_NOT_FOUND` when no row on this account carries the id.
+///
+/// Push tokens the revocation deleted are not restored; the device files them
+/// again on its next session.
+#[kynos::post(
+    "/api/v1/devices/by-vault-id/{vault_device_id}/reinstate",
+    operation_id = "reinstateDeviceByVaultId"
+)]
+pub async fn reinstate_by_vault_id(
+    Inject(state): Inject<ServerState>,
+    Path(path): Path<VaultDeviceIdPath>,
+    SignedParts(caller): SignedParts,
+) -> Result<NoContent, ApiError> {
+    if sunrise_id::crockford::decode_str(&path.vault_device_id).is_err() {
+        return Err(ApiError::validation(
+            "vault_device_id must be 26 Crockford base-32 characters",
+        ));
+    }
+    // Unsigned is refused before the store is asked: no row records a
+    // revoker that is not a device, so the store would answer the same, but
+    // the reason here is the request and not the row.
+    let Some(device) = caller.device.as_ref() else {
+        return Err(ApiError::forbidden(
+            codes::DEVICE_NOT_REVOKER,
+            "a reinstatement must be signed by the device that revoked it",
+        ));
+    };
+
+    let outcome = state
+        .store
+        .reinstate_devices_by_vault_id(
+            &caller.principal.account.account_id,
+            &path.vault_device_id,
+            &device.device_id,
+        )
+        .await
+        .map_err(|e| match e {
+            crate::store::MetadataError::NotFound => ApiError::not_found(
+                codes::DEVICE_NOT_FOUND,
+                "no device on this account carries that vault device id",
+            ),
+            other => other.into(),
+        })?;
+    match outcome {
+        Reinstatement::Reinstated(_) => {
+            state.metrics.incr("sunrise_devices_reinstate_total");
+            Ok(NoContent)
+        }
+        Reinstatement::AlreadyActive => Ok(NoContent),
+        Reinstatement::NotRevoker => Err(ApiError::forbidden(
+            codes::DEVICE_NOT_REVOKER,
+            "this device did not revoke that device, so it cannot reinstate it; pair it again",
+        )),
+    }
 }
 
 /// File a push token against one of the caller's devices.
@@ -410,3 +488,7 @@ pub async fn push_tokens(
 #[cfg(test)]
 #[path = "devices_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "devices_reinstate_tests.rs"]
+mod reinstate_tests;

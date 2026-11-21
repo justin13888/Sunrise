@@ -195,7 +195,7 @@ fn one_account_cannot_revoke_anothers_device_by_its_vault_id() {
         .unwrap();
 
     assert!(matches!(
-        s.revoke_devices_by_vault_id(&bob.account_id, VAULT_ID, NOW),
+        s.revoke_devices_by_vault_id(&bob.account_id, VAULT_ID, None, NOW),
         Err(StoreError::NotFound)
     ));
     assert!(
@@ -206,7 +206,7 @@ fn one_account_cannot_revoke_anothers_device_by_its_vault_id() {
     );
 
     assert_eq!(
-        s.revoke_devices_by_vault_id(&alice.account_id, VAULT_ID, NOW)
+        s.revoke_devices_by_vault_id(&alice.account_id, VAULT_ID, None, NOW)
             .unwrap(),
         1
     );

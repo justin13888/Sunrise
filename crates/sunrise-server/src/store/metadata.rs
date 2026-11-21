@@ -28,7 +28,7 @@ use std::time::Duration;
 use super::{
     Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, IdentityChainPinned,
     KeyBundlePinned, NewDevice, NewTombstone, PinnedIdentityChain, PinnedKeyBundle, PinnedSnapshot,
-    RetiredRecoveryBlob, Store, StoreError, StoreStats,
+    Reinstatement, RetiredRecoveryBlob, Store, StoreError, StoreStats,
 };
 use crate::auth::Subject;
 use crate::relay::{FrameHead, StreamKey};
@@ -167,8 +167,16 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         &self,
         account_id: &str,
         vault_device_id: &str,
+        revoked_by: Option<&str>,
         now_ms: u64,
     ) -> Result<usize, MetadataError>;
+    /// [`Store::reinstate_devices_by_vault_id`].
+    async fn reinstate_devices_by_vault_id(
+        &self,
+        account_id: &str,
+        vault_device_id: &str,
+        caller_device_id: &str,
+    ) -> Result<Reinstatement, MetadataError>;
     /// [`Store::touch_device`].
     async fn touch_device(&self, device_id: &str, now_ms: u64) -> Result<(), MetadataError>;
     /// [`Store::upsert_push_token`].
@@ -493,13 +501,28 @@ impl MetadataStore for Store {
         &self,
         account_id: &str,
         vault_device_id: &str,
+        revoked_by: Option<&str>,
         now_ms: u64,
     ) -> Result<usize, MetadataError> {
         Ok(Self::revoke_devices_by_vault_id(
             self,
             account_id,
             vault_device_id,
+            revoked_by,
             now_ms,
+        )?)
+    }
+    async fn reinstate_devices_by_vault_id(
+        &self,
+        account_id: &str,
+        vault_device_id: &str,
+        caller_device_id: &str,
+    ) -> Result<Reinstatement, MetadataError> {
+        Ok(Self::reinstate_devices_by_vault_id(
+            self,
+            account_id,
+            vault_device_id,
+            caller_device_id,
         )?)
     }
     async fn touch_device(&self, device_id: &str, now_ms: u64) -> Result<(), MetadataError> {

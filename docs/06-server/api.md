@@ -254,7 +254,8 @@ The user's `identity_pub_*` is signed-by-self; a hostile server substituting key
 |---|---|---|---|
 | POST | `/api/v1/devices` | `{ device_pub_s, device_pub_d?, device_cert?, vault_device_id?, nickname, platform, app_version? }` | `201` + `{ device_id }` |
 | DELETE | `/api/v1/devices/<dev_id>` | — | 204 (revocation; only callable by another paired device) |
-| DELETE | `/api/v1/devices/by-vault-id/<vault_dev_id>` | — | 204 (the same revocation, addressed by the id the vault knows the device by) |
+| DELETE | `/api/v1/devices/by-vault-id/<vault_dev_id>` | — | 204 (the same revocation, addressed by the id the vault knows the device by; a device-signed request records the signer as the revoker) |
+| POST | `/api/v1/devices/by-vault-id/<vault_dev_id>/reinstate` | — | 204 (undoes that revocation; only the recorded revoker, device-signed — see [Reinstatement](#reinstatement-only-on-the-revokers-word)) |
 | GET | `/api/v1/devices` | — | `[DeviceMeta]` |
 | POST | `/api/v1/devices/push-tokens` | `PushRegistration` = `{ device_id, platform, token }` | `200` + `{ "registered": true }` |
 
@@ -355,6 +356,29 @@ Three consequences are observable and tested:
   document asked clients to tolerate one, and nothing in the code produces it.
   For the `/sync` session, see [`auth.md`](./auth.md) §device-binding.
 
+#### Reinstatement only on the revoker's word
+
+A revocation withdrawn in the vault ([ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md)
+§5) has a relay half, and this is it.
+
+- **The revoke records its signer.** A device-signed `DELETE
+  /api/v1/devices/by-vault-id/<id>` writes the signing device's relay id into
+  `devices.revoked_by` on every row it revokes. An unsigned one, and every row
+  revoked before migration 0009 added the column, records nobody.
+- **`POST /api/v1/devices/by-vault-id/<id>/reinstate` accepts only that
+  device, and only signed.** It sets `revoked = 0` on the rows whose
+  `revoked_by` is the caller and clears `revoked_at_ms` and `revoked_by`, so a
+  later revoke records its own author. Any other caller — another device on
+  the account, or an unsigned request — gets `403 DEVICE_NOT_REVOKER`. Letting
+  any account device reinstate any other would be the third-party un-revoke
+  ADR-0056 §3 rejects.
+- **It is idempotent.** Where no row was revoked by the caller and one carrying
+  the id is already active, the answer is `204`, so a client that lost the
+  first reply retries until it hears one. `sunrise_devices_reinstate_total`
+  counts only the call that changed a row.
+- **Push tokens are not restored.** The revocation deleted them; the device
+  registers them again on its next session.
+
 #### `DeviceMeta` schema
 
 ```cddl
@@ -380,7 +404,8 @@ DeviceMeta = {
 | 403 | `AUTH_DEVICE_NOT_OWNER` | Caller is not a paired device of the account; the `DELETE` target is the caller itself; or a push registration names a device the account does not actively own. | No. |
 | 401 | `AUTH_DEVICE_SIG_INVALID` | The caller **is** an active device of this account and its `header_sig_v2` binding still did not check out: an unverifiable `X-Sunrise-Device-Sig`, no `Date` header alongside it, or a `Date` outside ±300 s. Also returned, before any device lookup, when `require_device_sig` is set and the caller did not present a **complete** binding — `X-Sunrise-Device` and `X-Sunrise-Device-Sig` are read together, so either one missing takes this path, not only both — which `GET /meta`'s `device_binding_required` already advertises. | No — re-sign with a correct clock. Never refresh the bearer; it was not the problem. |
 | 401 | `AUTH_TOKEN_INVALID` | `X-Sunrise-Device` names a device that is **not** an active row on this account, or the token's own `device_id` claim disagrees with it. Deliberately the same answer a bad bearer gets: a finer code here would tell an unauthenticated caller which devices an account has. | No. |
-| 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any **active** device on this account — including a device already revoked. For `by-vault-id`, also a device that registered before it sent a `vault_device_id`, which is **still accepted by this relay**: the `404` is not a statement that the device is refused. | No. |
+| 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any **active** device on this account — including a device already revoked. For `by-vault-id`, also a device that registered before it sent a `vault_device_id`, which is **still accepted by this relay**: the `404` is not a statement that the device is refused. For `reinstate`, no row on this account carries the vault id, revoked or not. | No. |
+| 403 | `DEVICE_NOT_REVOKER` | A `reinstate` from a caller that is not the device recorded as the revoker: another device revoked it, the revoke was unsigned or predates the record, or the reinstatement itself is unsigned. | No — the device is readmitted only by pairing it again. |
 
 ### Blobs
 
@@ -800,7 +825,7 @@ refills continuously.
 | `probe` | `GET /api/v1/health`, `GET /metrics` (loopback bind only) | none | 120 / min (`probe_per_min`) |
 | `meta` | `GET /api/v1/meta` | none | 60 / min (`meta_per_min`) |
 | `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
-| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `PUT /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
+| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `PUT /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/by-vault-id/{vault_device_id}/reinstate`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
 | `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}`, `GET /api/v1/snapshots/{stream_id}`, `PUT /api/v1/snapshots/{stream_id}`, `GET /api/v1/accounts/me/key_bundle`, `PUT /api/v1/accounts/me/key_bundle`, `GET /api/v1/accounts/me/identity_chain`, `PUT /api/v1/accounts/me/identity_chain` | bearer+sig | 600 / min (`blob_per_min`) |
 | `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events`; the pairing rendezvous's `POST /api/v1/pairing/send`, `POST /api/v1/pairing/receive`, `POST /api/v1/pairing/abort`, `POST /api/v1/pairing/resolve` | bearer+sig (+session); pairing bearer only | 600 / min (`sync_per_min`) |
 

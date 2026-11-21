@@ -46,6 +46,12 @@ pub mod codes {
     pub const AUTH_DEVICE_NOT_OWNER: &str = "AUTH_DEVICE_NOT_OWNER";
     /// The named device is not on this account.
     pub const DEVICE_NOT_FOUND: &str = "DEVICE_NOT_FOUND";
+    /// A reinstatement named a device the caller is not the recorded revoker
+    /// of: another device revoked it, or the revocation recorded no device (an
+    /// unsigned revoke, or one from before the relay recorded revokers).
+    /// Not retryable; the device is readmitted only by pairing it again
+    /// (ADR-0056 §5).
+    pub const DEVICE_NOT_REVOKER: &str = "DEVICE_NOT_REVOKER";
     /// Malformed body or field.
     pub const VALIDATION_INVALID: &str = "VALIDATION_INVALID";
     /// A chunk's ciphertext BLAKE3 disagrees with the hash the client supplied.

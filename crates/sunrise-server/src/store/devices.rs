@@ -12,7 +12,8 @@
 //! device it is writing for.
 //!
 //! The table's later history — the `vault_device_id` column added to databases
-//! that predate it, and the index over it — is migration 0002 in
+//! that predate it, and the index over it, in migration 0002, and the
+//! `revoked_by` column reinstatement reads, in migration 0009 — is in
 //! [`super::migrations`], because every schema change now goes through that
 //! numbered list.
 
@@ -88,6 +89,25 @@ pub struct Device {
     pub revoked: bool,
     /// Revocation time, ms since epoch.
     pub revoked_at_ms: Option<u64>,
+}
+
+/// What [`Store::reinstate_devices_by_vault_id`] found.
+///
+/// "No row carries that vault id" is not an arm: it is
+/// [`StoreError::NotFound`], as it is for every other lookup here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reinstatement {
+    /// The caller was the recorded revoker of this many rows, and they are
+    /// active again.
+    Reinstated(usize),
+    /// No row was revoked by the caller and at least one row carrying the
+    /// vault id is active: the relay already accepts the device. A retry of a
+    /// reinstatement that landed answers this.
+    AlreadyActive,
+    /// Every row carrying the vault id is revoked, and none by the caller:
+    /// another device revoked it, or nobody recorded did (an unsigned revoke,
+    /// or one from before the relay recorded revokers).
+    NotRevoker,
 }
 
 /// Fields `POST /api/v1/devices` supplies.
@@ -253,6 +273,12 @@ impl Store {
     /// caller is revoking. Revoking one and leaving the others would leave the
     /// device authenticating under a row the caller has no way to name.
     ///
+    /// `revoked_by` is the relay id of the device that signed the request, and
+    /// is written on every row this revokes: it is the one device
+    /// [`Store::reinstate_devices_by_vault_id`] will later accept a
+    /// reinstatement from (ADR-0056 §5). `None`, for an unsigned request,
+    /// records nobody, and such a row cannot be reinstated.
+    ///
     /// Returns [`StoreError::NotFound`] when no active row on this account
     /// carries that vault id — a second revoke, a device that never registered
     /// its vault id, and one aimed at another account's device all land here.
@@ -260,6 +286,7 @@ impl Store {
         &self,
         account_id: &str,
         vault_device_id: &str,
+        revoked_by: Option<&str>,
         now_ms: u64,
     ) -> Result<usize, StoreError> {
         let mut conn = self.tx("store.revoke_devices_by_vault_id");
@@ -278,12 +305,13 @@ impl Store {
             return Err(StoreError::NotFound);
         }
         tx.execute(
-            "UPDATE devices SET revoked = 1, revoked_at_ms = ?3 \
+            "UPDATE devices SET revoked = 1, revoked_at_ms = ?3, revoked_by = ?4 \
              WHERE account_id = ?1 AND vault_device_id = ?2 AND revoked = 0",
             params![
                 account_id,
                 vault_device_id,
-                i64::try_from(now_ms).unwrap_or(i64::MAX)
+                i64::try_from(now_ms).unwrap_or(i64::MAX),
+                revoked_by,
             ],
         )?;
         for id in &ids {
@@ -291,6 +319,56 @@ impl Store {
         }
         tx.commit()?;
         Ok(ids.len())
+    }
+
+    /// Reinstate the rows carrying `vault_device_id` that `caller_device_id`
+    /// revoked, on that device's word (ADR-0056 §5).
+    ///
+    /// Only a row whose recorded `revoked_by` is the caller is touched: a
+    /// device that let any account device reinstate any other would be the
+    /// third-party un-revoke ADR-0056 §3 rejects. A reinstated row is active
+    /// again with `revoked_at_ms` and `revoked_by` cleared, so a later revoke
+    /// records its own author. Push tokens the revocation deleted are not
+    /// restored; the device files them again on its next session.
+    ///
+    /// The answer is idempotent: once the caller's rows are active, asking
+    /// again is [`Reinstatement::AlreadyActive`] rather than a refusal, so a
+    /// client that lost the first reply can retry until it hears one.
+    ///
+    /// Returns [`StoreError::NotFound`] when no row on this account carries
+    /// the vault id at all.
+    pub fn reinstate_devices_by_vault_id(
+        &self,
+        account_id: &str,
+        vault_device_id: &str,
+        caller_device_id: &str,
+    ) -> Result<Reinstatement, StoreError> {
+        let mut conn = self.tx("store.reinstate_devices_by_vault_id");
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE devices SET revoked = 0, revoked_at_ms = NULL, revoked_by = NULL \
+             WHERE account_id = ?1 AND vault_device_id = ?2 AND revoked = 1 AND revoked_by = ?3",
+            params![account_id, vault_device_id, caller_device_id],
+        )?;
+        let outcome = if changed > 0 {
+            Reinstatement::Reinstated(changed)
+        } else {
+            let (active, revoked): (i64, i64) = tx.query_row(
+                "SELECT COALESCE(SUM(revoked = 0), 0), COALESCE(SUM(revoked = 1), 0) \
+                 FROM devices WHERE account_id = ?1 AND vault_device_id = ?2",
+                params![account_id, vault_device_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            if active > 0 {
+                Reinstatement::AlreadyActive
+            } else if revoked > 0 {
+                Reinstatement::NotRevoker
+            } else {
+                return Err(StoreError::NotFound);
+            }
+        };
+        tx.commit()?;
+        Ok(outcome)
     }
 
     /// Record the last time a device made an authenticated request.
