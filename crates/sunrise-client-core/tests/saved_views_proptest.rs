@@ -9,12 +9,13 @@
 use proptest::prelude::*;
 use sunrise_client_core::views::{SaveError, SavedView, SavedViewStore, View};
 
-const VIEWS: [View; 10] = [
+const VIEWS: [View; 11] = [
     View::Today,
     View::Inbox,
     View::Stream,
     View::Search,
     View::Calendar,
+    View::Upcoming,
     View::Focus,
     View::Routines,
     View::Review,

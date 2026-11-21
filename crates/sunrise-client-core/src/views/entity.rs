@@ -23,6 +23,7 @@ pub const fn view_kind(v: View) -> ViewKind {
         View::Stream => ViewKind::Stream,
         View::Search => ViewKind::Search,
         View::Calendar => ViewKind::Calendar,
+        View::Upcoming => ViewKind::Upcoming,
         View::Focus => ViewKind::Focus,
         View::Routines => ViewKind::Routines,
         View::Review => ViewKind::Review,
@@ -41,6 +42,7 @@ pub fn primary_view(k: &ViewKind) -> Option<View> {
         ViewKind::Stream => View::Stream,
         ViewKind::Search => View::Search,
         ViewKind::Calendar => View::Calendar,
+        ViewKind::Upcoming => View::Upcoming,
         ViewKind::Focus => View::Focus,
         ViewKind::Routines => View::Routines,
         ViewKind::Review => View::Review,
@@ -253,6 +255,7 @@ mod tests {
             View::Stream,
             View::Search,
             View::Calendar,
+            View::Upcoming,
             View::Focus,
             View::Routines,
             View::Review,
@@ -263,6 +266,7 @@ mod tests {
         }
         assert_eq!(primary_view(&ViewKind::from_raw("map")), None);
         assert_eq!(parse_view_kind("eod"), Some(ViewKind::Evening));
+        assert_eq!(parse_view_kind("upcoming"), Some(ViewKind::Upcoming));
         assert_eq!(parse_view_kind("nope"), None);
     }
 
