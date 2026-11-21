@@ -63,8 +63,8 @@ use std::collections::BTreeMap;
 use sunrise_core::ImportedFields;
 use sunrise_domain::validation::MAX_BLOCK_LOCATION_LEN;
 use sunrise_domain::{
-    decode_note_body, encode_note_body, note_body_to_plain_text, BlockDraft, Inline, NoteBlock,
-    NoteBody, SunriseTime,
+    decode_note_body, encode_note_body, note_body_from_plain_text, note_body_to_plain_text,
+    BlockDraft, Inline, NoteBlock, NoteBody, SunriseTime,
 };
 use sunrise_id::EntityRef;
 
@@ -311,17 +311,10 @@ fn location_of(ev: &ICalEvent, notices: &mut Vec<ICalNotice>) -> Option<String> 
 }
 
 /// A `DESCRIPTION` as a note: one paragraph per blank-line-separated run,
-/// as the CLI writes plain text into a note. `None` when it holds no text.
+/// as the CLI writes plain text into a note ([`note_body_from_plain_text`]).
+/// `None` when it holds no text.
 fn note_from(text: &str) -> Option<NoteBody> {
-    let blocks: Vec<NoteBlock> = text
-        .replace("\r\n", "\n")
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(|p| NoteBlock::Paragraph {
-            inline: vec![Inline::text(p)],
-        })
-        .collect();
+    let blocks = note_body_from_plain_text(text);
     (!blocks.is_empty()).then(|| encode_note_body(&blocks))
 }
 
@@ -650,6 +643,50 @@ mod tests {
             description_of(notes).as_deref(),
             Some("Agenda\n\nBring the deck")
         );
+    }
+
+    /// The paragraphs a `DESCRIPTION` imports as.
+    fn paragraphs(text: &str) -> Option<Vec<String>> {
+        note_from(text).map(|body| {
+            decode_note_body(&body)
+                .blocks
+                .iter()
+                .map(|b| match b {
+                    NoteBlock::Paragraph { inline } => {
+                        inline.iter().map(Inline::plain_text).collect()
+                    }
+                    other => panic!("not a paragraph: {other:?}"),
+                })
+                .collect()
+        })
+    }
+
+    /// A `DESCRIPTION` splits into paragraphs at blank lines: `\r\n` reads as
+    /// `\n`, a run of blank lines is one break, single line breaks stay inside
+    /// a paragraph, and whitespace around each paragraph goes.
+    #[test]
+    fn a_description_is_one_paragraph_per_blank_line_separated_run() {
+        assert_eq!(
+            paragraphs("  Agenda\r\n\r\n\r\nBring\nthe deck  \n\n"),
+            Some(vec!["Agenda".to_owned(), "Bring\nthe deck".to_owned()])
+        );
+    }
+
+    /// A line holding only whitespace is blank, so it separates paragraphs
+    /// as an empty line does.
+    #[test]
+    fn a_whitespace_only_line_separates_paragraphs() {
+        assert_eq!(
+            paragraphs("Agenda\n  \t\nBring the deck"),
+            Some(vec!["Agenda".to_owned(), "Bring the deck".to_owned()])
+        );
+    }
+
+    /// A `DESCRIPTION` with no words is no note.
+    #[test]
+    fn a_description_with_no_words_is_no_note() {
+        assert_eq!(paragraphs(""), None);
+        assert_eq!(paragraphs(" \r\n\n \t "), None);
     }
 
     #[test]
