@@ -525,7 +525,7 @@ and the signature under ADR-0015's exclusion rule.
 The first fingerprinted version is `DOC_SCHEMA_FP_FIRST`, which is `7`. Each
 version's fingerprint is `BLAKE3::derive_key("sunrise.doc_schema.fingerprint.v1",
 JCS(schema))`, over the canonical schema generated from the code. The build's
-registry is `DOC_SCHEMA_FINGERPRINTS` in `crates/sunrise-cbor/src/version.rs`.
+registry is `DOC_SCHEMA_FINGERPRINTS` in `crates/sunrise-cbor/src/version/fingerprint.rs`.
 It is append-only and frozen entry by entry in `sunrise-crypto-test-vectors`.
 [`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.md)
 §Schema identity says where each piece lives and which test fails when a shape
