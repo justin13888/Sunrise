@@ -1,4 +1,4 @@
-//! The account surface: revoking a device, the key bundle and identity chain
+//! The account surface: revoking and reinstating a device, the key bundle and identity chain
 //! pins, and the recovery blob. `session` holds the trait methods these back.
 //!
 //! Each route goes through the generated relay client (`rest`), so the bodies
@@ -7,7 +7,8 @@
 use super::rest::{bind, settle, Settled, DOCUMENT_CALL};
 use super::SseTransport;
 use crate::transport::{
-    IdentityChainPinned, KeyBundlePin, KeyBundlePinned, RevokeOutcome, TransportError,
+    IdentityChainPinned, KeyBundlePin, KeyBundlePinned, ReinstateOutcome, RevokeOutcome,
+    TransportError,
 };
 use base64::Engine as _;
 use sunrise_relay_client::api::{self, types};
@@ -52,6 +53,48 @@ impl SseTransport {
                 // The one request whose entire purpose is to work when a device
                 // has been lost, so a refusal that is really a clock has to say
                 // so here too rather than reading as "the relay would not".
+                super::http::binding_advice(
+                    reply.date.as_deref(),
+                    self.signer.as_ref().map(|s| s.now_ms())
+                )
+            ),
+            retry_after: reply.retry_after,
+        })
+    }
+
+    pub(super) async fn reinstate(
+        &self,
+        device_id: [u8; 16],
+    ) -> Result<ReinstateOutcome, TransportError> {
+        let vault_id = sunrise_id::crockford::encode_bytes(&device_id);
+        let path = format!("/api/v1/devices/by-vault-id/{vault_id}/reinstate");
+        let binding = self.sign_empty("POST", &path)?;
+        let exchange = self.exchange(DOCUMENT_CALL)?;
+        let result = exchange
+            .client()
+            .reinstate_device_by_vault_id(
+                vault_id,
+                bind!(api::ReinstateDeviceByVaultIdParams::default(), binding),
+            )
+            .await;
+        let reply = match settle(&exchange, result)? {
+            Settled::Value(()) => return Ok(ReinstateOutcome::Reinstated),
+            Settled::Refused(reply) => reply,
+        };
+        // Both terminal, and told apart by the code rather than the status
+        // alone: a 403 with any other code is a binding the relay refused,
+        // which is a failure worth retrying, not a statement about the row.
+        match (reply.status.as_u16(), problem_code(&reply.bytes).as_deref()) {
+            (403, Some("DEVICE_NOT_REVOKER")) => return Ok(ReinstateOutcome::NotRevoker),
+            (404, Some("DEVICE_NOT_FOUND")) => return Ok(ReinstateOutcome::Unknown),
+            _ => {}
+        }
+        Err(TransportError::Server {
+            code: "AUTH_DEVICE_REINSTATE_FAILED",
+            message: format!(
+                "relay refused the reinstatement: {} {}{}",
+                reply.status,
+                String::from_utf8_lossy(&reply.bytes),
                 super::http::binding_advice(
                     reply.date.as_deref(),
                     self.signer.as_ref().map(|s| s.now_ms())

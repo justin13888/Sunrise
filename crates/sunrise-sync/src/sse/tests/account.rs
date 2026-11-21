@@ -3,7 +3,7 @@
 //! read back (#774).
 
 use super::*;
-use crate::transport::{IdentityChainPinned, KeyBundlePinned};
+use crate::transport::{IdentityChainPinned, KeyBundlePinned, ReinstateOutcome};
 use base64::Engine as _;
 
 fn key_bundle_pin() -> String {
@@ -257,4 +257,55 @@ async fn a_refusal_with_no_problem_document_still_maps_by_status() {
         .await
         .expect_err("refused");
     assert_eq!(code_of(&err), "AUTH_TOKEN_INVALID");
+}
+
+/// The reinstatement outcomes are kept apart (ADR-0056 §5): accepted again,
+/// refused because this device is not the recorded revoker, and no such row
+/// are each terminal and each a different thing to tell the user, while a
+/// `403` with any other code is a binding the relay refused and stays an
+/// error to retry.
+#[tokio::test]
+async fn a_reinstatement_keeps_reinstated_not_revoker_unknown_and_refused_apart() {
+    let relay = relay::start(vec![
+        relay::Canned::empty(204),
+        relay::Canned::json(403, r#"{"code":"DEVICE_NOT_REVOKER"}"#),
+        relay::Canned::json(404, r#"{"code":"DEVICE_NOT_FOUND"}"#),
+        relay::Canned::json(403, r#"{"code":"AUTH_DEVICE_NOT_OWNER"}"#),
+        relay::Canned::json(500, r#"{"code":"RELAY_STORAGE_UNAVAILABLE"}"#),
+    ])
+    .await;
+    let mut t = dial(&relay);
+    let device = [0x11u8; 16];
+
+    assert_eq!(
+        t.reinstate_device(device).await.expect("reinstated"),
+        ReinstateOutcome::Reinstated
+    );
+    assert_eq!(
+        t.reinstate_device(device).await.expect("not the revoker"),
+        ReinstateOutcome::NotRevoker
+    );
+    assert_eq!(
+        t.reinstate_device(device).await.expect("no such row"),
+        ReinstateOutcome::Unknown
+    );
+    for _ in 0..2 {
+        let err = t
+            .reinstate_device(device)
+            .await
+            .expect_err("the relay would not");
+        assert_eq!(code_of(&err), "AUTH_DEVICE_REINSTATE_FAILED");
+    }
+
+    let seen = relay.seen();
+    assert_eq!(seen[0].method, "POST");
+    assert_eq!(
+        seen[0].path,
+        format!(
+            "/api/v1/devices/by-vault-id/{}/reinstate",
+            sunrise_id::crockford::encode_bytes(&device)
+        ),
+        "the route names the vault id, not the ULID the relay minted"
+    );
+    assert_json_binding(&seen[0]);
 }

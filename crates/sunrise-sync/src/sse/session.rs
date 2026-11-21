@@ -4,8 +4,8 @@
 use super::http::{field_str, field_u32, field_u64, protocol, MAX_EVENT_BYTES};
 use super::SseTransport;
 use crate::transport::{
-    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin,
-    Transport, TransportError,
+    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, ReinstateOutcome,
+    RevokeOutcome, SnapshotPin, Transport, TransportError,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -289,6 +289,13 @@ impl Transport for SseTransport {
         device_id: [u8; 16],
     ) -> Result<RevokeOutcome, TransportError> {
         self.revoke(device_id).await
+    }
+
+    async fn reinstate_device(
+        &mut self,
+        device_id: [u8; 16],
+    ) -> Result<ReinstateOutcome, TransportError> {
+        self.reinstate(device_id).await
     }
 
     async fn blob_init(
