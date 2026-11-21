@@ -69,6 +69,7 @@ work="$root/target/apple-ui-test-relay"
 mkdir -p "$work"
 run="$(mktemp -d "$work/run.XXXXXX")"
 relay_pid=""
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
 cleanup() {
   if [ -n "$relay_pid" ]; then
     kill "$relay_pid" 2>/dev/null || true
