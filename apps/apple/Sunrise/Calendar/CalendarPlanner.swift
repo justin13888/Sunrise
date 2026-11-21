@@ -418,18 +418,25 @@ final class CalendarPlanner {
     }
 }
 
-/// The task a drag that started in this app carries.
+/// What the latest drag that started in this app carries.
 ///
 /// A drop target cannot read a drag's payload until the drop, and the grid
-/// previews what dropping would do while the drag is still over it, so the
-/// row that starts the drag lends its task here (`TaskRowView`). The drop
-/// itself reads the real payload; this is only what the hover previews.
+/// previews what dropping would do while the drag is still over it, so each
+/// drag source lends its entity here when its drag starts: a task row its
+/// task (`TaskRowView`), a block's grip its block (`BlockChip`). The grid
+/// previews only a task. The drop itself reads the real payload; this is
+/// only what the hover previews.
 @MainActor
 enum TaskDragLedger {
     private(set) static var lent: EntityRef?
 
-    static func lend(_ task: EntityRef) {
-        lent = task
+    /// The task the drag in progress carries, if it carries one.
+    static var task: EntityRef? {
+        lent.flatMap { DropPayload.taskIDs([$0]).first }
+    }
+
+    static func lend(_ entity: EntityRef) {
+        lent = entity
     }
 }
 

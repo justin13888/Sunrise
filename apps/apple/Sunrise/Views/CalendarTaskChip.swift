@@ -113,11 +113,14 @@ struct GridTaskDropTarget: ViewModifier {
             info.hasItemsConforming(to: [.text])
         }
 
+        /// A drag this app started with something other than a task in it — a
+        /// block's grip — is refused, as `dropDestination` refused it.
         func dropUpdated(info: DropInfo) -> DropProposal? {
-            if let task = TaskDragLedger.lent {
-                let (planner, zone, at) = (planner, timeZone, instant(info.location.y))
-                Task { await planner.previewTask(task, toMs: at, timeZone: zone) }
+            guard let task = TaskDragLedger.task else {
+                return DropProposal(operation: TaskDragLedger.lent == nil ? .copy : .forbidden)
             }
+            let (planner, zone, at) = (planner, timeZone, instant(info.location.y))
+            Task { await planner.previewTask(task, toMs: at, timeZone: zone) }
             return DropProposal(operation: .copy)
         }
 
