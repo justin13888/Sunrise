@@ -106,8 +106,10 @@ One rule, on every write path:
   too, so the drop is shown as refused and the diff is not committable
   ([`../08-features/planner.md`](../08-features/planner.md) §Severity).
 - An existing task that comes to violate a `hard` constraint **without** a write
-  (the reader's zone changed, or a concurrent edit landed) is **flagged**, in
-  views and in the triage queue, and never moved automatically. Generating a
+  (the reader's zone changed, or a concurrent edit landed) is **flagged in the
+  triage queue**, which recomputes the violation on every read in the reader's
+  zone, and never moved automatically. No other read recomputes it, so Today,
+  the lists and the task detail do not flag it. Generating a
   routine occurrence is not a user write: an occurrence whose key violates a
   `hard` constraint is still generated and flagged
   ([`routines-and-recurrence.md`](./routines-and-recurrence.md) §Scheduling
@@ -255,10 +257,10 @@ SQL; evaluation happens in Rust. See
   flag; a re-plan inside the window, a completion or a drop does. A paused
   stream and a lapsed routine occurrence hide it from the queue as they hide
   lateness. The Apple app's triage row says so
-  (`apps/apple/Sunrise/Views/TriageView.swift`); the CLI's `triage list` does
-  not print the flag yet. The triage queue is the only read that flags it:
-  Today, the lists and the task detail do not
-  ([#1218](https://github.com/justin13888/Sunrise/issues/1218)).
+  (`apps/apple/Sunrise/Views/TriageView.swift`), and so does the CLI's
+  `triage list`, as a `hard_violation` column in text and a `hard_violation`
+  key in JSON (`crates/sunrise-cli/src/cmd/triage.rs`). The triage queue is
+  the only read that flags it (§Hard and soft).
 - `at_place` (`DOC_SCHEMA_V` 26,
   `crates/sunrise-domain/src/constraint/mod.rs#ScheduleConstraint`) is
   validated as 1..=8 distinct `plc_` refs and never joins the time kind key,

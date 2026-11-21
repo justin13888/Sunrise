@@ -699,6 +699,7 @@ type JsonObject = (
 
 const PLAIN: &[&str] = &[];
 const WITH_LATENESS: &[&str] = &["lateness"];
+const TRIAGE_ROW: &[&str] = &["lateness", "hard_violation"];
 
 const JSON_OBJECTS: &[JsonObject] = &[
     (
@@ -715,8 +716,8 @@ const JSON_OBJECTS: &[JsonObject] = &[
     (&["views", "apply", "loose"], "/0", TASK, PLAIN),
     (&["move", FIRST, "after", SECOND], "/0", TASK, PLAIN),
     (&["show", FIRST], "", TASK, WITH_LATENESS),
-    (&["triage"], "/0", TASK, WITH_LATENESS),
-    (&["triage", "list"], "/0", TASK, WITH_LATENESS),
+    (&["triage"], "/0", TASK, TRIAGE_ROW),
+    (&["triage", "list"], "/0", TASK, TRIAGE_ROW),
     (
         &["search", "bank"],
         "",
