@@ -281,6 +281,8 @@ async fn apply(ctx: &Ctx<'_>, view: &SavedView) -> CmdResult {
     }
     match primary_view(&view.view) {
         Some(View::Calendar) => super::blocks::list(ctx, &[]).await,
+        // The span is the device's own preference, as `sunrise upcoming` reads it.
+        Some(View::Upcoming) => super::upcoming::upcoming(ctx, &[]).await,
         Some(View::Focus) => super::tasks::next(ctx, false).await,
         Some(View::Routines) => super::organize::routines(ctx, &[]).await,
         Some(View::Review) => super::reports::review(ctx, &[]).await,

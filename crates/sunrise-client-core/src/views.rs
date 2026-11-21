@@ -52,6 +52,9 @@ pub enum View {
     Search,
     /// The calendar grid: day and week time-blocking.
     Calendar,
+    /// Upcoming: the next 7, 14 or 30 days, day by day, then the undated
+    /// tasks by stream. The span is device-local and not part of the view.
+    Upcoming,
     /// Focus mode: one task, one session.
     Focus,
     /// Routines: recurring templates, with full CRUD.
@@ -430,6 +433,7 @@ const fn view_name(v: View) -> &'static str {
         View::Stream => "stream",
         View::Search => "search",
         View::Calendar => "calendar",
+        View::Upcoming => "upcoming",
         View::Focus => "focus",
         View::Routines => "routines",
         View::Review => "review",
@@ -447,6 +451,7 @@ fn parse_view_name(s: &str) -> Option<View> {
         "stream" | "browse" => View::Stream,
         "search" => View::Search,
         "calendar" | "blocks" => View::Calendar,
+        "upcoming" => View::Upcoming,
         "focus" => View::Focus,
         "routines" | "routine" => View::Routines,
         "review" | "stats" => View::Review,
@@ -528,6 +533,7 @@ mod tests {
             View::Stream,
             View::Search,
             View::Calendar,
+            View::Upcoming,
             View::Focus,
             View::Routines,
             View::Review,
@@ -542,6 +548,7 @@ mod tests {
                 | View::Stream
                 | View::Search
                 | View::Calendar
+                | View::Upcoming
                 | View::Focus
                 | View::Routines
                 | View::Review

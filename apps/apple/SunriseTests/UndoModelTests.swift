@@ -317,22 +317,40 @@ struct SavedViewsModelTests {
         #expect(model.errorMessage == nil, "a brief is not a refusal any more")
     }
 
-    /// `Destination.primary` answers for every sidebar entry but Upcoming,
-    /// which the store has no word for yet (#1229), and the sidebar is the
-    /// list that proves it: anything else the user can be looking at, they
-    /// can save. A view added to `Destination.fixed` without a `PrimaryView`
-    /// behind it fails here rather than as a menu item that silently does
-    /// nothing.
+    /// Upcoming (#1229): any span saves as the one `.upcoming` view, because
+    /// the span is device-local, and recalls as the sidebar's entry, over this
+    /// device's own span.
     @Test
-    func everySidebarDestinationButUpcomingCanBeSaved() async throws {
+    func upcomingSavesAndRecallsOverTheDevicesOwnSpan() async throws {
         let (model, cleanup) = scratchStore()
         defer { cleanup() }
 
-        let unsaveable = Destination.fixed.filter { $0.primary == nil }
-        #expect(unsaveable == [.list(.upcomingDefault)])
-        let saveable = Destination.fixed.filter { $0.primary != nil }
+        await model.save(
+            name: "soon",
+            destination: .list(.upcoming(span: 30)),
+            query: "ignored",
+            contexts: []
+        )
+        await model.load()
+
+        let view = try #require(model.views.first)
+        #expect(view.view == .upcoming)
+        #expect(view.query.isEmpty, "Upcoming carries no search text")
+        #expect(model.recall(view, contexts: NameBook()) == .list(.upcomingDefault))
+        #expect(model.errorMessage == nil)
+    }
+
+    /// `Destination.primary` is total, and the sidebar is the list that proves
+    /// it: anything the user can be looking at, they can save. A view added to
+    /// `Destination.fixed` without a `PrimaryView` behind it fails here rather
+    /// than as a menu item that silently does nothing.
+    @Test
+    func everySidebarDestinationCanBeSaved() async throws {
+        let (model, cleanup) = scratchStore()
+        defer { cleanup() }
+
+        #expect(Destination.fixed.allSatisfy { $0.primary != nil })
         for destination in Destination.fixed {
-            // Upcoming too: refused here, so it writes nothing.
             await model.save(
                 name: "v-\(destination.title)",
                 destination: destination,
@@ -342,7 +360,7 @@ struct SavedViewsModelTests {
         }
         await model.load()
 
-        #expect(model.views.count == saveable.count, "Upcoming is refused, not saved as another view")
+        #expect(model.views.count == Destination.fixed.count)
         #expect(model.warnings.isEmpty)
         #expect(model.errorMessage == nil)
     }

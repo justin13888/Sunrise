@@ -67,6 +67,9 @@ pub enum ViewKind {
     Search,
     /// The calendar grid.
     Calendar,
+    /// Upcoming: the next days, day by day, then the undated tasks (#351).
+    /// Its span is device-local and is not part of the view.
+    Upcoming,
     /// Focus mode.
     Focus,
     /// Routines.
@@ -87,6 +90,7 @@ crate::unknown::lossy_enum!(ViewKind, {
     Stream => "stream",
     Search => "search",
     Calendar => "calendar",
+    Upcoming => "upcoming",
     Focus => "focus",
     Routines => "routines",
     Review => "review",

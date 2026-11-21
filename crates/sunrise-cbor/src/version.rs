@@ -294,7 +294,9 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// into a vault that requires it, because a build that cannot read it parks
 /// it and would keep the device revoked. Every v1..v27 payload shape is
 /// unchanged, so the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 28;
+///
+/// `29` adds `upcoming` to `ViewKind` (#1229), unknown to v28: no feature or floor.
+pub const DOC_SCHEMA_V: u16 = 29;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -411,6 +413,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         28,
         hex32("66507bdffc4e9ba02fe2fc0857d1fefd0c3815af2495b455180e0508fe602979"),
+    ),
+    (
+        29,
+        hex32("3602cfdc5e1d3bf31bc5948d33e3b89decf056299021c75c329b2f727dd5830d"),
     ),
 ];
 

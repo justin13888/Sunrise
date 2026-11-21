@@ -167,6 +167,9 @@ pub enum PrimaryView {
     Search,
     /// The calendar grid: day and week time-blocking.
     Calendar,
+    /// Upcoming: the next days, day by day, then the undated tasks. The span
+    /// is device-local and not part of the view.
+    Upcoming,
     /// Focus mode: one task, one session.
     Focus,
     /// Routines: recurring templates, with full CRUD.
@@ -187,6 +190,7 @@ impl From<View> for PrimaryView {
             View::Stream => Self::Stream,
             View::Search => Self::Search,
             View::Calendar => Self::Calendar,
+            View::Upcoming => Self::Upcoming,
             View::Focus => Self::Focus,
             View::Routines => Self::Routines,
             View::Review => Self::Review,
@@ -204,6 +208,7 @@ impl From<PrimaryView> for View {
             PrimaryView::Stream => Self::Stream,
             PrimaryView::Search => Self::Search,
             PrimaryView::Calendar => Self::Calendar,
+            PrimaryView::Upcoming => Self::Upcoming,
             PrimaryView::Focus => Self::Focus,
             PrimaryView::Routines => Self::Routines,
             PrimaryView::Review => Self::Review,

@@ -390,6 +390,16 @@ fn a_search_view_runs_the_search_and_other_views_filter() {
         run(&p.ea, &p.dba, calendar).tasks.is_empty(),
         "a screen, not a list"
     );
+    // Upcoming (#1229) is a screen of its own too: this build knows it, so
+    // the result is complete, and the client opens Upcoming.
+    let upcoming = save(
+        &p.ea,
+        &mut p.dba,
+        draft("soon", ViewKind::Upcoming, ViewFilter::default()),
+    );
+    let upcoming = run(&p.ea, &p.dba, upcoming);
+    assert!(upcoming.tasks.is_empty(), "a screen, not a list");
+    assert!(upcoming.complete, "a kind this build knows");
     let all = save(
         &p.ea,
         &mut p.dba,

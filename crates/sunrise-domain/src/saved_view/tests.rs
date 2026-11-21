@@ -459,6 +459,11 @@ fn the_view_and_sort_spellings_are_lossless() {
     assert_eq!(ViewKind::from_raw("map").as_str(), "map");
     assert!(!ViewKind::from_raw("map").lists_tasks());
     assert!(ViewKind::Search.lists_tasks() && !ViewKind::Calendar.lists_tasks());
+    // Upcoming (#1229) is a screen of its own, as Calendar is: a saved view
+    // of it opens the screen and narrows no list.
+    assert_eq!(ViewKind::from_raw("upcoming"), ViewKind::Upcoming);
+    assert_eq!(ViewKind::Upcoming.as_str(), "upcoming");
+    assert!(!ViewKind::Upcoming.lists_tasks());
     for s in ViewSort::KNOWN {
         assert_eq!(ViewSort::from_raw(s.as_str()), *s);
     }

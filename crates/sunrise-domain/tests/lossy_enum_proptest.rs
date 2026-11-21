@@ -149,8 +149,8 @@ lossless_enums! {
     frequency, Frequency, ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
     weekday, Weekday, ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
     view_kind, ViewKind, [
-        "today", "inbox", "stream", "search", "calendar", "focus", "routines", "review",
-        "morning", "evening",
+        "today", "inbox", "stream", "search", "calendar", "upcoming", "focus", "routines",
+        "review", "morning", "evening",
     ];
     view_sort, ViewSort, [
         "default", "manual", "created", "updated", "title", "priority", "due", "scheduled",

@@ -364,6 +364,10 @@ fn a_saved_view_is_recalled_by_name_and_preferences_round_trip() {
     assert!(ok(v, &["views"]).contains("papers"));
     let recalled = ok(v, &["views", "apply", "papers"]);
     assert!(recalled.contains("Renew passport") && !recalled.contains("Email Sara"));
+    // A view of Upcoming (#1229) recalls the Upcoming screen, over this
+    // device's own span.
+    ok(v, &["views", "save", "soon", "upcoming"]);
+    assert_eq!(ok(v, &["views", "apply", "soon"]), ok(v, &["upcoming"]));
     assert!(!run_in(v, &["views", "save", "x", "nowhere"])
         .status
         .success());
