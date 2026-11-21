@@ -376,6 +376,14 @@ A revocation withdrawn in the vault ([ADR-0056](../11-adr/0056-a-revocation-is-w
   the account, or an unsigned request — gets `403 DEVICE_NOT_REVOKER`. Letting
   any account device reinstate any other would be the third-party un-revoke
   ADR-0056 §3 rejects.
+- **It must be signed after the revoke.** The revoke records the `Date` it
+  was signed under in `devices.revoked_signed_at_ms`, and a reinstatement is
+  accepted only where its own signed `Date` is strictly later, both on the
+  revoker's clock. `header_sig_v2` has no nonce, so without this a captured
+  reinstatement could be replayed inside the ±300 s window to undo a revoke
+  made after it. A reinstatement that is not later changes nothing and gets
+  `409 DEVICE_REINSTATE_PREDATES_REVOKE`. A genuine one signed in the
+  revoke's own second succeeds when signed again.
 - **It is idempotent.** Where no row was revoked by the caller and one carrying
   the id is already active, the answer is `204`, so a client that lost the
   first reply retries until it hears one. `sunrise_devices_reinstate_total`
@@ -410,6 +418,7 @@ DeviceMeta = {
 | 401 | `AUTH_TOKEN_INVALID` | `X-Sunrise-Device` names a device that is **not** an active row on this account, or the token's own `device_id` claim disagrees with it. Deliberately the same answer a bad bearer gets: a finer code here would tell an unauthenticated caller which devices an account has. | No. |
 | 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any **active** device on this account — including a device already revoked. For `by-vault-id`, also a device that registered before it sent a `vault_device_id`, which is **still accepted by this relay**: the `404` is not a statement that the device is refused. For `reinstate`, no row on this account carries the vault id, revoked or not. | No. |
 | 403 | `DEVICE_NOT_REVOKER` | A `reinstate` from a caller that is not the device recorded as the revoker: another device revoked it, the revoke was unsigned or predates the record, or the reinstatement itself is unsigned. | No — the device is readmitted only by pairing it again. |
+| 409 | `DEVICE_REINSTATE_PREDATES_REVOKE` | A `reinstate` from the recorded revoker whose signed `Date` is not later than the `Date` its revoke was signed under: a replayed reinstatement captured before the device was revoked again, or a genuine one signed in the revoke's own second. Nothing changed. | Yes — sign it again; a genuine request succeeds once its `Date` passes the revoke's. |
 
 ### Blobs
 

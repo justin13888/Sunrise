@@ -240,7 +240,9 @@ withdrawal reverses the relay's half too:
   the request is device-signed. It records the device's Ed25519 signing key
   (`devices.revoked_by_key`), not the relay's row id for it: a client
   re-registers on every start and gets a new row id each time while its key
-  stays, and only the holder of the private key can sign as it.
+  stays, and only the holder of the private key can sign as it. Beside the
+  key it records the `Date` the revoke was signed under
+  (`devices.revoked_signed_at_ms`).
 - **The relay accepts a reinstatement only from that recorded device, and only
   signed.** `POST /api/v1/devices/by-vault-id/{id}/reinstate` sets
   `revoked = 0` on the rows whose recorded key signed the request. The caller
@@ -248,6 +250,20 @@ withdrawal reverses the relay's half too:
   carries a verified signature. The route is idempotent: once a row carrying
   the id is active, asking again answers `204`, so a client that lost the
   reply retries safely.
+- **A reinstatement must be signed after the revocation it undoes.**
+  `header_sig_v2` carries no nonce, so a signed request stays valid for the
+  ±300 s `Date` window, and a captured reinstatement could otherwise be
+  replayed to undo a revocation its revoker made again inside that window.
+  The relay accepts the reinstatement only where its signed `Date` is
+  strictly later than every recorded revoke `Date` of the caller's rows for
+  that id. Both dates come from the same device's clock, so no comparison
+  with the relay's clock is involved. Anything else changes no row and is
+  refused `409 DEVICE_REINSTATE_PREDATES_REVOKE`. The client treats that
+  refusal as retryable: a genuine reinstatement signed in the revoke's own
+  second succeeds when signed again, while a replay keeps its old `Date` for
+  good. The replay needs the TLS plaintext, which already carries the
+  bearer, so the risk was low; the check closes it anyway without changing
+  the signing scheme.
 - **Otherwise the relay refuses** with `403 DEVICE_NOT_REVOKER`. That covers
   another device of the account, an unsigned reinstatement, and a row the
   relay revoked with no recorded device: an unsigned `DELETE`, or a row
