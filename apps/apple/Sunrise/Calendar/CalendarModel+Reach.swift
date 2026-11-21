@@ -160,4 +160,38 @@ extension CalendarModel {
         let moved = timeValueMs(value: anchor, tz: timeZone) + delta
         return sameKind(as: value, ms: moved, timeZone: timeZone)
     }
+
+    // MARK: - Time values
+
+    /// The same value at a new instant, keeping whichever of the four kinds it
+    /// already had. `timeZone` is the zone the grid draws in.
+    static func sameKind(as existing: TimeValue, ms: Int64, timeZone: String) -> TimeValue {
+        switch existing {
+        case .instant: .instant(at: ms)
+        case let .zoned(_, tz): .zoned(civil: civilText(ms: ms, tz: tz), tz: tz)
+        case .floating: .floating(civil: civilText(ms: ms, tz: timeZone))
+        // An all-day block dragged to a time is no longer all-day: the user
+        // just gave it one. Widening to zoned is the honest reading of that.
+        case .allDay: .zoned(civil: civilText(ms: ms, tz: timeZone), tz: timeZone)
+        // A kind a newer build wrote cannot be re-expressed at another
+        // instant here; the drag is an explicit set, so it reads as local
+        // time, as all-day does.
+        case .unknown: .zoned(civil: civilText(ms: ms, tz: timeZone), tz: timeZone)
+        }
+    }
+
+    /// `2026-03-04T09:15:00`, the text `jiff` parses a civil date-time from.
+    static func civilText(ms: Int64, tz: String) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: tz) ?? .current
+        let parts = calendar.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second],
+            from: Date(timeIntervalSince1970: Double(ms) / 1000)
+        )
+        return String(
+            format: "%04d-%02d-%02dT%02d:%02d:%02d",
+            parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1,
+            parts.hour ?? 0, parts.minute ?? 0, parts.second ?? 0
+        )
+    }
 }

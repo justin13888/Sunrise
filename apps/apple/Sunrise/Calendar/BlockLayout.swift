@@ -28,6 +28,50 @@ struct PlacedBlock: Equatable, Identifiable {
     var blockId: EntityRef { row.block.id }
 }
 
+/// One timed task, placed on the grid: a task whose `planned_at` is a time
+/// (`docs/08-features/planner.md` §`PlanIntent`), drawn in a track of its
+/// own beside the blocks rather than among them.
+///
+/// Its span is the slot the planner gives it: from `planned_at`, as long as
+/// its estimate, or the `planner.default_task_duration_s` preference when it
+/// has none. Resolved to instants by `timeValueMs`, as a block is.
+struct PlacedTask: Equatable, Identifiable {
+    let task: TaskItem
+    /// Resolved start, epoch ms, clamped to the column.
+    let startMs: Int64
+    /// Resolved end, epoch ms, clamped to the column.
+    let endMs: Int64
+    /// Which column of the task track it sits in, among the tasks it overlaps.
+    let lane: Int
+    /// How many columns that cluster of overlapping tasks needs.
+    let laneCount: Int
+
+    var id: EntityRef { task.id }
+}
+
+/// How a day column shares its width between blocks and timed tasks.
+///
+/// A task is not a block and is not laid out among them: a column that has a
+/// timed task, or a plan that moves one onto it, gives the trailing part of
+/// its width to a task track, and the blocks keep the rest. A column with
+/// neither gives the blocks all of it, as before the grid drew tasks.
+struct TaskTrack: Equatable {
+    let width: CGFloat
+    let shown: Bool
+
+    /// The share of the column the task track takes when it is shown.
+    static let share: CGFloat = 0.4
+
+    var blockWidth: CGFloat { shown ? width * (1 - Self.share) : width }
+    /// Where the task track starts, in points from the column's leading edge.
+    var taskX: CGFloat { blockWidth }
+    var taskWidth: CGFloat { width - blockWidth }
+
+    /// A ghost is drawn in the track of what it moves.
+    func x(of ghost: PlanGhost) -> CGFloat { ghost.isTask ? taskX : 0 }
+    func width(of ghost: PlanGhost) -> CGFloat { ghost.isTask ? taskWidth : blockWidth }
+}
+
 /// A shaded conflict region, placed on the grid.
 struct PlacedConflict: Equatable, Identifiable {
     let conflict: BlockConflict
@@ -40,8 +84,11 @@ struct PlacedConflict: Equatable, Identifiable {
 /// are assigned. Named rather than a tuple because it is passed between three
 /// functions and a positional `.0` at the third one is how a start and an end
 /// get swapped.
-private struct Resolved {
-    let row: BlockGridRow
+private struct Resolved<Item> {
+    let item: Item
+    /// Breaks a tie between two items that start together, so the same rows
+    /// always take the same lanes.
+    let key: String
     let start: Int64
     let end: Int64
 }
@@ -65,25 +112,98 @@ enum BlockLayout {
         toMs: Int64,
         timeZone: String
     ) -> [PlacedBlock] {
-        let resolved: [Resolved] = rows
-            .compactMap { row in
-                let start = timeValueMs(value: row.block.startsAt, tz: timeZone)
-                let end = timeValueMs(value: row.block.endsAt, tz: timeZone)
-                // Half-open: a block that ends exactly when the window starts
-                // is not on it.
-                guard end > fromMs, start < toMs else { return nil }
-                return Resolved(row: row, start: max(start, fromMs), end: min(end, toMs))
+        let resolved = rows.map { row in
+            Resolved(
+                item: row,
+                key: row.gridKey,
+                start: timeValueMs(value: row.block.startsAt, tz: timeZone),
+                end: timeValueMs(value: row.block.endsAt, tz: timeZone)
+            )
+        }
+        return pack(clamp(resolved, fromMs: fromMs, toMs: toMs)) { item, lane, count in
+            PlacedBlock(row: item.item, startMs: item.start, endMs: item.end, lane: lane, laneCount: count)
+        }
+    }
+
+    /// Place the timed tasks among `tasks` on a column covering
+    /// `[fromMs, toMs)`, packed into lanes among themselves as blocks are.
+    ///
+    /// A task with no time (no `planned_at`, or an all-day one) has no place
+    /// on a time grid and is left out. Its length is its estimate, or
+    /// `defaultDurationS` — the `planner.default_task_duration_s` preference,
+    /// the same slot the planner moves it in.
+    static func placeTasks(
+        _ tasks: [TaskItem],
+        defaultDurationS: UInt64,
+        fromMs: Int64,
+        toMs: Int64,
+        timeZone: String
+    ) -> [PlacedTask] {
+        let resolved = tasks.compactMap { task -> Resolved<TaskItem>? in
+            guard let start = timedStartMs(of: task, timeZone: timeZone) else { return nil }
+            let seconds = task.estimatedDurationS.flatMap { $0 > 0 ? $0 : nil } ?? defaultDurationS
+            // Capped at a year so the sum cannot overflow; a column is a day,
+            // and anything longer is clamped to it below.
+            let lengthMs = Int64(min(max(1, seconds), maxTaskLengthS)) * 1000
+            return Resolved(item: task, key: task.id, start: start, end: start + lengthMs)
+        }
+        return pack(clamp(resolved, fromMs: fromMs, toMs: toMs)) { item, lane, count in
+            PlacedTask(task: item.item, startMs: item.start, endMs: item.end, lane: lane, laneCount: count)
+        }
+    }
+
+    private static let maxTaskLengthS: UInt64 = 366 * 86_400
+
+    /// Every task an Upcoming report plans for a time of day, once each: a
+    /// task is listed under one day, but the report's days and the grid's
+    /// need not be the same days.
+    static func timedTasks(in report: UpcomingReport, timeZone: String) -> [TaskItem] {
+        var seen = Set<EntityRef>()
+        return report.days
+            .flatMap(\.planned)
+            .filter { timedStartMs(of: $0, timeZone: timeZone) != nil && seen.insert($0.id).inserted }
+    }
+
+    /// When `task` is planned for, as an instant, when that is a time of day:
+    /// `nil` for no plan, an all-day plan, or a kind this build cannot read.
+    static func timedStartMs(of task: TaskItem, timeZone: String) -> Int64? {
+        switch task.scheduledAt {
+        case nil, .allDay?, .unknown?: nil
+        case let value?: timeValueMs(value: value, tz: timeZone)
+        }
+    }
+
+    /// The items overlapping `[fromMs, toMs)`, clamped to it, in start order.
+    ///
+    /// Half-open: an item that ends exactly when the window starts is not on
+    /// it.
+    private static func clamp<Item>(
+        _ items: [Resolved<Item>],
+        fromMs: Int64,
+        toMs: Int64
+    ) -> [Resolved<Item>] {
+        items
+            .compactMap { item in
+                guard item.end > fromMs, item.start < toMs else { return nil }
+                return Resolved(
+                    item: item.item, key: item.key, start: max(item.start, fromMs), end: min(item.end, toMs)
+                )
             }
             .sorted { lhs, rhs in
-                lhs.start == rhs.start
-                    ? lhs.row.gridKey < rhs.row.gridKey
-                    : lhs.start < rhs.start
+                lhs.start == rhs.start ? lhs.key < rhs.key : lhs.start < rhs.start
             }
+    }
 
-        var placed: [PlacedBlock] = []
+    /// Each item, made into `Placed` with its lane and how many lanes its
+    /// cluster needs.
+    private static func pack<Item, Placed>(
+        _ resolved: [Resolved<Item>],
+        _ make: (Resolved<Item>, Int, Int) -> Placed
+    ) -> [Placed] {
+        var placed: [Placed] = []
         for cluster in clusters(of: resolved) {
-            // Greedy column packing: a block takes the first column whose last
-            // occupant has already finished. Blocks that do not overlap each
+            // Greedy column packing: an item takes the first column whose last
+            // occupant has already finished. Items that do not overlap each
             // other therefore reuse a column, so three blocks where only two
             // ever overlap cost two columns rather than three.
             var columnEnds: [Int64] = []
@@ -98,15 +218,7 @@ enum BlockLayout {
                 }
             }
             for (item, lane) in zip(cluster, lanes) {
-                placed.append(
-                    PlacedBlock(
-                        row: item.row,
-                        startMs: item.start,
-                        endMs: item.end,
-                        lane: lane,
-                        laneCount: columnEnds.count
-                    )
-                )
+                placed.append(make(item, lane, columnEnds.count))
             }
         }
         return placed
@@ -118,9 +230,9 @@ enum BlockLayout {
     /// three share the width, even when A and C do not touch. Sizing each pair
     /// independently would give A and C the same column and draw them on top
     /// of one another.
-    private static func clusters(of items: [Resolved]) -> [[Resolved]] {
-        var out: [[Resolved]] = []
-        var current: [Resolved] = []
+    private static func clusters<Item>(of items: [Resolved<Item>]) -> [[Resolved<Item>]] {
+        var out: [[Resolved<Item>]] = []
+        var current: [Resolved<Item>] = []
         var clusterEnd = Int64.min
         for item in items {
             if current.isEmpty || item.start < clusterEnd {
@@ -202,6 +314,10 @@ struct PlanGhost: Equatable, Identifiable {
     let severity: PlanSeverity?
 
     var id: EntityRef { item }
+
+    /// Whether the item is a task, drawn in the task track, rather than a
+    /// block.
+    var isTask: Bool { !DropPayload.taskIDs([item]).isEmpty }
 }
 
 /// A previewed plan, laid out for the grid and put into words.

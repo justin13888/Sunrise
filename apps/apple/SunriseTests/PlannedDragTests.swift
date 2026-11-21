@@ -377,23 +377,6 @@ extension PlannedDragTests {
         await vault.bridge.shutdown()
     }
 
-    /// A task dropped on the grid becomes a block as long as the planner
-    /// says the task is: its estimate.
-    @Test
-    func aDroppedTaskTakesItsEstimate() async throws {
-        let vault = try await TestVault()
-        let model = await model(vault)
-        var task = draft("Draft the proposal")
-        task.estimatedDurationS = 90 * 60
-        let created = try await vault.bridge.submit(.createTask(draft: task))
-
-        await model.planner.dropTask(created.entity, atMs: hour(model, 14), timeZone: model.timeZone)
-
-        #expect(try start(model, "Draft the proposal") == hour(model, 14))
-        #expect(try end(model, "Draft the proposal") == hour(model, 15.5))
-        await vault.bridge.shutdown()
-    }
-
     /// One event of a repeating block is not planned; its drag writes the
     /// span the grid computes, keeping the event's length.
     @Test
@@ -421,23 +404,6 @@ extension PlannedDragTests {
             of: row, mode: .resizeEnd, toMs: 9 * 3_600_000, timeZone: "UTC"
         )
         #expect(squashed == nil)
-    }
-
-    private func draft(_ title: String) -> TaskDraftIn {
-        TaskDraftIn(
-            title: title,
-            body: nil,
-            streamId: nil,
-            contexts: [],
-            priority: nil,
-            energy: nil,
-            estimatedDurationS: nil,
-            scheduledAt: nil,
-            dueAt: nil,
-            schedulingConstraints: [],
-            assignee: nil,
-            reminderLeadS: nil
-        )
     }
 }
 

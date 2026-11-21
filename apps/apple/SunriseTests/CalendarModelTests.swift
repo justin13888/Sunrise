@@ -131,23 +131,51 @@ struct CalendarModelTests {
         await vault.bridge.shutdown()
     }
 
-    /// Dropping a task creates a block with **no** title, on purpose: the core
-    /// shadow-copies the bound task's title. A title composed here would be a
-    /// second copy that could disagree with it.
+    /// A block made with a task bound and **no** title takes the task's own
+    /// title, on purpose: the core shadow-copies the bound task's title. A
+    /// title composed here would be a second copy that could disagree with it.
     @Test
-    func droppingATaskGivesTheBlockTheTasksOwnTitle() async throws {
+    func aBlockMadeForATaskTakesTheTasksOwnTitle() async throws {
         let vault = try await TestVault()
         let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
         await list.create(draft("Draft the proposal"))
         let task = try #require(list.tasks.first)
         let model = await model(vault)
 
-        await model.planner.dropTask(task.id, atMs: hour(model, 14), timeZone: model.timeZone)
+        await model.createBlock(
+            fromMs: hour(model, 14), toMs: hour(model, 15), title: nil, kind: .zoned, tasks: [task.id]
+        )
 
         let row = try #require(model.rows.first)
         #expect(row.title == "Draft the proposal")
         #expect(row.block.tasks == [task.id])
         #expect(row.taskTitles == ["Draft the proposal"])
+        await vault.bridge.shutdown()
+    }
+
+    /// The grid draws the open tasks planned for a time on the days it
+    /// shows, apart from blocks, and leaves out one planned for a day with
+    /// no time, one planned for another day and one that is done.
+    @Test
+    func theGridDrawsTheOpenTimedTasksOnItsDays() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        func plan(_ title: String, _ at: TimeValue?) async throws -> EntityRef {
+            var new = draft(title)
+            new.scheduledAt = at
+            return try await vault.bridge.submit(.createTask(draft: new)).entity
+        }
+        _ = try await plan("Timed", model.timeValue(ms: hour(model, 10), kind: .zoned))
+        _ = try await plan("Tomorrow", model.timeValue(ms: hour(model, 34), kind: .zoned))
+        let date = DayScheduleModel.civilDate(ms: hour(model, 12), timeZone: model.timeZone)
+        _ = try await plan("All day", .allDay(date: date))
+        let done = try await plan("Done", model.timeValue(ms: hour(model, 11), kind: .zoned))
+        _ = try await vault.bridge.submit(.completeTask(id: done))
+
+        await model.refresh()
+
+        #expect(model.placedTasks(dayOffset: 0).map(\.task.title) == ["Timed"])
+        #expect(model.rows.isEmpty)
         await vault.bridge.shutdown()
     }
 
@@ -261,7 +289,9 @@ struct CalendarModelTests {
         await list.create(draft("Write the report"))
         let task = try #require(list.tasks.first)
         let model = await model(vault)
-        await model.planner.dropTask(task.id, atMs: hour(model, 9), timeZone: model.timeZone)
+        await model.createBlock(
+            fromMs: hour(model, 9), toMs: hour(model, 10), title: nil, kind: .zoned, tasks: [task.id]
+        )
         let block = try #require(model.rows.first).block.id
 
         await model.unbind(task: task.id, from: block)

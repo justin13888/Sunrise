@@ -53,6 +53,10 @@ enum BlockTimeKind: String, CaseIterable, Identifiable {
 /// computed here — both live in `sunrise-domain`, because "back-to-back is not
 /// a conflict" and "which time kind survives a union" are decisions two clients
 /// must not answer differently.
+///
+/// Beside the blocks it draws the open tasks planned for a time of day, read
+/// through `Upcoming` (``timedTasks()``): a task dropped on the grid is
+/// planned there, not turned into a block (``CalendarPlanner``).
 @MainActor
 @Observable
 final class CalendarModel {
@@ -70,6 +74,13 @@ final class CalendarModel {
     /// grid never has to agree with the core about when a week begins.
     private(set) var anchorMs: UInt64 = 0
     private(set) var rows: [BlockGridRow] = []
+    /// The open tasks planned for a time of day in or around the window,
+    /// drawn apart from blocks (``placedTasks(dayOffset:)``).
+    private(set) var tasks: [TaskItem] = []
+    /// How long a task with no estimate is drawn: the
+    /// `planner.default_task_duration_s` preference, the slot the planner
+    /// gives it, read from the core on every refresh.
+    private(set) var defaultTaskDurationS: UInt64 = 30 * 60
     private(set) var conflicts: [BlockConflict] = []
     private(set) var names = NameBook()
     private(set) var nowMs: UInt64 = 0
@@ -97,7 +108,7 @@ final class CalendarModel {
         timeZone = TimeZone.current.identifier
         nowMs = await bridge.nowMs()
         if anchorMs == 0 { anchorMs = nowMs }
-        weekStart = await Self.weekStart(from: bridge)
+        (weekStart, defaultTaskDurationS) = await Self.gridPreferences(from: bridge)
         names = await NameBook.load(from: bridge)
         do {
             let query: CoreQuery = span == .day
@@ -105,6 +116,7 @@ final class CalendarModel {
                 : .weekBlocks(weekMs: anchorMs)
             guard case let .blocks(rows) = try await bridge.query(query) else {
                 self.rows = []
+                tasks = []
                 conflicts = []
                 return
             }
@@ -112,6 +124,7 @@ final class CalendarModel {
             // The domain's answer, not a comparison written here, resolved in
             // the zone the grid draws in.
             conflicts = blockConflicts(rows: rows, tz: timeZone)
+            tasks = try await timedTasks()
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -206,14 +219,35 @@ final class CalendarModel {
         return Int64(day.timeIntervalSince1970 * 1000)
     }
 
-    /// The `week_start` preference as the core resolves it. Sunday, the
-    /// preference's default, when the query fails or the value is missing.
-    static func weekStart(from bridge: CoreBridge) async -> Weekday {
-        guard case let .preferences(preferences: items)? = try? await bridge.query(.preferences),
-              let item = items.first(where: { $0.key == "week_start" }),
-              case let .weekday(day: day)? = item.value
-        else { return .su }
-        return day
+    /// The grid's two preferences, as the core resolves them: `week_start`
+    /// and `planner.default_task_duration_s`. Each keeps its default, Sunday
+    /// and 30 minutes, when the query fails or the value is missing.
+    static func gridPreferences(from bridge: CoreBridge) async -> (weekStart: Weekday, taskS: UInt64) {
+        var found: (weekStart: Weekday, taskS: UInt64) = (.su, 30 * 60)
+        guard case let .preferences(preferences: items)? = try? await bridge.query(.preferences) else {
+            return found
+        }
+        for item in items {
+            switch (item.key, item.value) {
+            case let ("week_start", .weekday(day)?): found.weekStart = day
+            case let ("planner.default_task_duration_s", .uint(secs)?) where secs > 0: found.taskS = secs
+            default: break
+            }
+        }
+        return found
+    }
+
+    /// The open tasks planned for a time of day that the window can draw,
+    /// read through `Query::Upcoming`, the core's fold of which open task is
+    /// planned for which day. Its days start at "now", so it is asked from
+    /// the day before the window over a span that covers the window whatever
+    /// bounds the day schedule gives a planner day; each column keeps what
+    /// falls in it (``placedTasks(dayOffset:)``).
+    private func timedTasks() async throws -> [TaskItem] {
+        let from = UInt64(max(0, windowStartMs - 86_400_000))
+        let query = CoreQuery.upcoming(nowMs: from, spanDays: span == .day ? 7 : 14, contexts: [])
+        guard case let .upcoming(report) = try await bridge.query(query) else { return [] }
+        return BlockLayout.timedTasks(in: report, timeZone: timeZone)
     }
 
     /// `Calendar.firstWeekday` for a preference day: 1 is Sunday. A day token
@@ -236,6 +270,17 @@ final class CalendarModel {
     func placed(dayOffset: Int) -> [PlacedBlock] {
         BlockLayout.place(
             rows: rows,
+            fromMs: dayStartMs(offset: dayOffset),
+            toMs: dayStartMs(offset: dayOffset + 1),
+            timeZone: timeZone
+        )
+    }
+
+    /// The timed tasks of the `offset`-th day, laid out in their own track.
+    func placedTasks(dayOffset: Int) -> [PlacedTask] {
+        BlockLayout.placeTasks(
+            tasks,
+            defaultDurationS: defaultTaskDurationS,
             fromMs: dayStartMs(offset: dayOffset),
             toMs: dayStartMs(offset: dayOffset + 1),
             timeZone: timeZone
@@ -456,40 +501,8 @@ final class CalendarModel {
         }
     }
 
-    /// The same value at a new instant, keeping whichever of the four kinds it
-    /// already had. `timeZone` is the zone the grid draws in.
-    static func sameKind(as existing: TimeValue, ms: Int64, timeZone: String) -> TimeValue {
-        switch existing {
-        case .instant: .instant(at: ms)
-        case let .zoned(_, tz): .zoned(civil: civilText(ms: ms, tz: tz), tz: tz)
-        case .floating: .floating(civil: civilText(ms: ms, tz: timeZone))
-        // An all-day block dragged to a time is no longer all-day: the user
-        // just gave it one. Widening to zoned is the honest reading of that.
-        case .allDay: .zoned(civil: civilText(ms: ms, tz: timeZone), tz: timeZone)
-        // A kind a newer build wrote cannot be re-expressed at another
-        // instant here; the drag is an explicit set, so it reads as local
-        // time, as all-day does.
-        case .unknown: .zoned(civil: civilText(ms: ms, tz: timeZone), tz: timeZone)
-        }
-    }
-
     private func civilText(ms: Int64) -> String {
         Self.civilText(ms: ms, tz: timeZone)
-    }
-
-    /// `2026-03-04T09:15:00`, the text `jiff` parses a civil date-time from.
-    private static func civilText(ms: Int64, tz: String) -> String {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: tz) ?? .current
-        let parts = calendar.dateComponents(
-            [.year, .month, .day, .hour, .minute, .second],
-            from: Date(timeIntervalSince1970: Double(ms) / 1000)
-        )
-        return String(
-            format: "%04d-%02d-%02dT%02d:%02d:%02d",
-            parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1,
-            parts.hour ?? 0, parts.minute ?? 0, parts.second ?? 0
-        )
     }
 
     private func run(_ command: CoreCommand, label: String) async {

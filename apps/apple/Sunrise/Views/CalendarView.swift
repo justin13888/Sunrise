@@ -276,13 +276,21 @@ private struct DayColumn: View {
 
     private var canvas: some View {
         GeometryReader { proxy in
+            let tasks = model.placedTasks(dayOffset: dayOffset)
+            let ghosts = model.planner.ghosts(
+                fromMs: dayStartMs,
+                toMs: model.dayStartMs(offset: dayOffset + 1),
+                timeZone: model.timeZone
+            )
+            let showsTasks = !tasks.isEmpty || ghosts.contains(where: \.isTask)
+            let track = TaskTrack(width: proxy.size.width, shown: showsTasks)
             ZStack(alignment: .topLeading) {
                 hourLines
                 shading
                 ForEach(model.placed(dayOffset: dayOffset)) { placed in
                     BlockChip(
                         placed: placed,
-                        width: proxy.size.width,
+                        width: track.blockWidth,
                         dayStartMs: dayStartMs,
                         conflicted: isConflicted(placed),
                         open: { edit(placed.row) },
@@ -301,12 +309,10 @@ private struct DayColumn: View {
                         planKey(chord, on: placed)
                     })
                 }
-                ForEach(model.planner.ghosts(
-                    fromMs: dayStartMs,
-                    toMs: model.dayStartMs(offset: dayOffset + 1),
-                    timeZone: model.timeZone
-                )) { ghost in
-                    PlanGhostView(ghost: ghost, dayStartMs: dayStartMs, width: proxy.size.width)
+                ForEach(tasks) { TaskChip(placed: $0, model: model, dayOffset: dayOffset, track: track) }
+                ForEach(ghosts) { ghost in
+                    PlanGhostView(ghost: ghost, dayStartMs: dayStartMs, width: track.width(of: ghost))
+                        .offset(x: track.x(of: ghost))
                 }
                 if let ghost = ghostRect {
                     RoundedRectangle(cornerRadius: 4)
@@ -319,9 +325,7 @@ private struct DayColumn: View {
             .frame(height: CalendarMetrics.dayHeight)
             .contentShape(Rectangle())
             .gesture(dragToCreate)
-            .dropDestination(for: String.self) { items, location in
-                accept(items: items, at: location.y)
-            }
+            .modifier(GridTaskDropTarget(model: model, dayOffset: dayOffset))
         }
         .frame(height: CalendarMetrics.dayHeight)
         .border(.quaternary, width: 0.5)
@@ -465,23 +469,6 @@ private struct DayColumn: View {
             return
         }
         ask(PendingBlockReach(action: action) { change($0) })
-    }
-
-    /// A task dragged from a list onto the grid.
-    ///
-    /// The payload is the task's `EntityRef`, which is its text form — the same
-    /// string the CLI accepts. A drop of anything else is ignored rather than
-    /// guessed at. How long the block it makes is, is the core's answer
-    /// (``CalendarPlanner/dropTask(_:atMs:timeZone:)``).
-    private func accept(items: [String], at y: CGFloat) -> Bool {
-        guard let raw = DropPayload.taskIDs(items).first else { return false }
-        let start = model.snap(
-            CalendarMetrics.instant(at: y, dayStartMs: dayStartMs),
-            dayOffset: dayOffset
-        )
-        let (planner, zone) = (model.planner, model.timeZone)
-        Task { await planner.dropTask(raw, atMs: start, timeZone: zone) }
-        return true
     }
 
     private func isConflicted(_ placed: PlacedBlock) -> Bool {

@@ -206,4 +206,81 @@ struct BlockLayoutTests {
                 == halfHourZone + 9 * 3_600_000
         )
     }
+
+    // MARK: - Timed tasks
+
+    private func task(_ id: String, at start: Int64?, estimateS: UInt64? = nil) -> TaskItem {
+        Fixture.task(id: "tsk_\(id)", estimateS: estimateS, scheduledAt: start.map { .instant(at: $0) })
+    }
+
+    private func placeTasks(_ tasks: [TaskItem]) -> [PlacedTask] {
+        BlockLayout.placeTasks(
+            tasks,
+            defaultDurationS: 30 * 60,
+            fromMs: Self.dayStart,
+            toMs: Self.dayStart + 86_400_000,
+            timeZone: Self.tz
+        )
+    }
+
+    /// A timed task is drawn as long as the planner's slot for it: its
+    /// estimate, or the default duration when it has none.
+    @Test
+    func aTimedTaskSpansItsEstimateOrTheDefault() {
+        let placed = placeTasks([
+            task("a", at: at(9), estimateS: 90 * 60),
+            task("b", at: at(14))
+        ])
+        #expect(placed.map(\.id) == ["tsk_a", "tsk_b"])
+        #expect(placed.map(\.startMs) == [at(9), at(14)])
+        #expect(placed.map(\.endMs) == [at(10, 30), at(14, 30)])
+    }
+
+    /// A task with no plan, or an all-day one, has no time to sit at on a
+    /// time grid, and a task planned for another day is not on this one.
+    @Test
+    func onlyTasksTimedOnTheDayArePlaced() {
+        let allDay = Fixture.task(id: "tsk_c", scheduledAt: .allDay(date: "2026-03-04"))
+        let placed = placeTasks([
+            task("a", at: nil),
+            task("b", at: at(9) + 86_400_000),
+            allDay,
+            task("d", at: at(8))
+        ])
+        #expect(placed.map(\.id) == ["tsk_d"])
+    }
+
+    /// Two tasks that overlap share the task track's width, as two blocks
+    /// share the column's; one running past midnight is clamped to the day.
+    @Test
+    func overlappingTasksShareTheTrackAndALateOneIsClamped() {
+        let placed = placeTasks([
+            task("a", at: at(9), estimateS: 3_600),
+            task("b", at: at(9, 30)),
+            task("c", at: at(23, 45), estimateS: 3_600)
+        ])
+        #expect(placed.map(\.lane) == [0, 1, 0])
+        #expect(placed.map(\.laneCount) == [2, 2, 1])
+        #expect(placed.last?.endMs == Self.dayStart + 86_400_000)
+    }
+
+    /// A task's ghost is drawn in the task track, a block's beside it.
+    @Test
+    func aGhostKnowsWhetherItIsATask() {
+        let task = PlanGhost(item: "tsk_a", role: .subject, before: nil, after: nil, severity: nil)
+        let block = PlanGhost(item: "blk_a", role: .rippled, before: nil, after: nil, severity: nil)
+        #expect(task.isTask)
+        #expect(!block.isTask)
+        let track = TaskTrack(width: 100, shown: true)
+        #expect(track.x(of: task) == 60 && track.width(of: task) == 40)
+        #expect(track.x(of: block) == 0 && track.width(of: block) == 60)
+    }
+
+    /// A column with no task gives its blocks all of its width.
+    @Test
+    func aColumnWithNoTaskKeepsItsWholeWidthForBlocks() {
+        let track = TaskTrack(width: 100, shown: false)
+        #expect(track.blockWidth == 100)
+        #expect(track.taskWidth == 0)
+    }
 }

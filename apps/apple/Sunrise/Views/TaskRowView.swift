@@ -82,7 +82,8 @@ struct TaskRowView: View {
         .accessibilityAddTraits(isTicked || isCursor ? [.isSelected] : [])
         .accessibilityValue(isTicked ? L10n.TaskRow.selected : "")
         .onTapGesture(count: 2, perform: edit)
-        // Dragged onto the calendar grid, a task becomes a block bound to it.
+        // Dragged onto the calendar grid, a task is planned for the time it is
+        // dropped at.
         // The payload is the id's own text — the same string the CLI accepts —
         // so a drop target has something it can verify rather than an opaque
         // pasteboard type only this app understands.
@@ -94,6 +95,7 @@ struct TaskRowView: View {
 
     private func dragPayload() -> String {
         onDrag?()
+        TaskDragLedger.lend(facets.id)
         return facets.id
     }
 
