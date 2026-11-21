@@ -449,6 +449,18 @@ struct DeviceListModelTests {
         #expect(DeviceListModel.withdrawalRefusal(other) == other.localizedDescription)
     }
 
+    /// **The authority feature's refusal** (ADR-0056 §7). Withdrawing a
+    /// removal the account identity made is gated by its own feature,
+    /// `core.revoke_withdraw_authority`; its refusal says what to update just
+    /// as the device feature's does, not the core's English.
+    @Test
+    func anIdentityWithdrawalTheFeatureGateRefusesSaysWhatToUpdate() {
+        let refusal = BindingError.Core(
+            message: "enabling `core.revoke_withdraw_authority` needs 3 other device(s) to update first"
+        )
+        #expect(DeviceListModel.withdrawalRefusal(refusal) == L10n.Devices.withdrawAwaitsUpdate(count: 3))
+    }
+
     /// The disclosure is dismissible and the error is too, so neither becomes
     /// a permanent fixture of the settings screen.
     @Test
