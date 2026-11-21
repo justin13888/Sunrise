@@ -185,6 +185,7 @@ sunrise_db_size_bytes
 sunrise_device_sig_rejected_total         {reason}
 sunrise_devices                           {state}
 sunrise_devices_register_total
+sunrise_devices_reinstate_total
 sunrise_devices_revoke_total
 sunrise_http_in_flight_requests
 sunrise_http_request_duration_seconds     {endpoint, method}
@@ -222,7 +223,7 @@ sunrise_sync_stream_total
 sunrise_sync_streams_active
 ```
 
-55 metric names, and four that earlier revisions of this file listed and the
+56 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into

@@ -295,6 +295,35 @@ pub struct Caller {
     /// single-tenant case, where there are no device rows to bind to and
     /// `ServerConfig::validate` refuses `require_device_sig`.
     pub device: Option<Device>,
+    /// The instant the signing device put in the `Date` its signature covers,
+    /// in milliseconds (whole seconds: the header carries no finer), on the
+    /// signer's clock. `Some` exactly when `device` is.
+    ///
+    /// The one ordering two requests from the same device can be compared by
+    /// without trusting the relay's clock against the client's: the revoke
+    /// and reinstate routes use it so a captured reinstatement cannot undo a
+    /// revocation signed after it (ADR-0056 §5).
+    pub signed_at_ms: Option<u64>,
+}
+
+impl Caller {
+    /// The caller a verified binding resolved to, with the `Date` it signed.
+    ///
+    /// The date is read only when a device verified, and verification has
+    /// already parsed it and held it to the replay window, so a `None` here
+    /// beside a device would mean a `Date` that verified and does not parse.
+    fn new(principal: Principal, device: Option<Device>, sig: &DeviceSig) -> Self {
+        let signed_at_ms = device
+            .as_ref()
+            .and(sig.date.as_deref())
+            .and_then(|date| jiff::fmt::rfc2822::parse(date.trim()).ok())
+            .and_then(|zoned| u64::try_from(zoned.timestamp().as_millisecond()).ok());
+        Self {
+            principal,
+            device,
+            signed_at_ms,
+        }
+    }
 }
 
 /// A verified request body, with the caller that sent it.
@@ -457,7 +486,7 @@ where
     } else {
         verify(state, &principal, &sig, &method, &target, Some(&received)).await?
     };
-    Ok((Caller { principal, device }, value))
+    Ok((Caller::new(principal, device, &sig), value))
 }
 
 impl<T> FromRequest<ServerState> for Signed<T>
@@ -500,7 +529,7 @@ impl FromRequestParts<ServerState> for SignedParts {
         let (principal, sig) = caller_of(parts, context).await?;
         let (method, target) = target_of(parts);
         let device = verify::<()>(context, &principal, &sig, &method, &target, None).await?;
-        Ok(Self(Caller { principal, device }))
+        Ok(Self(Caller::new(principal, device, &sig)))
     }
 }
 
@@ -582,7 +611,7 @@ impl FromRequest<ServerState> for SignedBinary {
         let bytes = binary.bytes.to_vec();
         let device = verify_bytes(context, &principal, &sig, &method, &target, &bytes).await?;
         Ok(Self {
-            caller: Caller { principal, device },
+            caller: Caller::new(principal, device, &sig),
             bytes,
         })
     }

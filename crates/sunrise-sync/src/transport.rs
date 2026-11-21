@@ -67,6 +67,30 @@ pub enum RevokeOutcome {
     Unknown,
 }
 
+/// What the relay said about a reinstatement it was asked to make
+/// (ADR-0056 §5).
+///
+/// Three arms, because each is a different thing to tell the user. Only the
+/// first means the relay accepts the device again; the second is terminal and
+/// is the case where the device must be paired again; the third is terminal
+/// and says nothing about whether the relay accepts the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReinstateOutcome {
+    /// The relay accepts the device again: it reinstated the rows this device
+    /// revoked, or a row carrying the id was already active (a retry of a
+    /// reinstatement that landed answers this too).
+    Reinstated,
+    /// Every row carrying the id is revoked and this device is not recorded as
+    /// the revoker of any of them: another device revoked it, or the
+    /// revocation was unsigned or predates the relay recording revokers. The
+    /// relay keeps refusing the device; pairing it again is the remedy.
+    NotRevoker,
+    /// The relay holds no row carrying that vault id. Terminal, and not
+    /// success: a device that registered before it sent a `vault_device_id`
+    /// has a row this vault cannot name.
+    Unknown,
+}
+
 /// What the relay committed a finalized blob as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlobCommit {
@@ -175,6 +199,23 @@ pub trait Transport: Send + Sync {
         &mut self,
         _device_id: [u8; 16],
     ) -> Result<RevokeOutcome, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// Ask the relay to accept `device_id` again, on this device's word as the
+    /// one that revoked it (ADR-0056 §5).
+    ///
+    /// The inverse of [`Transport::revoke_device`], addressed the same way by
+    /// the **vault-side** id, and out-of-band for the same reason. The relay
+    /// accepts it only from the device it recorded as the revoker, and only
+    /// signed, so a transport with no device binding hears
+    /// [`ReinstateOutcome::NotRevoker`].
+    ///
+    /// Defaulted to [`TransportError::Unsupported`] as `revoke_device` is.
+    async fn reinstate_device(
+        &mut self,
+        _device_id: [u8; 16],
+    ) -> Result<ReinstateOutcome, TransportError> {
         Err(TransportError::Unsupported)
     }
 

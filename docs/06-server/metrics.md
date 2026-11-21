@@ -125,6 +125,7 @@ in the description, so it is driven without anyone adding it to the test.
 | `sunrise_account_delete_total` | counter | — | current | Accounts erased, by the maintenance pass once their grace period has run or by `admin account delete --immediately`. A confirmed request that has not been erased yet is not counted; `admin stats` reports those as `accounts_pending_deletion`. |
 | `sunrise_devices_register_total` | counter | — | current | |
 | `sunrise_devices_revoke_total` | counter | — | current | |
+| `sunrise_devices_reinstate_total` | counter | — | current | Reinstatements that made a revoked row active again, on the signed word of the device recorded as its revoker (ADR-0056 §5). A retry that finds the row already active is not counted. |
 
 ### Sync and relay
 

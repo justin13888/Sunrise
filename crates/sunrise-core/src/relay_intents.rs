@@ -35,9 +35,11 @@
 //! relay behind the register (#160's failure).
 //!
 //! What no row here can do is take back a revocation the relay has already
-//! been told. The drain deletes the row on the relay's answer, and the relay
-//! has no inverse of `DELETE`, so an unwind after that point leaves the relay
-//! refusing the device. That matches the read bound, which an unwind never
+//! been told. The drain deletes the row on the relay's answer, and nothing in
+//! the client sends the relay's inverse of `DELETE` yet (its reinstatement
+//! route and `Transport::reinstate_device` exist; the queue that would drive
+//! them is #1299), so an unwind after that point leaves the relay refusing
+//! the device. That matches the read bound, which an unwind never
 //! releases either: an unwound device is not back in at either bound.
 //! `docs/03-crypto/key-rotation.md` §Revocation states it for a reader.
 

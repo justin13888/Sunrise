@@ -47,7 +47,7 @@ on the authenticated account deliberately stays `AUTH_TOKEN_INVALID`
 
 ### The argument currently on the record is the wrong argument
 
-Both the doc comment (`crates/sunrise-server/src/api/error.rs:340#device_sig_invalid`) and
+Both the doc comment (`crates/sunrise-server/src/api/error.rs:352#device_sig_invalid`) and
 `auth.md` justify the pre-lookup case by pointing at `GET /meta`'s
 `device_binding_required` (`crates/sunrise-server/src/api/meta.rs:59#meta`). That
 answers a different question. `device_binding_required` tells every caller that
@@ -64,13 +64,13 @@ configuration including `require_device_sig = true`:
 - `POST /api/v1/devices` (`crates/sunrise-server/src/api/devices.rs:190#register`)
 
 Both take `SignedBootstrap`, and `signed_of` skips verification entirely when the
-binding is absent (`crates/sunrise-server/src/api/signed.rs:455-459#signed_of`) — *a device
+binding is absent (`crates/sunrise-server/src/api/signed.rs:484-488#signed_of`) — *a device
 cannot sign before it exists*, so this exemption is not an oversight and cannot
 be configured away without making device registration impossible.
 
 `caller_of` resolves the bearer **first**, before the binding headers and before
-the body (`crates/sunrise-server/src/api/signed.rs:392-395#caller_of`, then
-`:438-440`). So against either route, with no device key and no binding:
+the body (`crates/sunrise-server/src/api/signed.rs:421-424#caller_of`, then
+`:467-469`). So against either route, with no device key and no binding:
 
 | bearer | outcome |
 |---|---|
@@ -174,7 +174,7 @@ question — which is what happened.
   restate an ADR is not worth the regeneration.
 - **The wording defect #79 names is already fixed.**
   `crates/sunrise-server/src/api/signed.rs:128-134#verify`,
-  `crates/sunrise-server/src/api/error.rs:284-287#device_sig_invalid` and
+  `crates/sunrise-server/src/api/error.rs:290-293#device_sig_invalid` and
   `codes.toml`'s 204 entry all describe the pre-lookup case as an **incomplete**
   binding — "either header missing, not only both" — matching the `let else` at
   `crates/sunrise-server/src/api/signed.rs:202-203#verify_binding`. Commit `d52999d` landed that before this

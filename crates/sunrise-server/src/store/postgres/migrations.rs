@@ -37,11 +37,18 @@ struct Migration {
 }
 
 /// Every migration, in apply order, ids `1..=LATEST` with no gaps.
-const MIGRATIONS: &[Migration] = &[Migration {
-    id: 1,
-    name: "baseline",
-    sql: BASELINE,
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        id: 1,
+        name: "baseline",
+        sql: BASELINE,
+    },
+    Migration {
+        id: 2,
+        name: "devices_revoked_by_key",
+        sql: DEVICES_REVOKED_BY_KEY,
+    },
+];
 
 /// The version this binary migrates to, and the newest it will open.
 pub(super) const LATEST: i32 = MIGRATIONS[MIGRATIONS.len() - 1].id;
@@ -228,6 +235,13 @@ CREATE TABLE rate_cells (
 CREATE INDEX rate_cells_by_idle ON rate_cells (idle_at_ms);
 ";
 
+/// 0002: `devices.revoked_by_key`, the counterpart of SQLite's migration 9:
+/// the signing key of the device whose signed revoke-by-vault-id request
+/// revoked the row, and the `Date` that request was signed under (ADR-0056
+/// §5). `NULL` on every row revoked before it.
+const DEVICES_REVOKED_BY_KEY: &str = "ALTER TABLE devices ADD COLUMN revoked_by_key TEXT;
+ALTER TABLE devices ADD COLUMN revoked_signed_at_ms BIGINT;";
+
 /// The table the version lives in. Created by the runner, outside the
 /// history, because the runner reads it before any step.
 const VERSION_TABLE: &str = r"
@@ -314,7 +328,7 @@ pub(super) async fn stamp(client: &Client, v: i32) {
 /// list has its counterpart and this number moves with it: nothing else would
 /// notice the Postgres schema falling behind.
 #[cfg(test)]
-const SQLITE_COVERED: u32 = 8;
+const SQLITE_COVERED: u32 = 9;
 
 #[cfg(test)]
 mod tests {

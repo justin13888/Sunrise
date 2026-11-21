@@ -76,7 +76,7 @@ use crate::auth::Subject;
 pub use accounts::Account;
 pub use blob_ledger::CommittedBlob;
 pub use cipher::{pre_encryption_copy, DbKey};
-pub use devices::{Device, NewDevice};
+pub use devices::{Device, NewDevice, Reinstatement, SignedBy};
 pub use error::{busy_total, StoreError};
 pub use key_bundles::{KeyBundlePinned, PinnedKeyBundle};
 pub use lifecycle::{AccountSummary, DeclaredCursor, NewTombstone, StoreStats};

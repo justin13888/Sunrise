@@ -124,6 +124,7 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
             devices::register,
             devices::revoke,
             devices::revoke_by_vault_id,
+            devices::reinstate_by_vault_id,
             devices::push_tokens
         ])
         .mount(kynos::routes![

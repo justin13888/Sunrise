@@ -691,6 +691,10 @@ async fn every_device_route_requires_a_bearer() {
             Method::DELETE,
             "/api/v1/devices/by-vault-id/01J8ZQ7X9K3M5N7P9R1T3V5W7Y",
         ),
+        (
+            Method::POST,
+            "/api/v1/devices/by-vault-id/01J8ZQ7X9K3M5N7P9R1T3V5W7Y/reinstate",
+        ),
     ] {
         let res = client.send_as(method.clone(), path, None, None).await;
         assert_eq!(

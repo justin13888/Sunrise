@@ -67,7 +67,7 @@ in [`02-domain/schema-versioning.md`](./02-domain/schema-versioning.md) and
 [`04-storage/migrations.md`](./04-storage/migrations.md).
 
 1. [#441](https://github.com/justin13888/Sunrise/issues/441) Rebuild the projection from the local op log, and give the apps a path to it and to account recovery.
-2. [#383](https://github.com/justin13888/Sunrise/issues/383) Revocation withdrawal, now that unknown op kinds are parked. Its relay half is [#1238](https://github.com/justin13888/Sunrise/issues/1238), the identity-signed withdrawal [#1239](https://github.com/justin13888/Sunrise/issues/1239), and the Apple device list's offer [#1240](https://github.com/justin13888/Sunrise/issues/1240).
+2. [#383](https://github.com/justin13888/Sunrise/issues/383) Revocation withdrawal, now that unknown op kinds are parked. Its relay half is [#1238](https://github.com/justin13888/Sunrise/issues/1238) (the route and transport call) and [#1299](https://github.com/justin13888/Sunrise/issues/1299) (the client queue that drives them), the identity-signed withdrawal [#1239](https://github.com/justin13888/Sunrise/issues/1239), and the Apple device list's offer [#1240](https://github.com/justin13888/Sunrise/issues/1240).
 3. [#454](https://github.com/justin13888/Sunrise/issues/454) Identity-signed authority revocations, behind the feature gate.
 
 ## P2 — Domain model
