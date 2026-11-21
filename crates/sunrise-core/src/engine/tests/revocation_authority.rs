@@ -1,12 +1,20 @@
 //! Identity-signed revocations (ADR-0058, issue #454): the authority row in
 //! the fold, the command that signs one, and the carry-forward across a
-//! rotation.
+//! rotation; and their identity-signed withdrawal (§6, issue #1239).
 
 use super::*;
 use crate::bytes::hex_bytes;
-use crate::control_op::DeviceRevokeByIdentityPayload;
-use crate::feature::REVOKE_AUTHORITY_FEATURE;
-use sunrise_crypto::{identity_id_from_pub, IdentitySigningKeyPair, RevocationClaim};
+use crate::commands::WithdrawalOutcome;
+use crate::control_op::{
+    DeviceRevokeByIdentityPayload, DeviceRevokeWithdrawByIdentityPayload,
+    DeviceRevokeWithdrawPayload,
+};
+use crate::feature::{
+    REVOKE_AUTHORITY_FEATURE, REVOKE_WITHDRAW_AUTHORITY_FEATURE, REVOKE_WITHDRAW_FEATURE,
+};
+use sunrise_crypto::{
+    identity_id_from_pub, IdentitySigningKeyPair, RevocationClaim, WithdrawalClaim,
+};
 
 /// The `ID_S_priv` every test keychain is built with
 /// (`Keychain::for_test_seeded`), so the identity at the head of a vault that
@@ -531,4 +539,451 @@ fn the_device_list_says_which_kind_revoked_a_device() {
     let row = |id: [u8; 16]| rows.iter().find(|r| r.device_id == id).unwrap().clone();
     assert!(row(x_id).revoked && row(x_id).revoked_by_authority);
     assert!(row(y_id).revoked && !row(y_id).revoked_by_authority);
+}
+
+// ---------------------------------------------------------------------------
+// The identity-signed withdrawal (ADR-0058 §6, issue #1239)
+// ---------------------------------------------------------------------------
+
+/// `sender` withdraws its authority revocation of `target` as the identity
+/// `key` holds, delivered to `receiver`. `sig` replaces the signature when it
+/// is `Some`.
+fn withdraw_by_identity_with(
+    receiver: &Engine,
+    db: &mut Db,
+    sender: &Engine,
+    target: [u8; 16],
+    hlc_ms: u64,
+    key: &IdentitySigningKeyPair,
+    sig: Option<[u8; 64]>,
+) {
+    let sender_id = sender.keychain.device_id();
+    let hlc = Hlc::at(hlc_ms);
+    let identity_id = identity_id_from_pub(&key.public_bytes());
+    let claim = WithdrawalClaim {
+        identity_id,
+        sender_device_id: sender_id,
+        revoked_device_id: target,
+        hlc_physical_ms: hlc.physical_ms,
+        hlc_logical: hlc.logical,
+    };
+    let identity_sig = sig.unwrap_or_else(|| claim.sign(key).unwrap());
+    let inner = InnerOp::DeviceRevokeWithdrawByIdentity(DeviceRevokeWithdrawByIdentityPayload {
+        revoked_device_id: target,
+        identity_id,
+        identity_sig,
+    });
+    db.with_tx(|tx| {
+        receiver
+            .apply_control_op(tx, &inner, &sender_id, hlc, hlc.physical_ms, 1)
+            .map(|_| ())
+    })
+    .unwrap();
+}
+
+/// [`withdraw_by_identity_with`] signed by the genesis identity.
+fn withdraw_by_identity(
+    receiver: &Engine,
+    db: &mut Db,
+    sender: &Engine,
+    target: [u8; 16],
+    hlc_ms: u64,
+) {
+    withdraw_by_identity_with(receiver, db, sender, target, hlc_ms, &genesis_key(), None);
+}
+
+/// `sender` withdraws its **ordinary** pair on `target`, unsigned.
+fn withdraw_ordinarily(
+    receiver: &Engine,
+    db: &mut Db,
+    sender: &Engine,
+    target: [u8; 16],
+    hlc_ms: u64,
+) {
+    let sender_id = sender.keychain.device_id();
+    let hlc = Hlc::at(hlc_ms);
+    let inner = InnerOp::DeviceRevokeWithdraw(DeviceRevokeWithdrawPayload {
+        revoked_device_id: target,
+    });
+    db.with_tx(|tx| {
+        receiver
+            .apply_control_op(tx, &inner, &sender_id, hlc, hlc.physical_ms, 1)
+            .map(|_| ())
+    })
+    .unwrap();
+}
+
+/// **The identity in force withdraws its own authority revocation**, and a
+/// later authority revocation from the same sender makes the pair live
+/// again (ADR-0058 §6, ADR-0056 §2).
+#[test]
+fn the_identity_withdraws_its_own_authority_revocation() {
+    let e = engines(3);
+    let (ex, eo, er) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    let x_id = ex.keychain.device_id();
+
+    revoke_by_identity(er, &mut db, eo, x_id, T0);
+    assert!(by_authority(&db, &x_id));
+    withdraw_by_identity(er, &mut db, eo, x_id, T0 + 10_000);
+    assert!(!er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(!by_authority(&db, &x_id));
+
+    revoke_by_identity(er, &mut db, eo, x_id, T0 + 20_000);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(by_authority(&db, &x_id), "the later revocation is the head");
+}
+
+/// **A revocation wins a tie**, in either delivery order, as it does in an
+/// ordinary pair.
+#[test]
+fn an_authority_revocation_wins_a_tie_with_its_withdrawal() {
+    let e = engines(3);
+    let (ex, eo, er) = (&e[0], &e[1], &e[2]);
+    let x_id = ex.keychain.device_id();
+
+    let mut one = db_root(ROOT);
+    revoke_by_identity(er, &mut one, eo, x_id, T0);
+    withdraw_by_identity(er, &mut one, eo, x_id, T0);
+    let mut two = db_root(ROOT);
+    withdraw_by_identity(er, &mut two, eo, x_id, T0);
+    revoke_by_identity(er, &mut two, eo, x_id, T0);
+    for db in [&one, &two] {
+        assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+        assert!(by_authority(db, &x_id));
+    }
+}
+
+/// **The register is the same whichever order the revocation and its
+/// withdrawal arrive.**
+#[test]
+fn an_identity_withdrawal_converges_in_either_delivery_order() {
+    let e = engines(3);
+    let (ex, eo, er) = (&e[0], &e[1], &e[2]);
+    let x_id = ex.keychain.device_id();
+
+    let mut one = db_root(ROOT);
+    revoke_by_identity(er, &mut one, eo, x_id, T0);
+    withdraw_by_identity(er, &mut one, eo, x_id, T0 + 10_000);
+    let mut two = db_root(ROOT);
+    withdraw_by_identity(er, &mut two, eo, x_id, T0 + 10_000);
+    revoke_by_identity(er, &mut two, eo, x_id, T0);
+    assert_eq!(revocation_row(&one, &x_id), revocation_row(&two, &x_id));
+    assert_eq!(revocation_row(&one, &x_id), None);
+}
+
+/// **A device-signed withdrawal cannot withdraw an authority revocation**:
+/// it is a row of the sender's ordinary pair, which holds nothing here, so
+/// the authority pair stays live.
+#[test]
+fn a_device_signed_withdrawal_leaves_an_authority_revocation_live() {
+    let e = engines(3);
+    let (ex, eo, er) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    let x_id = ex.keychain.device_id();
+
+    revoke_by_identity(er, &mut db, eo, x_id, T0);
+    withdraw_ordinarily(er, &mut db, eo, x_id, T0 + 10_000);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(by_authority(&db, &x_id));
+}
+
+/// **A withdrawal whose signature does not verify withdraws nothing an
+/// authority row holds**, and the compaction keeps the revocation beside it
+/// rather than letting the greater-stamped withdrawal displace it.
+#[test]
+fn an_unverifiable_identity_withdrawal_withdraws_nothing() {
+    let e = engines(3);
+    let (ex, eo, er) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    let x_id = ex.keychain.device_id();
+
+    revoke_by_identity(er, &mut db, eo, x_id, T0);
+    withdraw_by_identity_with(
+        er,
+        &mut db,
+        eo,
+        x_id,
+        T0 + 10_000,
+        &genesis_key(),
+        Some([7; 64]),
+    );
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(by_authority(&db, &x_id));
+    assert_eq!(ledger_rows(&db), 2, "the revocation and the withdrawal");
+
+    // Signed by another identity's key over a claim naming the head: the
+    // signature does not verify under the head's `ID_S_pub`.
+    let mut forged = db_root(ROOT);
+    revoke_by_identity(er, &mut forged, eo, x_id, T0);
+    let other = IdentitySigningKeyPair::from_secret_bytes(&[0x11; 32]);
+    let claim = WithdrawalClaim {
+        identity_id: identity_id_from_pub(&genesis_key().public_bytes()),
+        sender_device_id: eo.keychain.device_id(),
+        revoked_device_id: x_id,
+        hlc_physical_ms: T0 + 10_000,
+        hlc_logical: 0,
+    };
+    let sig = claim.sign(&other).unwrap();
+    withdraw_by_identity_with(
+        er,
+        &mut forged,
+        eo,
+        x_id,
+        T0 + 10_000,
+        &genesis_key(),
+        Some(sig),
+    );
+    assert!(by_authority(&forged, &x_id));
+}
+
+/// **An identity-signed withdrawal lifted into another device's envelope
+/// withdraws nothing**: the claim names the sender, so it does not verify
+/// for any other, and the pair it lands in is that other sender's, which
+/// holds no revocation.
+#[test]
+fn an_identity_withdrawal_reaches_only_its_senders_pair() {
+    let e = engines(4);
+    let (ex, eo, ey, er) = (&e[0], &e[1], &e[2], &e[3]);
+    let mut db = db_root(ROOT);
+    let x_id = ex.keychain.device_id();
+
+    revoke_by_identity(er, &mut db, eo, x_id, T0);
+    // O's signature, carried by Y.
+    let claim = WithdrawalClaim {
+        identity_id: identity_id_from_pub(&genesis_key().public_bytes()),
+        sender_device_id: eo.keychain.device_id(),
+        revoked_device_id: x_id,
+        hlc_physical_ms: T0 + 10_000,
+        hlc_logical: 0,
+    };
+    let sig = claim.sign(&genesis_key()).unwrap();
+    withdraw_by_identity_with(
+        er,
+        &mut db,
+        ey,
+        x_id,
+        T0 + 10_000,
+        &genesis_key(),
+        Some(sig),
+    );
+    // And a validly signed withdrawal from Y, which has no pair on X.
+    withdraw_by_identity(er, &mut db, ey, x_id, T0 + 20_000);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(by_authority(&db, &x_id));
+}
+
+/// **The identity cannot withdraw a revocation a device made** (ADR-0058
+/// §6, ADR-0056 §Alternatives (b)): its withdrawal lands in the sender's
+/// authority pair, and the ordinary pair keeps revoking.
+#[test]
+fn the_identity_cannot_withdraw_an_ordinary_revocation() {
+    let e = engines(3);
+    let (ex, eo, er) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    let x_id = ex.keychain.device_id();
+
+    revoke(er, &mut db, eo, x_id, T0);
+    withdraw_by_identity(er, &mut db, eo, x_id, T0 + 10_000);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(!by_authority(&db, &x_id));
+}
+
+/// **A withdrawal signed by a rotated-away identity cannot withdraw the
+/// authority revocation carried forward under the successor.** The holder
+/// signs a revocation, the rotation re-signs it under the successor, and a
+/// later withdrawal from the same device signed by the retired key withdraws
+/// nothing: it is not an authority row at the head, and the revocation it
+/// outranks is one.
+#[test]
+fn a_withdrawal_signed_by_a_retired_identity_is_refused() {
+    let e = engines(2);
+    let (eh, ex) = (&e[0], &e[1]);
+    let mut db = db_root(ROOT);
+    trust(eh, &mut db, ex);
+    let x_id = ex.keychain.device_id();
+
+    revoke_by_identity(eh, &mut db, eh, x_id, T0);
+    eh.rotate_identity(&mut db, None, true).unwrap();
+    assert_eq!(
+        kinds_emitted(&db, "device.revoke_by_identity"),
+        1,
+        "the rotation carried the revocation forward"
+    );
+    assert!(by_authority(&db, &x_id));
+
+    let later = eh.hlc.peek().physical_ms + 10_000;
+    withdraw_by_identity(eh, &mut db, eh, x_id, later);
+    assert!(eh.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(
+        by_authority(&db, &x_id),
+        "a retired identity has no authority to withdraw"
+    );
+}
+
+/// **A rotation never undoes a withdrawal.** The holder withdraws its
+/// authority revocation under the identity in force; the carry-forward has
+/// nothing to re-sign, and after the rotation the revocation and its
+/// withdrawal name one retired identity, so the pair stays inert rather than
+/// folding back as an ordinary revocation from the holder.
+#[test]
+fn a_withdrawn_authority_pair_stays_inert_across_a_rotation() {
+    let e = engines(2);
+    let (eh, ex) = (&e[0], &e[1]);
+    let mut db = db_root(ROOT);
+    trust(eh, &mut db, ex);
+    let x_id = ex.keychain.device_id();
+
+    revoke_by_identity(eh, &mut db, eh, x_id, T0);
+    withdraw_by_identity(eh, &mut db, eh, x_id, T0 + 10_000);
+    assert!(!eh.is_revoked(db.conn(), &x_id).unwrap());
+    let head = eh.current_identity(db.conn()).unwrap();
+    assert!(
+        Engine::authority_revocations_at(db.conn(), &head)
+            .unwrap()
+            .is_empty(),
+        "nothing to carry forward"
+    );
+
+    eh.rotate_identity(&mut db, None, true).unwrap();
+    assert_ne!(
+        eh.current_identity(db.conn()).unwrap().identity_id,
+        head.identity_id
+    );
+    assert_eq!(kinds_emitted(&db, "device.revoke_by_identity"), 0);
+    assert!(
+        !eh.is_revoked(db.conn(), &x_id).unwrap(),
+        "the retired pair stays withdrawn"
+    );
+}
+
+/// Advertise each of `features` from `who` to `receiver`.
+fn advertise_features(receiver: &Engine, db: &mut Db, who: &Engine, features: &[&str]) {
+    let inner = InnerOp::DeviceFeatures(crate::control_op::DeviceFeaturesPayload {
+        features: features.iter().map(|f| (*f).to_owned()).collect(),
+        unknown: Unknowns::new(),
+    });
+    let id = who.keychain.device_id();
+    db.with_tx(|tx| {
+        receiver
+            .apply_control_op(tx, &inner, &id, Hlc::at(T0), T0, 1)
+            .map(|_| ())
+    })
+    .unwrap();
+}
+
+fn withdraw_cmd(e: &Engine, db: &mut Db, target: [u8; 16]) -> Result<CommandResult, EngineError> {
+    e.apply(
+        db,
+        Command::WithdrawRevocation {
+            device_id: EntityRef::new(EntityKind::Device, target),
+        },
+    )
+}
+
+/// **The holder signs the withdrawal of its own authority revocation**
+/// (ADR-0058 §6): the device list offers it, the command requires the
+/// feature first and emits the identity-signed op and no ordinary one, and
+/// the device is no longer revoked. The revocation rotated the identity with
+/// the device left out, so it must be paired again.
+#[test]
+fn the_holder_withdraws_its_authority_revocation() {
+    let all = [
+        REVOKE_AUTHORITY_FEATURE,
+        REVOKE_WITHDRAW_FEATURE,
+        REVOKE_WITHDRAW_AUTHORITY_FEATURE,
+    ];
+    let e = engines(3);
+    let (eh, ex, eo) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    for other in [ex, eo] {
+        trust(eh, &mut db, other);
+        advertise_features(eh, &mut db, other, &all);
+    }
+    let x_id = ex.keychain.device_id();
+    assert!(revoke_cmd(eh, &mut db, x_id).revoked_by_authority);
+    assert!(device_list_row(eh, &db, &x_id).withdrawable);
+
+    let w = withdraw_cmd(eh, &mut db, x_id)
+        .unwrap()
+        .withdrawal
+        .expect("a withdrawal reports");
+    assert_eq!(w.outcome, WithdrawalOutcome::RepairRequired);
+    assert!(eh
+        .vault_requires(db.conn(), REVOKE_WITHDRAW_AUTHORITY_FEATURE)
+        .unwrap());
+    assert_eq!(kinds_emitted(&db, "device.revoke_withdraw_by_identity"), 1);
+    assert_eq!(kinds_emitted(&db, "device.revoke_withdraw"), 0);
+    assert!(!eh.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(!by_authority(&db, &x_id));
+    assert!(!device_list_row(eh, &db, &x_id).withdrawable);
+}
+
+/// **An authority claim waits for its feature.** Where it is the holder's
+/// only claim the command is refused, naming the devices to update; where
+/// the holder also holds an ordinary claim it withdraws that one alone and
+/// says the device is still claimed.
+#[test]
+fn the_identity_withdrawal_waits_for_its_feature() {
+    let e = engines(3);
+    let (eh, ex, eo) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    for other in [ex, eo] {
+        trust(eh, &mut db, other);
+        advertise_features(
+            eh,
+            &mut db,
+            other,
+            &[REVOKE_AUTHORITY_FEATURE, REVOKE_WITHDRAW_FEATURE],
+        );
+    }
+    let x_id = ex.keychain.device_id();
+    revoke_by_identity(eh, &mut db, eh, x_id, T0);
+
+    let Err(EngineError::FeatureUnsupportedByDevices { feature, devices }) =
+        withdraw_cmd(eh, &mut db, x_id)
+    else {
+        panic!("refused for want of the feature");
+    };
+    assert_eq!(feature, REVOKE_WITHDRAW_AUTHORITY_FEATURE);
+    assert!(devices.contains(&x_id) && devices.contains(&eo.keychain.device_id()));
+    assert_eq!(kinds_emitted(&db, "device.revoke_withdraw_by_identity"), 0);
+
+    revoke(eh, &mut db, eh, x_id, T0 + 1_000);
+    let w = withdraw_cmd(eh, &mut db, x_id).unwrap().withdrawal.unwrap();
+    assert_eq!(w.outcome, WithdrawalOutcome::StillClaimed);
+    assert_eq!(kinds_emitted(&db, "device.revoke_withdraw"), 1);
+    assert_eq!(kinds_emitted(&db, "device.revoke_withdraw_by_identity"), 0);
+    assert!(by_authority(&db, &x_id));
+}
+
+/// **A device that does not hold the identity in force cannot withdraw an
+/// authority revocation it carried**: a paired device holds no `ID_S_priv`,
+/// so the command reports it is not the author, emits nothing, and the row
+/// does not offer it.
+#[test]
+fn a_device_without_the_identity_cannot_withdraw_an_authority_revocation() {
+    let ep = Engine::from_clock(
+        Arc::new(FakeClock(PLMutex::new(T0))),
+        seeded_rng(),
+        Arc::new(Keychain::for_test_paired(
+            VaultRootKey::from_bytes(ROOT),
+            [9; 32],
+        )),
+    );
+    let ex = engine_seeded(ROOT, [1; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    trust(&ep, &mut db, &ex);
+    let x_id = ex.keychain.device_id();
+    // A row naming the head, carried by this device (as a restored or
+    // stolen key would sign it).
+    revoke_by_identity(&ep, &mut db, &ep, x_id, T0);
+    assert!(!device_list_row(&ep, &db, &x_id).withdrawable);
+    let w = withdraw_cmd(&ep, &mut db, x_id)
+        .unwrap()
+        .withdrawal
+        .unwrap();
+    assert_eq!(w.outcome, WithdrawalOutcome::NotAuthor);
+    assert_eq!(kinds_emitted(&db, "device.revoke_withdraw_by_identity"), 0);
+    assert!(by_authority(&db, &x_id));
 }
