@@ -782,8 +782,11 @@ mod recurring {
             (4, 0),
             "{undone:?}"
         );
-        let x = &read_block_row(&db, id).exceptions[&key(11)];
-        assert_eq!((x.starts_at.clone(), x.ends_at.clone()), (None, None));
+        assert_eq!(
+            read_block_row(&db, id).exceptions,
+            series.exceptions,
+            "the undo leaves no exception under the event's key"
+        );
         assert_eq!(slot(&db, here), here_was);
         let rows = day_rows(&e, &db, march(11));
         let standup = rows.iter().find(|r| r.block.id == id).unwrap();
@@ -815,7 +818,7 @@ mod recurring {
             "{undone:?}"
         );
         let block = read_block_row(&db, id);
-        assert_eq!(block.exceptions[&key(11)].starts_at, None);
+        assert!(!block.exceptions.contains_key(&key(11)));
         assert_eq!(block.exceptions[&key(18)].starts_at, Some(on(18, 12)));
         let undone = e.plan_undo(&mut db, second).unwrap();
         assert_eq!(
@@ -823,7 +826,81 @@ mod recurring {
             (2, 0),
             "{undone:?}"
         );
-        assert_eq!(read_block_row(&db, id).exceptions[&key(18)].starts_at, None);
+        assert!(read_block_row(&db, id).exceptions.is_empty());
+    }
+
+    /// An undone drag of an event leaves no exception under its key, so a
+    /// later anchor move a `BYDAY` rule cannot follow, which a moved event
+    /// would refuse as stranded, succeeds as it would have before the drag.
+    #[test]
+    fn an_undone_drag_leaves_the_event_the_rules_again() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        recur(&e, &mut db, id, "FREQ=WEEKLY;BYDAY=WE");
+        let diff = e
+            .plan_preview(&db, &drag(id, 11, OccurrenceScope::This, 10), NOW_MS)
+            .unwrap();
+        let commit = e.plan_apply(&mut db, &diff, NOW_MS).unwrap().1;
+        assert!(
+            !e.plan_preview(&db, &move_to_thursday(id), NOW_MS)
+                .unwrap()
+                .committable
+        );
+
+        e.plan_undo(&mut db, commit).unwrap();
+        assert!(read_block_row(&db, id).exceptions.is_empty());
+        let diff = e.plan_preview(&db, &move_to_thursday(id), NOW_MS).unwrap();
+        assert!(diff.committable, "{diff:#?}");
+        e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
+        e.assert_rebuild_identity(&db);
+    }
+
+    /// The same event dragged twice keeps both drags' undos: undone
+    /// newest-first, the second's undo restores the override the first drag
+    /// wrote, and the first's then leaves the event the rule's again.
+    #[test]
+    fn a_twice_dragged_event_undoes_newest_first_to_its_earlier_override() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let mut commit_drag = |hour| {
+            let diff = e
+                .plan_preview(&db, &drag(id, 11, OccurrenceScope::This, hour), NOW_MS)
+                .unwrap();
+            assert!(diff.committable, "{diff:#?}");
+            e.plan_apply(&mut db, &diff, NOW_MS).unwrap().1
+        };
+        let first = commit_drag(10);
+        let second = commit_drag(12);
+        let x = &read_block_row(&db, id).exceptions[&key(11)];
+        assert_eq!(
+            (x.starts_at.clone(), x.ends_at.clone()),
+            (Some(on(11, 12)), Some(on(11, 13)))
+        );
+
+        let undone = e.plan_undo(&mut db, second).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (2, 0),
+            "{undone:?}"
+        );
+        let x = &read_block_row(&db, id).exceptions[&key(11)];
+        assert_eq!(
+            (x.starts_at.clone(), x.ends_at.clone()),
+            (Some(on(11, 10)), Some(on(11, 11))),
+            "the first drag's override is back"
+        );
+        assert_eq!(grid(&e, &db, 11)[0].1.as_deref(), Some(key(11).as_str()));
+
+        let undone = e.plan_undo(&mut db, first).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (2, 0),
+            "{undone:?}"
+        );
+        assert!(read_block_row(&db, id).exceptions.is_empty());
+        e.assert_rebuild_identity(&db);
     }
 
     /// A resize of one event's bottom edge writes that event's end into its

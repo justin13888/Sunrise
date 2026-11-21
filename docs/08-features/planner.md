@@ -487,7 +487,11 @@ edit for that answer.
 A drag of one event stores its inverse against the occurrence's entry in the
 `exceptions` map (`OccurrenceStartsAt`, `OccurrenceEndsAt`, the prior value
 `None` where the exception overrode nothing), and its undo writes the
-exception's start and end back. A block's every write is full-state, so it
+exception's start and end back. An exception the undo leaves overriding
+nothing, neither cancelled nor setting any field, is removed from the map, so
+the event is the rule's again: it is not exported as a `RECURRENCE-ID`
+override, and a later move of the anchor does not count it as an exception it
+could strand. A block's every write is full-state, so it
 renews every field's stamp; a planner commit or undo moves every kept
 commit's record of a field it renewed and left as it was on to the new stamp,
 so dragging a second event of a series keeps the first drag's undo.

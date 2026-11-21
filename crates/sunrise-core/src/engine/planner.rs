@@ -584,6 +584,20 @@ impl Engine {
                                 put_back.push(row.field.clone());
                                 restored += 1;
                             }
+                            // An exception the restore leaves overriding
+                            // nothing is dropped, so the event is the rule's
+                            // again, as it was before its drag: neither
+                            // exported as an override nor counted by a later
+                            // anchor move as one it could strand.
+                            for key in put_back.iter().filter_map(|w| w.key.as_ref()) {
+                                if block
+                                    .exceptions
+                                    .get(key)
+                                    .is_some_and(|x| *x == BlockException::default())
+                                {
+                                    block.exceptions.remove(key);
+                                }
+                            }
                             block.updated_at = ms_to_ts(write_ms.cast_signed());
                             // The restored anchor carries the bindings and
                             // exceptions back to the occurrences they named;
