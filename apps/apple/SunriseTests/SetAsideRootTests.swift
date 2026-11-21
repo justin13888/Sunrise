@@ -184,6 +184,41 @@ struct SetAsideRootTests {
         #expect(try setAside(beside: directory).isEmpty, "the vault is back where it was")
     }
 
+    /// A set-aside name whose kept root cannot be read may hold the only key
+    /// to an earlier directory, so the restore refuses rather than store over
+    /// it, and puts the vault back.
+    @Test
+    func aSetAsideNameThatCannotBeReadRefusesTheRestore() async throws {
+        struct Locked: Error {}
+        let earlierRoot = Data(repeating: 9, count: 32)
+        let directory = try await vault()
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = StubRootStore(root: Self.oldRoot)
+        let reused = "\(directory.lastPathComponent).set-aside-1"
+        let earlier = try #require(store.forSetAside(reused) as? StubRootStore)
+        try earlier.store(earlierRoot)
+        earlier.refuseLoads(Locked())
+        let session = try await failedSession(directory, store: store)
+
+        var recovered = false
+        await #expect(throws: Locked.self) {
+            try await session.restoreAccount(
+                self.request,
+                onStep: { _ in },
+                recover: { _, _, _, _, _ in
+                    recovered = true
+                    throw BindingError.RecoveryCode(message: "unreached")
+                }
+            )
+        }
+
+        #expect(!recovered)
+        #expect(store.stored == Self.oldRoot)
+        #expect(try setAside(beside: directory).isEmpty, "the vault is back where it was")
+        #expect(earlier.stored == earlierRoot, "the earlier root is untouched")
+        #expect(store.setAsideNames == [reused], "no fresh account was written")
+    }
+
     /// The key-missing route has no root to lose, and keeps nothing.
     @Test
     func aRestoreOverAVaultWhoseKeyIsMissingKeepsNoRoot() async throws {
