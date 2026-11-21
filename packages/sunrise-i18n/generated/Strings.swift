@@ -34,7 +34,7 @@ enum L10n {
         }
         /// Remove this device?
         static var removeConfirmTitleUnnamed: String { L10n.tr("apple.devices.remove_confirm_title_unnamed") }
-        /// Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, and once the relay has been told, which happens on the next sync, the device must be paired again as a new device to sync.
+        /// Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, a removal from the device holding the account identity cannot be withdrawn at all, and once the relay has been told, which happens on the next sync, the device must be paired again as a new device to sync.
         static var removeConfirmMessage: String { L10n.tr("apple.devices.remove_confirm_message") }
         /// I lost it
         static var reasonLost: String { L10n.tr("apple.devices.reason_lost") }
