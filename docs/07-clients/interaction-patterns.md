@@ -172,7 +172,7 @@ on.
 
 **The iOS cell for *Task → Calendar block* is No: both ends ship, and no screen
 in the shell presents them together.** The drag source (`TaskRowView.swift:92`)
-and the grid's drop target (`CalendarView.swift:327`, into `GridTaskDropTarget`
+and the grid's drop target (`CalendarView.swift:328`, into `GridTaskDropTarget`
 at `CalendarTaskChip.swift:91`) are shared, unguarded and compiled into `SunriseiOS` — this cell
 fails on reach, not on code. `TaskRowView` renders only inside `TaskListView`
 (`:172`) and `DailyBriefBody` (`DailyBriefView.swift:82`); the grid renders on
