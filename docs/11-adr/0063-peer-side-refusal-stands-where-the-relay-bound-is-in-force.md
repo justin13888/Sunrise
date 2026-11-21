@@ -46,7 +46,7 @@ default is therefore no longer one value. It depends on the deployment:
   flag resolves on. A request without a complete binding is refused before any
   lookup, and a signed one resolves its device through
   `active_device`, whose SQL ends `AND revoked = 0`
-  (`crates/sunrise-server/src/store/devices.rs:190#active_device`). So a device
+  (`crates/sunrise-server/src/store/devices.rs:222#active_device`). So a device
   the relay has been told about is refused on every signed route, however it
   sends the request.
 - **A multi-tenant relay whose operator set `require_device_sig = false`.** The

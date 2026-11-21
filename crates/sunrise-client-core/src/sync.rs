@@ -52,7 +52,8 @@ use sunrise_core::{
     TransportFactory,
 };
 use sunrise_sync::{
-    BlobCommit, DeviceSigner, RevokeOutcome, SseTransport, SyncState, Transport, TransportError,
+    BlobCommit, DeviceSigner, ReinstateOutcome, RevokeOutcome, SseTransport, SyncState, Transport,
+    TransportError,
 };
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::watch;
@@ -169,6 +170,13 @@ impl Transport for KickableTransport {
         device_id: [u8; 16],
     ) -> Result<RevokeOutcome, TransportError> {
         self.inner.revoke_device(device_id).await
+    }
+
+    async fn reinstate_device(
+        &mut self,
+        device_id: [u8; 16],
+    ) -> Result<ReinstateOutcome, TransportError> {
+        self.inner.reinstate_device(device_id).await
     }
 
     async fn blob_init(
