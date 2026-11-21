@@ -124,9 +124,9 @@ A rolling, day-by-day view of what is coming. [#351](https://github.com/justin13
 > a changed plan waits for Move or Cancel, and a refused one says so and
 > writes nothing. Upcoming has no capture bar: a line dated past the span, or
 > undated past the no-date lane's cap, would be written and not drawn, so ⌘N
-> opens the capture panel. Not built on Apple: the context
-> filter (the client sends none), and a saved view of Upcoming
-> ([#1229](https://github.com/justin13888/Sunrise/issues/1229)).
+> opens the capture panel. "Save this view…" saves it as an `upcoming` saved
+> view (§Saved views). Not built on Apple: the context filter (the client
+> sends none).
 
 ## Needs decision (triage)
 
@@ -196,7 +196,7 @@ another on a second both survive. The shipped shape
 pub struct SavedView {
     pub id: EntityRef,
     pub name: String,                  // tracked; not unique
-    pub view: ViewKind,                // tracked; lossless (today, inbox, stream, search, calendar, …)
+    pub view: ViewKind,                // tracked; lossless (today, inbox, stream, search, calendar, upcoming, focus, routines, review, morning, evening)
     pub filter: ViewFilter,            // tracked; one register for the whole filter
     pub sort: ViewSort,                // quiet; default, manual (#340), created, updated, title, priority, due, scheduled
     pub sort_order: Option<String>,    // quiet; position in the saved-views list
@@ -223,8 +223,11 @@ it is never stored. The view's base list is Today, the Inbox view, the named
 Streams and, with `no_stream`, the tasks of no stream (every task when none),
 or the search for a Search view; the filter
 then narrows it in the reader's zone, and the sort orders it. A view of a
-screen with no list (calendar, focus, routines, review, the briefs) returns no
-tasks, and the client opens that screen. The result names any context the
+screen with no list (calendar, upcoming, focus, routines, review, the briefs)
+returns no tasks, and the client opens that screen. An Upcoming view saves no
+span: the span is the device-local `views.upcoming.span_days`, so it opens
+over each device's own (`upcoming`, added at `DOC_SCHEMA_V` 29 ([#1229](https://github.com/justin13888/Sunrise/issues/1229)),
+is a view an older build keeps as unknown and reports incomplete). The result names any context the
 filter holds that no longer exists, and says when a filter part or view kind
 from a newer build could not be applied (`complete: false`): it then shows
 more than that build would, never silently less. A filter part this build
