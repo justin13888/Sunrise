@@ -229,6 +229,10 @@ document's intent, not yet implemented).
   a recovery-code restore moved aside (#1222), under the account
   `<vault>/<set-aside directory name>`, written before the restore stores its
   new root, so the directory moved aside still has the key that opens it. The
+  core reuses a set-aside name once its directory is gone from disk, so where
+  that account already holds a root (its directory was renamed or moved), the
+  restore keeps the new one under `<vault>/<set-aside directory name>~<UUID>`
+  rather than overwrite the only key to the earlier directory. The
   app never deletes one, as it never deletes the directory, except where a
   restore that wrote nothing put the vault back under the root still in use.
 

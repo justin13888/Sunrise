@@ -53,6 +53,11 @@ final class StubRootStore: VaultRootStore, @unchecked Sendable {
             return kept
         }
     }
+
+    /// Every name ``forSetAside(_:)`` has been asked for, sorted.
+    var setAsideNames: [String] {
+        lock.withLock { setAside.keys.sorted() }
+    }
 }
 
 private struct StubError: Error, LocalizedError {

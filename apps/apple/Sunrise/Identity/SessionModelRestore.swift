@@ -197,9 +197,28 @@ extension SessionModel {
     /// would replace one, and refuses rather than find out by losing it.
     func keepRoot(of aside: URL?) throws -> (any VaultRootStore)? {
         guard let aside, let root = try rootStore.load() else { return nil }
-        let kept = rootStore.forSetAside(aside.lastPathComponent)
+        let kept = try Self.unoccupiedSetAsideStore(in: rootStore, for: aside.lastPathComponent)
         try kept.store(root)
         return kept
+    }
+
+    /// The set-aside store ``keepRoot(of:)`` writes to: the one named for
+    /// `directoryName` while it holds nothing, otherwise one named
+    /// `<directoryName>~<UUID>`.
+    ///
+    /// The core reuses the first `<vault>.set-aside-<n>` no longer on disk,
+    /// so a user who renamed or moved an earlier set-aside directory frees
+    /// its name while the root that opens it is still kept under that name.
+    /// Storing over it would lose the only key to that directory; a fresh
+    /// account keeps both. A name whose item cannot be read throws, for the
+    /// reason ``keepRoot(of:)`` gives.
+    static func unoccupiedSetAsideStore(
+        in store: any VaultRootStore,
+        for directoryName: String
+    ) throws -> any VaultRootStore {
+        let named = store.forSetAside(directoryName)
+        guard try named.load() != nil else { return named }
+        return store.forSetAside("\(directoryName)~\(UUID().uuidString)")
     }
 
     /// Undo ``setAside(_:)`` after a restore that wrote nothing.
