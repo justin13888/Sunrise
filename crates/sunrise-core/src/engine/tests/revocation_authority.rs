@@ -773,6 +773,60 @@ fn an_identity_withdrawal_reaches_only_its_senders_pair() {
     assert!(by_authority(&db, &x_id));
 }
 
+/// **A replayed identity-signed withdrawal withdraws nothing it did not
+/// withdraw the first time.** The holder revokes, withdraws, and revokes
+/// again. Re-delivering the withdrawal byte for byte lands under the later
+/// revocation and leaves the register as it was; the same signature carried
+/// at a later envelope HLC, one that would outrank the re-revocation, does
+/// not verify, because the claim it signs names the HLC it was made at.
+#[test]
+fn a_replayed_identity_withdrawal_does_not_undo_a_later_revocation() {
+    let e = engines(3);
+    let (ex, eo, er) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    let x_id = ex.keychain.device_id();
+
+    revoke_by_identity(er, &mut db, eo, x_id, T0);
+    withdraw_by_identity(er, &mut db, eo, x_id, T0 + 10_000);
+    assert!(!er.is_revoked(db.conn(), &x_id).unwrap());
+    revoke_by_identity(er, &mut db, eo, x_id, T0 + 20_000);
+    let register = revocation_row(&db, &x_id);
+    let rows = ledger_rows(&db);
+    assert!(by_authority(&db, &x_id));
+
+    // The identical op, delivered again.
+    withdraw_by_identity(er, &mut db, eo, x_id, T0 + 10_000);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(by_authority(&db, &x_id));
+    assert_eq!(revocation_row(&db, &x_id), register);
+    assert_eq!(ledger_rows(&db), rows, "a re-delivery stores nothing new");
+
+    // The first withdrawal's signature, lifted onto a later envelope.
+    let claim = WithdrawalClaim {
+        identity_id: identity_id_from_pub(&genesis_key().public_bytes()),
+        sender_device_id: eo.keychain.device_id(),
+        revoked_device_id: x_id,
+        hlc_physical_ms: T0 + 10_000,
+        hlc_logical: 0,
+    };
+    let sig = claim.sign(&genesis_key()).unwrap();
+    withdraw_by_identity_with(
+        er,
+        &mut db,
+        eo,
+        x_id,
+        T0 + 30_000,
+        &genesis_key(),
+        Some(sig),
+    );
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(
+        by_authority(&db, &x_id),
+        "a signature over another HLC is no authority to withdraw"
+    );
+    assert_eq!(revocation_row(&db, &x_id), register);
+}
+
 /// **The identity cannot withdraw a revocation a device made** (ADR-0058
 /// §6, ADR-0056 §Alternatives (b)): its withdrawal lands in the sender's
 /// authority pair, and the ordinary pair keeps revoking.
