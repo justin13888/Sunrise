@@ -41,6 +41,12 @@ final class CalendarPlanner {
     /// Bumped when a gesture ends, so a preview still in flight for it is
     /// not drawn over the grid afterwards.
     private var generation = 0
+    /// The task the task drag in progress carries, as last read.
+    private var held: TaskItem?
+    /// The last position a task drag previewed.
+    private var hovered: (task: EntityRef, atMs: Int64)?
+    /// A task drop is being committed: see ``willDropTask()``.
+    private var dropping = false
 
     private let bridge: CoreBridge
     /// Re-read the grid after a write. Set by the grid's model, which owns
@@ -297,6 +303,8 @@ final class CalendarPlanner {
         planIntent = nil
         planGesture = nil
         nudge = nil
+        held = nil
+        hovered = nil
         awaitingDecision = false
     }
 
@@ -335,48 +343,100 @@ final class CalendarPlanner {
     }
 
     // MARK: - A task onto the grid
+    //
+    // A task dragged over the grid, from a list or from where the grid draws
+    // it, is a `MoveTask` gesture like any other: previewed on each snapped
+    // position with ghosts, and its drop commits that diff as one undo step.
+    // The drop plans the task (it writes its `planned_at`); it does not make
+    // a block. The grid draws timed tasks, so the task stays where it was
+    // dropped (`docs/08-features/planner.md` §Client contract).
 
-    /// Drop the task `task` onto the grid at `atMs`, in the grid's zone.
-    ///
-    /// The block is created with the task already bound and **no title**, which
-    /// is not an omission: `Command::CreateBlock` shadow-copies the single
-    /// bound task's title as it is now, so the block gets the right name from
-    /// the core rather than one composed here that could disagree with it.
-    ///
-    /// How long it is, is the planner's answer: the slot `plan_preview` gives
-    /// the task dropped there, which is its estimate, or the
-    /// `planner.default_task_duration_s` preference when it has none. The
-    /// preview is cancelled once read; the drop writes the block, not the
-    /// task's `planned_at`, because the grid draws blocks.
-    func dropTask(_ task: EntityRef, atMs: Int64, timeZone: String) async {
-        // A drop onto a zoned grid writes a `Zoned` time in the grid's zone
-        // (`planner.md` §`PlanIntent`): the instant, re-expressed as one.
-        let zoned = TimeValue.zoned(civil: "", tz: timeZone)
-        let at = CalendarModel.sameKind(as: zoned, ms: atMs, timeZone: timeZone)
+    /// The intent for moving `task` so that it starts at `toMs`. A task the
+    /// grid draws keeps the kind of time it has; one with none, or with an
+    /// all-day plan, takes a `Zoned` time in the grid's zone, as a drop onto
+    /// a zoned grid does (`planner.md` §`PlanIntent`).
+    static func intent(moving task: TaskItem, toMs: Int64, timeZone: String) -> PlanIntentItem {
+        let current = task.scheduledAt ?? .zoned(civil: "", tz: timeZone)
+        let at = CalendarModel.sameKind(as: current, ms: toMs, timeZone: timeZone)
+        return .moveTaskTo(task: task.id, at: at)
+    }
+
+    /// A task dragged over the grid reached a new snapped position: preview
+    /// moving it there. A pointer that moves within one snap does not ask
+    /// the planner again.
+    func previewTask(_ id: EntityRef, toMs: Int64, timeZone: String) async {
+        guard !dropping, hovered?.task != id || hovered?.atMs != toMs else { return }
+        hovered = (id, toMs)
+        guard let task = await heldTask(id) else { return }
+        await preview(
+            Self.intent(moving: task, toMs: toMs, timeZone: timeZone),
+            gesture: PlanGesture(task: task)
+        )
+    }
+
+    /// Mark a task drop as begun, synchronously, before its payload is read:
+    /// the drag's leaving the grid may be reported first, and must not cancel
+    /// the plan the drop is about to commit.
+    func willDropTask() {
+        dropping = true
+    }
+
+    /// A task drag left the grid without dropping: forget its plan.
+    func taskDragLeft() {
+        guard !dropping, !awaitingDecision else { return }
+        cancel()
+    }
+
+    /// The task `id` was dropped onto the grid with its start at `atMs`:
+    /// commit the plan for moving it there. `nil` when the drop carried no
+    /// task, which ends the gesture and writes nothing.
+    func dropTask(_ id: EntityRef?, atMs: Int64, timeZone: String) async {
+        defer { dropping = false }
+        guard let id, let task = await heldTask(id) else {
+            cancel()
+            return
+        }
+        await drop(
+            Self.intent(moving: task, toMs: atMs, timeZone: timeZone),
+            gesture: PlanGesture(task: task)
+        )
+    }
+
+    /// The task a drag carries, read once per gesture: its kind of time and
+    /// its title are the intent's and the undo label's. `nil`, with the error
+    /// shown, when it cannot be read.
+    private func heldTask(_ id: EntityRef) async -> TaskItem? {
+        if let held, held.id == id { return held }
         do {
-            let diff = try await bridge.planPreview(.moveTaskTo(task: task, at: at))
-            await bridge.planCancel(diff.id)
-            guard case let .slot(start, end)? = diff.moves.first(where: { $0.item == task })?.after
-            else { return }
-            let draft = BlockDraftIn(
-                streamId: inboxStreamId(),
-                startsAt: start,
-                endsAt: end,
-                title: nil,
-                titleTrackTask: false,
-                tasks: [task]
-            )
-            let outcome = try await bridge.submitUndoable(
-                .createBlock(draft: draft),
-                label: L10n.Calendar.undoCreateBlock
-            )
-            if let refusal = outcome.notUndoable {
-                note = undoRefusalExplanation(refusal: refusal)
-            }
-            await refresh()
+            guard case let .task(task) = try await bridge.query(.entityById(id: id)) else { return nil }
+            held = task
+            return task
         } catch {
             errorMessage = error.localizedDescription
+            return nil
         }
+    }
+}
+
+/// What the latest drag that started in this app carries.
+///
+/// A drop target cannot read a drag's payload until the drop, and the grid
+/// previews what dropping would do while the drag is still over it, so each
+/// drag source lends its entity here when its drag starts: a task row its
+/// task (`TaskRowView`), a block's grip its block (`BlockChip`). The grid
+/// previews only a task. The drop itself reads the real payload; this is
+/// only what the hover previews.
+@MainActor
+enum TaskDragLedger {
+    private(set) static var lent: EntityRef?
+
+    /// The task the drag in progress carries, if it carries one.
+    static var task: EntityRef? {
+        lent.flatMap { DropPayload.taskIDs([$0]).first }
+    }
+
+    static func lend(_ entity: EntityRef) {
+        lent = entity
     }
 }
 
@@ -393,6 +453,11 @@ struct PlanGesture: Equatable, Sendable {
 
     init(row: BlockGridRow, mode: BlockDragMode) {
         self.init(title: row.title ?? L10n.Calendar.untitledBlock, mode: mode)
+    }
+
+    /// A task moved on the grid: "move ‘Draft the proposal’".
+    init(task: TaskItem) {
+        self.init(title: task.title, mode: .move)
     }
 
     /// `moved` counts every item the commit moves, the dragged block too.

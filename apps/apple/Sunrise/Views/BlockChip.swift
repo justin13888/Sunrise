@@ -146,11 +146,19 @@ struct BlockChip: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 2)
             .contentShape(.rect)
-            .draggable(placed.blockId)
+            .draggable(gripPayload())
             .help(L10n.Calendar.bindGrip)
             .accessibilityLabel(L10n.Calendar.bindGrip)
             .accessibilityIdentifier("calendar-block-bind-grip")
         #endif
+    }
+
+    /// The grip's payload, read when its drag starts: lent then too, so the
+    /// grid the drag crosses refuses it rather than previewing the last task
+    /// dragged (``TaskDragLedger``).
+    private func gripPayload() -> EntityRef {
+        TaskDragLedger.lend(placed.blockId)
+        return placed.blockId
     }
 
     /// Drag the bottom edge: the block keeps its start and changes how long it

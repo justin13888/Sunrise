@@ -131,24 +131,125 @@ struct CalendarModelTests {
         await vault.bridge.shutdown()
     }
 
-    /// Dropping a task creates a block with **no** title, on purpose: the core
-    /// shadow-copies the bound task's title. A title composed here would be a
-    /// second copy that could disagree with it.
+    /// A block made with a task bound and **no** title takes the task's own
+    /// title, on purpose: the core shadow-copies the bound task's title. A
+    /// title composed here would be a second copy that could disagree with it.
     @Test
-    func droppingATaskGivesTheBlockTheTasksOwnTitle() async throws {
+    func aBlockMadeForATaskTakesTheTasksOwnTitle() async throws {
         let vault = try await TestVault()
         let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
         await list.create(draft("Draft the proposal"))
         let task = try #require(list.tasks.first)
         let model = await model(vault)
 
-        await model.planner.dropTask(task.id, atMs: hour(model, 14), timeZone: model.timeZone)
+        await model.createBlock(
+            fromMs: hour(model, 14), toMs: hour(model, 15), title: nil, kind: .zoned, tasks: [task.id]
+        )
 
         let row = try #require(model.rows.first)
         #expect(row.title == "Draft the proposal")
         #expect(row.block.tasks == [task.id])
         #expect(row.taskTitles == ["Draft the proposal"])
         await vault.bridge.shutdown()
+    }
+
+    /// The grid draws the open tasks planned for a time on the days it
+    /// shows, apart from blocks, and leaves out one planned for a day with
+    /// no time, one planned for another day and one that is done.
+    @Test
+    func theGridDrawsTheOpenTimedTasksOnItsDays() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        func plan(_ title: String, _ at: TimeValue?) async throws -> EntityRef {
+            var new = draft(title)
+            new.scheduledAt = at
+            return try await vault.bridge.submit(.createTask(draft: new)).entity
+        }
+        _ = try await plan("Timed", model.timeValue(ms: hour(model, 10), kind: .zoned))
+        _ = try await plan("Tomorrow", model.timeValue(ms: hour(model, 34), kind: .zoned))
+        let date = DayScheduleModel.civilDate(ms: hour(model, 12), timeZone: model.timeZone)
+        _ = try await plan("All day", .allDay(date: date))
+        let done = try await plan("Done", model.timeValue(ms: hour(model, 11), kind: .zoned))
+        _ = try await vault.bridge.submit(.completeTask(id: done))
+
+        await model.refresh()
+
+        #expect(model.placedTasks(dayOffset: 0).map(\.task.title) == ["Timed"])
+        #expect(model.rows.isEmpty)
+        await vault.bridge.shutdown()
+    }
+}
+
+/// The rest of the suite, in an extension so neither body passes
+/// swiftlint's type-length limit.
+extension CalendarModelTests {
+    /// A week grid stepped back into a past week draws a task on its last
+    /// column: the week's read reaches every day it shows, not only the
+    /// days after "now".
+    @Test
+    func aPastWeekGridDrawsATaskOnItsLastDay() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        model.span = .week
+        await model.step(-2)
+        let at = model.dayStartMs(offset: 6) + 10 * 3_600_000
+        _ = try await plannedTask("Late in the week", at: model.timeValue(ms: at, kind: .zoned), in: vault)
+
+        await model.refresh()
+
+        #expect(model.placedTasks(dayOffset: 6).map(\.task.title) == ["Late in the week"])
+        #expect((0..<6).allSatisfy { model.placedTasks(dayOffset: $0).isEmpty })
+        await vault.bridge.shutdown()
+    }
+
+    /// A task planned two days before the window with a three-day estimate
+    /// still covers the window's first day, so it is drawn from its top.
+    @Test
+    func aLongTaskThatStartedBeforeTheWindowIsDrawnOnIt() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await model.step(-3)
+        let at = hour(model, -40)
+        _ = try await plannedTask(
+            "Long haul", at: model.timeValue(ms: at, kind: .zoned), estimateS: 3 * 86_400, in: vault
+        )
+
+        await model.refresh()
+
+        let placed = try #require(model.placedTasks(dayOffset: 0).first)
+        #expect(placed.task.title == "Long haul")
+        #expect(placed.startMs == model.windowStartMs)
+        #expect(placed.endMs == model.dayStartMs(offset: 1))
+        await vault.bridge.shutdown()
+    }
+
+    /// A task with no estimate is drawn as long as the vault's
+    /// `planner.default_task_duration_s`, not the 30-minute fallback.
+    @Test
+    func aTaskWithNoEstimateTakesTheDefaultDurationPreference() async throws {
+        let vault = try await TestVault()
+        _ = try await vault.bridge.submit(
+            .setPreference(key: "planner.default_task_duration_s", value: .uint(value: 5400), target: .vault)
+        )
+        let model = await model(vault)
+        let at = hour(model, 10)
+        _ = try await plannedTask("Unestimated", at: model.timeValue(ms: at, kind: .zoned), in: vault)
+
+        await model.refresh()
+
+        #expect(model.defaultTaskDurationS == 5400)
+        let placed = try #require(model.placedTasks(dayOffset: 0).first)
+        #expect(placed.endMs - placed.startMs == 5_400_000)
+        await vault.bridge.shutdown()
+    }
+
+    private func plannedTask(
+        _ title: String, at: TimeValue?, estimateS: UInt64? = nil, in vault: borrowing TestVault
+    ) async throws -> EntityRef {
+        var new = draft(title)
+        new.scheduledAt = at
+        new.estimatedDurationS = estimateS
+        return try await vault.bridge.submit(.createTask(draft: new)).entity
     }
 
     /// The whole Resolve flow, and the one thing that must survive it: the
@@ -261,7 +362,9 @@ struct CalendarModelTests {
         await list.create(draft("Write the report"))
         let task = try #require(list.tasks.first)
         let model = await model(vault)
-        await model.planner.dropTask(task.id, atMs: hour(model, 9), timeZone: model.timeZone)
+        await model.createBlock(
+            fromMs: hour(model, 9), toMs: hour(model, 10), title: nil, kind: .zoned, tasks: [task.id]
+        )
         let block = try #require(model.rows.first).block.id
 
         await model.unbind(task: task.id, from: block)

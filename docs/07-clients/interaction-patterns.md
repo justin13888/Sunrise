@@ -152,14 +152,28 @@ undo step; dropped back where it started, or after Esc, it commits nothing.
 The keyboard path is the planning keys on a block with focus (Mac): ⌥↑/⌥↓,
 ⇧⌥↑/⇧⌥↓, ⌥←/⌥→, Return and Esc (`Keymap.planning`). One event of a repeating
 block is not planned, because the planner reads the series and not the event:
-its drag asks how far the change reaches and writes the edit, as before. A
-task dropped on the grid becomes a block as long as the planner says the task
-is: its estimate, or the `planner.default_task_duration_s` preference.
+its drag asks how far the change reaches and writes the edit, as before.
+
+**A task dropped on the grid is planned there; it does not become a block.**
+The grid draws every open task planned for a time of day, in a track of its
+own beside the blocks, as long as the planner's slot for it: its estimate,
+or the `planner.default_task_duration_s` preference. A task dragged over the
+grid — from a list, or along the grid where it is drawn — is a `MoveTask`
+gesture like a block drag: each snapped position is previewed with ghosts and
+a summary line, leaving the grid cancels it, and the drop commits that diff
+as one undo step, writing the task's `planned_at`. A drop makes a plan rather
+than a block because a plan is what the person asked for — *do this at
+two* — and the planner can then ripple it and hold it to its constraints, as
+it does every other plan; a block is a commitment of time of its own, made
+by drawing one, and binding a task to it stays a separate act (the block
+editor, or *Calendar block → Task*). Before the grid drew tasks a drop had to
+make a block, or the task would have vanished from the screen it was dropped
+on.
 
 **The iOS cell for *Task → Calendar block* is No: both ends ship, and no screen
-in the shell presents them together.** The drag source (`TaskRowView.swift:74`)
-and the grid's drop target (`CalendarView.swift:280`, into `accept(items:at:)`
-at `:371`) are shared, unguarded and compiled into `SunriseiOS` — this cell
+in the shell presents them together.** The drag source (`TaskRowView.swift:92`)
+and the grid's drop target (`CalendarView.swift:328`, into `GridTaskDropTarget`
+at `CalendarTaskChip.swift:91`) are shared, unguarded and compiled into `SunriseiOS` — this cell
 fails on reach, not on code. `TaskRowView` renders only inside `TaskListView`
 (`:172`) and `DailyBriefBody` (`DailyBriefView.swift:82`); the grid renders on
 iOS only at `VaultTabs.swift:79`, its own tab, and `:283`, a pushed destination
@@ -237,9 +251,10 @@ context rows (`BrowseSidebar`) and by other task rows (`TaskListView`, which
 declines the drop in Today and in Search because the core ranks those lists).
 The attachments pane takes files (`AttachmentsView`), and a block moves and
 resizes within the grid by its own gestures rather than by a drop. The grid's
-own `dropDestination` serves exactly one cell — *Task → Calendar block*, since
-`accept(items:at:)` takes `tsk_` payloads only — so it is evidence for that
-cell and for no other. Stream reorder is `ForEach.onMove` writing
+own drop target (an `onDrop` delegate, `GridTaskDropTarget`, because previewing a
+hovering task needs the pointer's position) serves exactly one cell — *Task →
+Calendar block*, since it plans `tsk_` payloads only — so it is evidence for
+that cell and for no other. Stream reorder is `ForEach.onMove` writing
 `Stream.sort_order` through the core, so it syncs; task reorder writes
 `Task.sort_order` the same way, per [§Reorder](#reorder) above.
 

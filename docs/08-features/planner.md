@@ -18,7 +18,15 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 > client's calendar block move and resize send `MoveBlock` and `ResizeBlock`
 > (edge `End`) on each snapped position, draw the diff, and commit it on drop
 > (`apps/apple/Sunrise/Calendar/CalendarPlanner.swift`); the keyboard path is
-> `Keymap.planning`. Where that client stops short of the contract below:
+> `Keymap.planning`. A task dragged over the grid, from a list or along the
+> grid where it is drawn, sends `MoveTask` the same way, and its drop commits
+> that diff as one undo step: the drop **plans the task** (it writes the
+> task's `planned_at`, in the slot the planner gave it: its estimate, or
+> `default_task_duration_s`) and does **not** make a block. It can, because
+> the grid draws every open task planned for a time beside its blocks, so a
+> planned task stays where it was dropped; a block bound to the task is a
+> separate act (the block editor, or a block's grip dropped on the task row).
+> Where that client stops short of the contract below:
 >
 > - One event of a repeating block is not planned by the client yet: the
 >   core reads a recurring block as its occurrences and plans a drag of one
@@ -26,10 +34,6 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   `MoveBlockOccurrence` and `ResizeBlockOccurrence`, but the Apple drag
 >   still asks "which events?" and writes an ordinary edit
 >   ([#1224](https://github.com/justin13888/Sunrise/issues/1224)).
-> - A task dropped on the grid is sized by a `MoveTask` preview (its
->   estimate, or `default_task_duration_s`) and becomes a bound block; the
->   preview is cancelled, not committed, because the grid draws blocks and
->   not a task's `planned_at` ([#1225](https://github.com/justin13888/Sunrise/issues/1225)).
 > - A block's top edge is not draggable, so `ResizeBlock { edge: Start }` is
 >   never sent.
 > - The undo step is ordered against the command stack in Swift
