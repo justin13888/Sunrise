@@ -826,6 +826,43 @@ mod recurring {
         assert_eq!(read_block_row(&db, id).exceptions[&key(18)].starts_at, None);
     }
 
+    /// A resize of one event's bottom edge writes that event's end into its
+    /// exception; a resize of every event's moves the anchor's end alone.
+    #[test]
+    fn a_resized_event_writes_its_exception_or_the_anchors_end() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let resize = |scope| PlanIntent::ResizeBlock {
+            block: id,
+            occurrence: Some(PlanOccurrence {
+                key: key(11),
+                scope,
+            }),
+            edge: sunrise_domain::planner::Edge::End,
+            to: on(11, 11),
+        };
+        let diff = e
+            .plan_preview(&db, &resize(OccurrenceScope::This), NOW_MS)
+            .unwrap();
+        assert!(diff.committable, "{diff:#?}");
+        let commit = e.plan_apply(&mut db, &diff, NOW_MS).unwrap().1;
+        let x = &read_block_row(&db, id).exceptions[&key(11)];
+        assert_eq!(
+            (x.starts_at.clone(), x.ends_at.clone()),
+            (Some(on(11, 9)), Some(on(11, 11)))
+        );
+        assert_eq!(slot(&db, id), (on(4, 9), on(4, 10)));
+        assert_eq!(e.plan_undo(&mut db, commit).unwrap().restored, 2);
+
+        let diff = e
+            .plan_preview(&db, &resize(OccurrenceScope::All), NOW_MS)
+            .unwrap();
+        assert!(diff.committable, "{diff:#?}");
+        e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
+        assert_eq!(slot(&db, id), (on(4, 9), on(4, 11)));
+    }
+
     /// A drag of every event from a later one moves the series' anchor by
     /// as much as that event moved.
     #[test]
