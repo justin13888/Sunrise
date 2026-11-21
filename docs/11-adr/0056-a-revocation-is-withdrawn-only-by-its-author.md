@@ -5,11 +5,13 @@
 **Built by** [#383](https://github.com/justin13888/Sunrise/issues/383), now
 that §7's prerequisites have landed: §1–§4, §6 and §7 in the engine
 (`InnerOp::DeviceRevokeWithdraw`, migration 0053, `DOC_SCHEMA_V` 28,
-`STORAGE_V` 53), the seam and the CLI. Three parts are not built yet and are
-tracked on their own: the relay's reinstatement route and the client intent
-that drives it (§5, [#1238](https://github.com/justin13888/Sunrise/issues/1238);
-until then the command cancels only an unsent telling and says when the relay
-may still refuse the device), the identity-signed withdrawal of an authority
+`STORAGE_V` 53), the seam and the CLI. The relay's reinstatement route and the
+transport call that reaches it (§5) are built by
+[#1238](https://github.com/justin13888/Sunrise/issues/1238). Three parts are
+not built yet and are tracked on their own: the client intent that drives that
+call (§5, [#1299](https://github.com/justin13888/Sunrise/issues/1299); until
+then the command cancels only an unsent telling and says when the relay may
+still refuse the device), the identity-signed withdrawal of an authority
 revocation (ADR-0058 §6, [#1239](https://github.com/justin13888/Sunrise/issues/1239)),
 and the Apple device list's "Withdraw revocation" (§6,
 [#1240](https://github.com/justin13888/Sunrise/issues/1240)), which the
@@ -235,13 +237,22 @@ withdrawal reverses the relay's half too:
   its identity-signed revocation (ADR-0058).
 - **The relay records who revoked the device.** `DELETE
   /api/v1/devices/by-vault-id/{id}` records the calling device on the row when
-  the request is device-signed.
+  the request is device-signed. It records the device's Ed25519 signing key
+  (`devices.revoked_by_key`), not the relay's row id for it: a client
+  re-registers on every start and gets a new row id each time while its key
+  stays, and only the holder of the private key can sign as it.
 - **The relay accepts a reinstatement only from that recorded device, and only
-  signed.** It then sets `revoked = 0`.
-- **Otherwise the relay refuses.** That covers a row the relay revoked with no
-  recorded device: an unsigned `DELETE`, or a row revoked before the column
-  existed. The client reports that the relay still refuses the device, and
-  the remedy is to pair it again.
+  signed.** `POST /api/v1/devices/by-vault-id/{id}/reinstate` sets
+  `revoked = 0` on the rows whose recorded key signed the request. The caller
+  must be an authenticated, active device of the account, since nothing else
+  carries a verified signature. The route is idempotent: once a row carrying
+  the id is active, asking again answers `204`, so a client that lost the
+  reply retries safely.
+- **Otherwise the relay refuses** with `403 DEVICE_NOT_REVOKER`. That covers
+  another device of the account, an unsigned reinstatement, and a row the
+  relay revoked with no recorded device: an unsigned `DELETE`, or a row
+  revoked before the column existed. The client reports that the relay still
+  refuses the device, and the remedy is to pair it again.
 
 That is §3's authority rule restated where the relay can check it. A relay
 that let any account device reinstate any other would be the third-party
