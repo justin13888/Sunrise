@@ -9,6 +9,7 @@ final class StubRootStore: VaultRootStore, @unchecked Sendable {
     private var root: Data?
     private var loadError: Error?
     private var storeError: Error?
+    private var setAside: [String: StubRootStore] = [:]
 
     init(root: Data? = nil, loadError: Error? = nil, storeError: Error? = nil) {
         self.root = root
@@ -18,6 +19,12 @@ final class StubRootStore: VaultRootStore, @unchecked Sendable {
 
     var stored: Data? {
         lock.withLock { root }
+    }
+
+    /// Fail every later `load` with `error`, as a Keychain that locked after
+    /// the session started would.
+    func refuseLoads(_ error: Error) {
+        lock.withLock { loadError = error }
     }
 
     func load() throws -> Data? {
@@ -36,6 +43,15 @@ final class StubRootStore: VaultRootStore, @unchecked Sendable {
 
     func clear() throws {
         lock.withLock { root = nil }
+    }
+
+    /// The store kept for each set-aside directory, made on first ask.
+    func forSetAside(_ directoryName: String) -> any VaultRootStore {
+        lock.withLock {
+            let kept = setAside[directoryName] ?? StubRootStore()
+            setAside[directoryName] = kept
+            return kept
+        }
     }
 }
 

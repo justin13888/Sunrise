@@ -233,6 +233,42 @@ struct VaultRootTests {
         #expect(try store.load() == root, "the migration must not eat the item it is moving")
         #expect(try store.load() == root, "and it must still be there on the launch after")
     }
+
+    /// The root of a vault set aside (#1222) is an item of its own, under
+    /// the set-aside service and `<vault>/<directory>`, in the class the root
+    /// in use has. Storing or forgetting either leaves the other alone.
+    @Test
+    func aSetAsideRootIsItsOwnItemBesideTheRootInUse() throws {
+        let vaultName = "tests-\(UUID().uuidString)"
+        let store = KeychainVaultRootStore(vaultName: vaultName)
+        let kept = store.forSetAside("vault.set-aside-1")
+        let keptItem = KeychainItem(
+            service: KeychainVaultRootStore.setAsideService,
+            account: "\(vaultName)/vault.set-aside-1",
+            accessibility: KeychainVaultRootStore.accessibility,
+            domain: KeychainDomain.current
+        )
+        defer {
+            try? store.clear()
+            try? kept.clear()
+        }
+
+        let old = try VaultRoot.generate()
+        try store.store(old)
+        try kept.store(old)
+        let new = try VaultRoot.generate()
+        try store.store(new)
+
+        #expect(try store.load() == new)
+        #expect(try kept.load() == old, "storing a new root does not reach the kept one")
+        #expect(try keptItem.read() == old, "kept where Keychain Access lists it")
+        #expect(storedAccessibility(of: keptItem) == expectedThisDeviceOnly)
+        #expect(KeychainVaultRootStore.setAsideService != KeychainVaultRootStore.service)
+
+        try kept.clear()
+        #expect(try kept.load() == nil)
+        #expect(try store.load() == new, "forgetting the kept root leaves the root in use")
+    }
 }
 
 /// The OIDC credential, which #131 moved into the vault root's class. Against
