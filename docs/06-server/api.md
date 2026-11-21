@@ -362,13 +362,17 @@ A revocation withdrawn in the vault ([ADR-0056](../11-adr/0056-a-revocation-is-w
 §5) has a relay half, and this is it.
 
 - **The revoke records its signer.** A device-signed `DELETE
-  /api/v1/devices/by-vault-id/<id>` writes the signing device's relay id into
-  `devices.revoked_by` on every row it revokes. An unsigned one, and every row
+  /api/v1/devices/by-vault-id/<id>` writes the signing device's Ed25519 key
+  (`device_pub_s`) into `devices.revoked_by_key` on every row it revokes. The
+  key and not the relay's row id, because a client re-registers on every start
+  and gets a new row id each time while its key stays, and because only the
+  holder of the private key can sign as it. An unsigned revoke, and every row
   revoked before migration 0009 added the column, records nobody.
 - **`POST /api/v1/devices/by-vault-id/<id>/reinstate` accepts only that
   device, and only signed.** It sets `revoked = 0` on the rows whose
-  `revoked_by` is the caller and clears `revoked_at_ms` and `revoked_by`, so a
-  later revoke records its own author. Any other caller — another device on
+  `revoked_by_key` is the key that signed the request, and clears
+  `revoked_at_ms` and `revoked_by_key`, so a later revoke records its own
+  author. Any other caller — another device on
   the account, or an unsigned request — gets `403 DEVICE_NOT_REVOKER`. Letting
   any account device reinstate any other would be the third-party un-revoke
   ADR-0056 §3 rejects.

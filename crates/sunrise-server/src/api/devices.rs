@@ -342,15 +342,17 @@ pub async fn revoke_by_vault_id(
         ));
     }
 
-    // The signing device is recorded as the revoker, and is the only device
-    // `reinstate_by_vault_id` will later take a reinstatement from. An
-    // unsigned request records nobody, so what it revokes stays revoked.
+    // The signing device's key is recorded as the revoker's, and is the only
+    // key `reinstate_by_vault_id` will later take a reinstatement from. The
+    // key and not the row id: a client re-registers on every start and gets a
+    // new row id each time, while the key it signs with stays. An unsigned
+    // request records nobody, so what it revokes stays revoked.
     state
         .store
         .revoke_devices_by_vault_id(
             &caller.principal.account.account_id,
             &path.vault_device_id,
-            caller.device.as_ref().map(|d| d.device_id.as_str()),
+            caller.device.as_ref().map(|d| d.device_pub_s.as_str()),
             state.clock.now_ms(),
         )
         .await
@@ -369,8 +371,9 @@ pub async fn revoke_by_vault_id(
 ///
 /// The relay's half of a withdrawn revocation. **Only the device recorded as
 /// the revoker may call it, and only device-signed.** The revoke-by-vault-id
-/// route above records the device whose signature it verified on every row it
-/// revokes, and this route reinstates only those rows. A route that let any
+/// route above records the signing key of the device whose signature it
+/// verified on every row it revokes, and this route reinstates only the rows
+/// whose recorded key signed this request. A route that let any
 /// device on the account reinstate any other would be the third-party
 /// un-revoke ADR-0056 §3 rejects; one that took an unsigned request would let a
 /// bearer token alone undo a revocation.
@@ -415,7 +418,7 @@ pub async fn reinstate_by_vault_id(
         .reinstate_devices_by_vault_id(
             &caller.principal.account.account_id,
             &path.vault_device_id,
-            &device.device_id,
+            &device.device_pub_s,
         )
         .await
         .map_err(|e| match e {

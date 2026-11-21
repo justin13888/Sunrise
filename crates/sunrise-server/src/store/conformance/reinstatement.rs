@@ -1,7 +1,8 @@
-//! Reinstatement on the word of the recorded revoker (ADR-0056 §5): what a
-//! revoke-by-vault-id records, and the only device whose reinstatement the
-//! rows then accept. Split out of the suite because it is one rule over the
-//! device rows, and the suite's own revocation check names the relay id route.
+//! Reinstatement on the word of the recorded revoker (ADR-0056 §5): the
+//! signing key a revoke-by-vault-id records, and the only key whose
+//! reinstatement the rows then accept. Split out of the suite because it is
+//! one rule over the device rows, and the suite's own revocation check names
+//! the relay id route.
 
 use super::{subject, NOW};
 use crate::store::{MetadataError, MetadataStore, NewDevice, Reinstatement};
@@ -42,8 +43,8 @@ pub(super) async fn only_the_recorded_revoker_reinstates(store: &dyn MetadataSto
         .register_device(account, &device("phone", PHONE), NOW)
         .await
         .unwrap();
-    let laptop = "LAPTOP-RELAY-ID";
-    let desktop = "DESKTOP-RELAY-ID";
+    let laptop = "key-laptop";
+    let desktop = "key-desktop";
 
     assert!(
         matches!(
@@ -137,7 +138,7 @@ pub(super) async fn an_unrecorded_revoke_cannot_be_reinstated(store: &dyn Metada
         .await
         .unwrap();
     let account = alice.account_id.as_str();
-    let laptop = "LAPTOP-RELAY-ID";
+    let laptop = "key-laptop";
     store
         .register_device(account, &device("tablet", TABLET), NOW)
         .await

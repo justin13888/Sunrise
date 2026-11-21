@@ -114,20 +114,19 @@ impl MetadataStore for PgStore {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        revoked_by: Option<&str>,
+        revoked_by_key: Option<&str>,
         now_ms: u64,
     ) -> Result<usize, MetadataError> {
-        Self::revoke_devices_by_vault_id(self, account_id, vault_device_id, revoked_by, now_ms)
+        Self::revoke_devices_by_vault_id(self, account_id, vault_device_id, revoked_by_key, now_ms)
             .await
     }
     async fn reinstate_devices_by_vault_id(
         &self,
         account_id: &str,
         vault_device_id: &str,
-        caller_device_id: &str,
+        caller_key: &str,
     ) -> Result<Reinstatement, MetadataError> {
-        Self::reinstate_devices_by_vault_id(self, account_id, vault_device_id, caller_device_id)
-            .await
+        Self::reinstate_devices_by_vault_id(self, account_id, vault_device_id, caller_key).await
     }
     async fn touch_device(&self, device_id: &str, now_ms: u64) -> Result<(), MetadataError> {
         Self::touch_device(self, device_id, now_ms).await

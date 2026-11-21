@@ -167,7 +167,7 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        revoked_by: Option<&str>,
+        revoked_by_key: Option<&str>,
         now_ms: u64,
     ) -> Result<usize, MetadataError>;
     /// [`Store::reinstate_devices_by_vault_id`].
@@ -175,7 +175,7 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        caller_device_id: &str,
+        caller_key: &str,
     ) -> Result<Reinstatement, MetadataError>;
     /// [`Store::touch_device`].
     async fn touch_device(&self, device_id: &str, now_ms: u64) -> Result<(), MetadataError>;
@@ -501,14 +501,14 @@ impl MetadataStore for Store {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        revoked_by: Option<&str>,
+        revoked_by_key: Option<&str>,
         now_ms: u64,
     ) -> Result<usize, MetadataError> {
         Ok(Self::revoke_devices_by_vault_id(
             self,
             account_id,
             vault_device_id,
-            revoked_by,
+            revoked_by_key,
             now_ms,
         )?)
     }
@@ -516,13 +516,13 @@ impl MetadataStore for Store {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        caller_device_id: &str,
+        caller_key: &str,
     ) -> Result<Reinstatement, MetadataError> {
         Ok(Self::reinstate_devices_by_vault_id(
             self,
             account_id,
             vault_device_id,
-            caller_device_id,
+            caller_key,
         )?)
     }
     async fn touch_device(&self, device_id: &str, now_ms: u64) -> Result<(), MetadataError> {

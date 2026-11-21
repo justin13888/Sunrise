@@ -332,7 +332,7 @@ impl PgStore {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        revoked_by: Option<&str>,
+        revoked_by_key: Option<&str>,
         now_ms: u64,
     ) -> Result<usize, MetadataError> {
         let _op = op("store.revoke_devices_by_vault_id");
@@ -340,10 +340,15 @@ impl PgStore {
         let tx = c.transaction().await.map_err(unavailable)?;
         let ids: Vec<String> = tx
             .query(
-                "UPDATE devices SET revoked = TRUE, revoked_at_ms = $3, revoked_by = $4
+                "UPDATE devices SET revoked = TRUE, revoked_at_ms = $3, revoked_by_key = $4
                  WHERE account_id = $1 AND vault_device_id = $2 AND NOT revoked
                  RETURNING device_id",
-                &[&account_id, &vault_device_id, &signed(now_ms), &revoked_by],
+                &[
+                    &account_id,
+                    &vault_device_id,
+                    &signed(now_ms),
+                    &revoked_by_key,
+                ],
             )
             .await
             .map_err(unavailable)?
@@ -366,16 +371,16 @@ impl PgStore {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        caller_device_id: &str,
+        caller_key: &str,
     ) -> Result<Reinstatement, MetadataError> {
         let _op = op("store.reinstate_devices_by_vault_id");
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(unavailable)?;
         let changed = tx
             .execute(
-                "UPDATE devices SET revoked = FALSE, revoked_at_ms = NULL, revoked_by = NULL
-                 WHERE account_id = $1 AND vault_device_id = $2 AND revoked AND revoked_by = $3",
-                &[&account_id, &vault_device_id, &caller_device_id],
+                "UPDATE devices SET revoked = FALSE, revoked_at_ms = NULL, revoked_by_key = NULL
+                 WHERE account_id = $1 AND vault_device_id = $2 AND revoked AND revoked_by_key = $3",
+                &[&account_id, &vault_device_id, &caller_key],
             )
             .await
             .map_err(unavailable)?;

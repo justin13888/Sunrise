@@ -107,6 +107,56 @@ async fn the_recorded_revoker_reinstates_and_a_retry_is_204() {
     assert_eq!(phone["revoked_at_ms"], serde_json::Value::Null);
 }
 
+/// The revoker is recorded by the key it signs with, not by its row: a client
+/// re-registers on every start and gets a new row id each time, and the
+/// reinstatement it sends from the new row must still be its own.
+#[tokio::test]
+async fn the_revoker_reinstates_from_a_row_it_registered_since() {
+    let client = Client::new(ServerConfig::default());
+    let (phone_id, phone_key) = register_device(&client, 68, "phone", Some(PHONE)).await;
+    let (laptop_id, laptop_key) = register_device(&client, 69, "laptop", Some(LAPTOP)).await;
+
+    send_signed(
+        &client,
+        "DELETE",
+        &revoke_path(PHONE),
+        &laptop_id,
+        &laptop_key,
+        None,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+
+    // The same key again: a second row, as every client start produces.
+    let (relaunched_id, relaunched_key) =
+        register_device(&client, 69, "laptop", Some(LAPTOP)).await;
+    assert_ne!(
+        relaunched_id, laptop_id,
+        "re-registering mints a second row"
+    );
+
+    send_signed(
+        &client,
+        "POST",
+        &reinstate_path(PHONE),
+        &relaunched_id,
+        &relaunched_key,
+        None,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+    send_signed(
+        &client,
+        "GET",
+        "/api/v1/accounts/me",
+        &phone_id,
+        &phone_key,
+        None,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
 /// Another device on the same account cannot undo a revocation it did not
 /// make: that is the third-party un-revoke ADR-0056 §3 rejects.
 #[tokio::test]

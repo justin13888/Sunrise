@@ -45,8 +45,8 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         id: 2,
-        name: "devices_revoked_by",
-        sql: DEVICES_REVOKED_BY,
+        name: "devices_revoked_by_key",
+        sql: DEVICES_REVOKED_BY_KEY,
     },
 ];
 
@@ -235,10 +235,10 @@ CREATE TABLE rate_cells (
 CREATE INDEX rate_cells_by_idle ON rate_cells (idle_at_ms);
 ";
 
-/// 0002: `devices.revoked_by`, the counterpart of SQLite's migration 9: the
-/// relay id of the device whose signed revoke-by-vault-id request revoked the
-/// row (ADR-0056 §5). `NULL` on every row revoked before it.
-const DEVICES_REVOKED_BY: &str = "ALTER TABLE devices ADD COLUMN revoked_by TEXT";
+/// 0002: `devices.revoked_by_key`, the counterpart of SQLite's migration 9:
+/// the signing key of the device whose signed revoke-by-vault-id request
+/// revoked the row (ADR-0056 §5). `NULL` on every row revoked before it.
+const DEVICES_REVOKED_BY_KEY: &str = "ALTER TABLE devices ADD COLUMN revoked_by_key TEXT";
 
 /// The table the version lives in. Created by the runner, outside the
 /// history, because the runner reads it before any step.

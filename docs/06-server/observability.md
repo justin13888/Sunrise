@@ -223,7 +223,7 @@ sunrise_sync_stream_total
 sunrise_sync_streams_active
 ```
 
-55 metric names, and four that earlier revisions of this file listed and the
+56 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
