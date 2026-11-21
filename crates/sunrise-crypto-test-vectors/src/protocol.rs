@@ -318,4 +318,8 @@ pub const DOC_SCHEMA_REGISTRY: &[(u16, [u8; 32])] = &[
         29,
         crate::hex("3602cfdc5e1d3bf31bc5948d33e3b89decf056299021c75c329b2f727dd5830d"),
     ),
+    (
+        30,
+        crate::hex("5b3ed22a960742f10993af4cc6396424c46f4234a1ee1e5a207bc5856dd6e8e0"),
+    ),
 ];

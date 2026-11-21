@@ -10,14 +10,15 @@
 
 use super::identity::IdentityHead;
 use super::revocation::{ledger_row, RevokeLedgerRow};
+use super::revocation_withdraw::pair_heads;
 use super::{Engine, META_STREAM};
 use crate::control_op::{DeviceRevokeByIdentityPayload, RevokeReason};
 use crate::feature::REVOKE_AUTHORITY_FEATURE;
 use crate::inner_op::{encode_inner_op, InnerOp};
 use crate::keychain::{Identity, Keychain};
-use rusqlite::{params, Transaction};
+use rusqlite::Transaction;
 use std::collections::BTreeMap;
-use sunrise_crypto::{RevocationClaim, StreamKey};
+use sunrise_crypto::{RevocationClaim, StreamKey, WithdrawalClaim};
 
 /// The revoker an authority row seats in its target's set (ADR-0058 §4).
 ///
@@ -37,6 +38,10 @@ impl RevokeLedgerRow {
     /// signed under an identity the chain has moved past, one whose
     /// signature does not verify, and one whose columns are the wrong width
     /// for any claim to have been signed over.
+    ///
+    /// A withdrawal row (ADR-0058 §6) is checked the same way over a
+    /// [`WithdrawalClaim`], under that claim's own domain, so a revocation's
+    /// signature never stands for a withdrawal's or the other way round.
     pub(super) fn is_authority_at(&self, head: &IdentityHead) -> bool {
         let (Some(id), Some(sig)) = (&self.authority_identity_id, &self.authority_sig) else {
             return false;
@@ -53,6 +58,17 @@ impl RevokeLedgerRow {
         ) else {
             return false;
         };
+        if self.withdraw {
+            return WithdrawalClaim {
+                identity_id: head.identity_id,
+                sender_device_id: sender,
+                revoked_device_id: revoked,
+                hlc_physical_ms: ms,
+                hlc_logical: logical,
+            }
+            .verify(&head.id_s_pub, &sig)
+            .is_ok();
+        }
         RevocationClaim {
             identity_id: head.identity_id,
             sender_device_id: sender,
@@ -131,6 +147,12 @@ impl Engine {
     /// What [`Self::rotate_identity`] carries forward (ADR-0058 §5): read
     /// before the rotation moves the head, because from the first fold that
     /// sees the successor these rows are ordinary.
+    ///
+    /// Only a pair the fold reads as live is carried: a row whose authority
+    /// pair the identity withdrew (§6) is not re-signed, so a rotation never
+    /// undoes a withdrawal. After the rotation the withdrawn pair's revocation
+    /// and its withdrawal name the same retired identity, and
+    /// [`super::revocation_withdraw::pair_heads`] keeps the pair inert.
     pub(super) fn authority_revocations_at(
         conn: &rusqlite::Connection,
         head: &IdentityHead,
@@ -139,15 +161,16 @@ impl Engine {
             "SELECT op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
                     recorded_at_ms, authority_identity_id, authority_sig, kind
              FROM device_revoke_ops
-             WHERE authority_identity_id = ?1
+             WHERE authority_identity_id IS NOT NULL
              ORDER BY op_hlc_ms ASC, op_hlc_logical ASC, sender ASC,
-                      revoked_device_id ASC",
+                      revoked_device_id ASC, authority_identity_id ASC, kind ASC",
         )?;
         let rows = stmt
-            .query_map(params![&head.identity_id[..]], ledger_row)?
+            .query_map([], ledger_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let (live, _) = pair_heads(rows, head);
         let mut named: BTreeMap<[u8; 16], RevokeReason> = BTreeMap::new();
-        for row in rows.iter().filter(|r| r.is_authority_at(head)) {
+        for row in live.iter().filter(|r| r.is_authority_at(head)) {
             let (Ok(target), Some(reason)) = (
                 <[u8; 16]>::try_from(row.revoked.as_slice()),
                 RevokeReason::parse(&row.reason),

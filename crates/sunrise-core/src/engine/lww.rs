@@ -261,6 +261,7 @@ pub(super) fn materialize_member(
         | InnerOp::DeviceRevoke(_)
         | InnerOp::DeviceRevokeByIdentity(_)
         | InnerOp::DeviceRevokeWithdraw(_)
+        | InnerOp::DeviceRevokeWithdrawByIdentity(_)
         | InnerOp::DeviceCertPublish(_)
         | InnerOp::IdentityTransition(_)
         | InnerOp::StreamDigest(_)

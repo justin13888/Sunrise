@@ -85,9 +85,11 @@ pub(super) struct RevokeLedgerRow {
     pub(super) authority_identity_id: Option<Vec<u8>>,
     /// Its signature, `None` on an ordinary row.
     pub(super) authority_sig: Option<Vec<u8>>,
-    /// Whether the row is a `device.revoke_withdraw` rather than a
-    /// revocation (migration 0053). A withdrawal is always an ordinary row:
-    /// it names no identity and carries no reason.
+    /// Whether the row is a withdrawal rather than a revocation (migration
+    /// 0053). A withdrawal carries no reason. A `device.revoke_withdraw`
+    /// names no identity and is a row of its sender's ordinary pair; a
+    /// `device.revoke_withdraw_by_identity` names one, with its signature,
+    /// and is a row of the sender's authority pair (ADR-0058 §6).
     pub(super) withdraw: bool,
 }
 
@@ -1131,11 +1133,15 @@ impl Engine {
         // So everything below is the fold ADR-0041 describes, over the live
         // heads, and the withdrawn heads are read only by the read-bound
         // release at the end.
-        let (rows, withdrawn) = pair_heads(all);
+        //
+        // An authority pair's head depends on the identity in force, because
+        // its withdrawal counts only while it verifies under the head
+        // (ADR-0058 §6), so the head is read first.
+        let head = self.current_identity(tx)?;
+        let (rows, withdrawn) = pair_heads(all, &head);
 
         // Which rows are authority rows is decided once, against one head,
         // so every pass below reads the same answer.
-        let head = self.current_identity(tx)?;
         let by_authority: Vec<bool> = rows.iter().map(|r| r.is_authority_at(&head)).collect();
         // Every device a live pair names, gated or not: condition (b) of the
         // read-bound release below.

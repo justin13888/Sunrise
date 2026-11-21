@@ -110,8 +110,8 @@ pub use conflicts::{
 };
 pub use control_op::{
     DeviceFeaturesPayload, DeviceRevokeByIdentityPayload, DeviceRevokePayload,
-    DeviceRevokeWithdrawPayload, IdentityTransitionPayload, KeyEnvelopePayload, KeyShare,
-    Recipient, RevokeReason, RosterEntry, VaultRequiresPayload,
+    DeviceRevokeWithdrawByIdentityPayload, DeviceRevokeWithdrawPayload, IdentityTransitionPayload,
+    KeyEnvelopePayload, KeyShare, Recipient, RevokeReason, RosterEntry, VaultRequiresPayload,
 };
 pub use core::{
     Core, CoreError, PlanCommitResult, PlanUndoResult, TaskPlaceStatus, PLAN_CACHE_SIZE,

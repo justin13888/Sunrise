@@ -296,7 +296,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// unchanged, so the floor does not move.
 ///
 /// `29` adds `upcoming` to `ViewKind` (#1229), unknown to v28: no feature or floor.
-pub const DOC_SCHEMA_V: u16 = 29;
+///
+/// `30` adds the control family `DeviceRevokeWithdrawByIdentity` (ADR-0058 §6,
+/// issue #1239): the account identity in force withdrawing its own authority
+/// revocation, which the revocation fold reads in the sender's authority pair.
+/// Its feature, the structural `core.revoke_withdraw_authority`, names it, and
+/// the op is emitted only into a vault that requires it, because a build that
+/// cannot read it parks it and would keep the device revoked. Every v1..v29
+/// payload shape is unchanged, so the floor does not move.
+pub const DOC_SCHEMA_V: u16 = 30;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -417,6 +425,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         29,
         hex32("3602cfdc5e1d3bf31bc5948d33e3b89decf056299021c75c329b2f727dd5830d"),
+    ),
+    (
+        30,
+        hex32("5b3ed22a960742f10993af4cc6396424c46f4234a1ee1e5a207bc5856dd6e8e0"),
     ),
 ];
 

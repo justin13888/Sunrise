@@ -21,6 +21,10 @@
 //! `reason_code` is the reason's wire spelling (`"Lost"`, `"Stolen"`, …): the
 //! text a unit variant of the payload's reason enum encodes as, so the claim
 //! does not depend on that enum's Rust type.
+//!
+//! The identity withdraws its own revocation with a [`WithdrawalClaim`]
+//! (ADR-0058 §6): the same claim less the reason, signed under its own
+//! domain.
 
 use crate::keys::{verify_ed25519, IdentitySigningKeyPair};
 use serde::{Deserialize, Serialize};
@@ -109,10 +113,177 @@ impl RevocationClaim {
     }
 }
 
+/// Domain separator for the identity's signature over a withdrawal claim
+/// (ADR-0058 §6).
+///
+/// Its own domain rather than [`DOMAIN`] with a sentinel reason: a withdrawal
+/// signature must never verify as a revocation's, nor a revocation's as a
+/// withdrawal's, whatever either claim's fields hold.
+const WITHDRAW_DOMAIN: &[u8] = b"sunrise.device_revoke_withdraw.identity.v1";
+
+/// What the account identity signs when it **withdraws** its own revocation
+/// of a device (ADR-0058 §6).
+///
+/// ```text
+/// claim        = canonical_cbor({identity_id, sender_device_id, revoked_device_id,
+///                                hlc_physical_ms, hlc_logical})
+/// identity_sig = Ed25519(ID_S_priv, "sunrise.device_revoke_withdraw.identity.v1" || BLAKE3(claim))
+/// ```
+///
+/// [`RevocationClaim`] less the reason, which a withdrawal does not carry, and
+/// under [`WITHDRAW_DOMAIN`]. The sender and the HLC are the authenticated
+/// envelope's, for the same reason: the signature cannot be lifted into
+/// another device's op, so it withdraws nothing but the pair of the device
+/// that carried it, and cannot be re-dated past a later revocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawalClaim {
+    /// The identity that signs: `identity_id_from_pub(ID_S_pub)`.
+    #[serde(with = "serde_bytes")]
+    pub identity_id: [u8; 16],
+    /// The device whose envelope carries the op.
+    #[serde(with = "serde_bytes")]
+    pub sender_device_id: [u8; 16],
+    /// The device whose revocation is withdrawn.
+    #[serde(with = "serde_bytes")]
+    pub revoked_device_id: [u8; 16],
+    /// The envelope HLC's physical half.
+    pub hlc_physical_ms: u64,
+    /// The envelope HLC's logical half.
+    pub hlc_logical: u32,
+}
+
+impl WithdrawalClaim {
+    /// `"sunrise.device_revoke_withdraw.identity.v1" ||
+    /// BLAKE3(canonical_cbor(claim))`, the exact bytes the identity signs.
+    ///
+    /// # Errors
+    /// [`RevocationClaimError::Cbor`], as [`RevocationClaim::signed_message`].
+    pub fn signed_message(&self) -> Result<Vec<u8>, RevocationClaimError> {
+        let cbor = sunrise_cbor::encode_canonical(self)
+            .map_err(|e| RevocationClaimError::Cbor(e.to_string()))?;
+        let mut msg = Vec::with_capacity(WITHDRAW_DOMAIN.len() + 32);
+        msg.extend_from_slice(WITHDRAW_DOMAIN);
+        msg.extend_from_slice(blake3::hash(&cbor).as_bytes());
+        Ok(msg)
+    }
+
+    /// Sign the claim with the identity's `ID_S_priv`. The caller is
+    /// responsible for `identity_id` naming the key, as for
+    /// [`RevocationClaim::sign`].
+    ///
+    /// # Errors
+    /// [`RevocationClaimError::Cbor`], as [`Self::signed_message`].
+    pub fn sign(&self, key: &IdentitySigningKeyPair) -> Result<[u8; 64], RevocationClaimError> {
+        Ok(key.sign(&self.signed_message()?))
+    }
+
+    /// Check `sig` over this claim under `id_s_pub`.
+    ///
+    /// # Errors
+    /// [`RevocationClaimError::Verify`] when it does not verify, or
+    /// [`RevocationClaimError::Cbor`] as [`Self::signed_message`].
+    pub fn verify(&self, id_s_pub: &[u8; 32], sig: &[u8; 64]) -> Result<(), RevocationClaimError> {
+        if verify_ed25519(id_s_pub, &self.signed_message()?, sig) {
+            Ok(())
+        } else {
+            Err(RevocationClaimError::Verify)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::identity::identity_id_from_pub;
+
+    fn withdrawal(key: &IdentitySigningKeyPair) -> WithdrawalClaim {
+        WithdrawalClaim {
+            identity_id: identity_id_from_pub(&key.public_bytes()),
+            sender_device_id: [1; 16],
+            revoked_device_id: [2; 16],
+            hlc_physical_ms: 1_700_000_000_000,
+            hlc_logical: 3,
+        }
+    }
+
+    #[test]
+    fn a_signed_withdrawal_verifies_under_its_identity() {
+        let key = IdentitySigningKeyPair::from_secret_bytes(&[7; 32]);
+        let w = withdrawal(&key);
+        let sig = w.sign(&key).unwrap();
+        assert_eq!(w.verify(&key.public_bytes(), &sig), Ok(()));
+        let other = IdentitySigningKeyPair::from_secret_bytes(&[8; 32]);
+        assert_eq!(
+            w.verify(&other.public_bytes(), &sig),
+            Err(RevocationClaimError::Verify)
+        );
+    }
+
+    /// Every field of a withdrawal is signed, the sender and the HLC
+    /// included.
+    #[test]
+    fn every_field_of_the_withdrawal_is_signed() {
+        let key = IdentitySigningKeyPair::from_secret_bytes(&[7; 32]);
+        let w = withdrawal(&key);
+        let sig = w.sign(&key).unwrap();
+        let pk = key.public_bytes();
+        let variants = [
+            WithdrawalClaim {
+                identity_id: [9; 16],
+                ..w.clone()
+            },
+            WithdrawalClaim {
+                sender_device_id: [9; 16],
+                ..w.clone()
+            },
+            WithdrawalClaim {
+                revoked_device_id: [9; 16],
+                ..w.clone()
+            },
+            WithdrawalClaim {
+                hlc_physical_ms: w.hlc_physical_ms + 1,
+                ..w.clone()
+            },
+            WithdrawalClaim {
+                hlc_logical: w.hlc_logical + 1,
+                ..w.clone()
+            },
+        ];
+        for v in variants {
+            assert_eq!(
+                v.verify(&pk, &sig),
+                Err(RevocationClaimError::Verify),
+                "{v:?}"
+            );
+        }
+    }
+
+    /// A revocation's signature never verifies as a withdrawal's, nor the
+    /// other way round: the two domains differ, so neither op can be built
+    /// from the other's signature.
+    #[test]
+    fn a_revocation_and_a_withdrawal_signature_never_stand_for_each_other() {
+        assert_ne!(DOMAIN, WITHDRAW_DOMAIN);
+        let key = IdentitySigningKeyPair::from_secret_bytes(&[7; 32]);
+        let pk = key.public_bytes();
+        let w = withdrawal(&key);
+        let r = RevocationClaim {
+            identity_id: w.identity_id,
+            sender_device_id: w.sender_device_id,
+            revoked_device_id: w.revoked_device_id,
+            hlc_physical_ms: w.hlc_physical_ms,
+            hlc_logical: w.hlc_logical,
+            reason_code: String::new(),
+        };
+        let r_sig = r.sign(&key).unwrap();
+        let w_sig = w.sign(&key).unwrap();
+        assert_eq!(w.verify(&pk, &r_sig), Err(RevocationClaimError::Verify));
+        assert_eq!(r.verify(&pk, &w_sig), Err(RevocationClaimError::Verify));
+        assert!(w
+            .signed_message()
+            .unwrap()
+            .starts_with(b"sunrise.device_revoke_withdraw.identity.v1"));
+    }
 
     fn claim(key: &IdentitySigningKeyPair) -> RevocationClaim {
         RevocationClaim {

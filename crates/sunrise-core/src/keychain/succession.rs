@@ -126,6 +126,27 @@ impl Keychain {
             .map_err(|_| KeychainError::RevocationClaim("the claim does not encode"))
     }
 
+    /// Sign a withdrawal claim as the account identity **in force** on this
+    /// keychain (ADR-0058 §6), as [`Self::sign_revocation_claim`] signs a
+    /// revocation.
+    ///
+    /// # Errors
+    /// As [`Self::sign_revocation_claim`].
+    pub fn sign_withdrawal_claim(
+        &self,
+        claim: &sunrise_crypto::WithdrawalClaim,
+    ) -> Result<[u8; 64], KeychainError> {
+        let state = self.identity.lock();
+        if claim.identity_id != state.identity.identity_id {
+            return Err(KeychainError::RevocationClaim(
+                "the claim names another identity than the one signing it",
+            ));
+        }
+        claim
+            .sign(state.identity.signing.require()?)
+            .map_err(|_| KeychainError::RevocationClaim("the claim does not encode"))
+    }
+
     /// Mint a successor account identity: a fresh `ID_S`/`ID_D` pair.
     ///
     /// `created_at_ms` is the **account's** creation, carried forward from the

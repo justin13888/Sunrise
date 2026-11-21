@@ -2,24 +2,62 @@
 //! emits it, and the one question both ask of the ledger, whether a live
 //! revocation names a device.
 //!
+//! Two ops withdraw. A device withdraws its own ordinary revocation with a
+//! `device_revoke_withdraw`; the account identity in force withdraws its own
+//! authority revocation with a `device_revoke_withdraw_by_identity`
+//! (ADR-0058 §6), which reaches only the sender's authority pair and counts
+//! only while it verifies under the head ([`pair_heads`]).
+//!
 //! Split out of [`super::revocation`] because it is the one path that runs the
 //! other way. Everything there makes or folds a revocation; this makes a
 //! sender's pair inert, and is the only path on which a read bound is released
 //! for a device with a cert here ([`Engine::refold_device_revocations`] does
 //! the release, on the three conditions of ADR-0056 §4).
 
-use super::revocation::{RevokeLedgerRow, WITHDRAW_KIND};
+use super::identity::IdentityHead;
+use super::revocation::{ledger_row, RevokeLedgerRow, WITHDRAW_KIND};
 use super::{Engine, EngineError, META_STREAM};
 use crate::bytes::{hex_bytes, hex_short, to16};
 use crate::commands::{CommandResult, Withdrawal, WithdrawalOutcome};
-use crate::control_op::DeviceRevokeWithdrawPayload;
-use crate::feature::REVOKE_WITHDRAW_FEATURE;
+use crate::control_op::{DeviceRevokeWithdrawByIdentityPayload, DeviceRevokeWithdrawPayload};
+use crate::feature::{REVOKE_WITHDRAW_AUTHORITY_FEATURE, REVOKE_WITHDRAW_FEATURE};
 use crate::inner_op::{encode_inner_op, InnerOp};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_cbor::hlc::Hlc;
+use sunrise_crypto::WithdrawalClaim;
 use sunrise_id::EntityRef;
 use sunrise_storage::Db;
+
+/// What one withdrawal op claims, as [`Engine::apply_device_revoke_withdraw`]
+/// stores it: the target, and for a `device_revoke_withdraw_by_identity` the
+/// identity it names and that identity's signature.
+pub(super) struct WithdrawClaim {
+    revoked_device_id: [u8; 16],
+    authority: Option<([u8; 16], [u8; 64])>,
+}
+
+/// A `device_revoke_withdraw`: a row of the sender's ordinary pair.
+impl From<&DeviceRevokeWithdrawPayload> for WithdrawClaim {
+    fn from(p: &DeviceRevokeWithdrawPayload) -> Self {
+        Self {
+            revoked_device_id: p.revoked_device_id,
+            authority: None,
+        }
+    }
+}
+
+/// A `device_revoke_withdraw_by_identity`, whatever its signature: the fold
+/// decides whether it withdraws the sender's authority pair, against the head
+/// it folds (ADR-0058 §6).
+impl From<&DeviceRevokeWithdrawByIdentityPayload> for WithdrawClaim {
+    fn from(p: &DeviceRevokeWithdrawByIdentityPayload) -> Self {
+        Self {
+            revoked_device_id: p.revoked_device_id,
+            authority: Some((p.identity_id, p.identity_sig)),
+        }
+    }
+}
 
 impl RevokeLedgerRow {
     /// The pair this row belongs to: `(sender, target, names an identity)`,
@@ -52,42 +90,107 @@ impl RevokeLedgerRow {
     }
 }
 
-/// Each pair's head, split by kind (ADR-0056 §2).
+/// Each pair's head, split by kind (ADR-0056 §2), at a fold whose identity
+/// in force is `head`.
 ///
 /// The **live** heads are the revocations, in the canonical order `rows`
 /// came in: the rows [`Engine::refold_device_revocations`] reads. The
-/// **withdrawn** heads are the pairs whose head is a withdrawal, which
+/// **withdrawn** heads are the pairs a withdrawal made inert, which
 /// contribute nothing to the gate, the discount or the walk, and which
 /// [`release_withdrawn_read_bounds`] reads.
 ///
-/// A lesser row of a pair is dropped here exactly as
-/// [`Engine::compact_device_revoke_ops`] would delete it, so the fold is the
-/// same function of the full ledger as of the compacted one.
+/// # An ordinary pair
+///
+/// Its head is its greatest row, a revocation winning a tie. A lesser row is
+/// dropped here exactly as [`Engine::compact_device_revoke_ops`] deletes it,
+/// so the fold is the same function of the full ledger as of the compacted
+/// one.
+///
+/// # An authority pair (ADR-0058 §6)
+///
+/// The rows naming an identity are read as two: the pair's greatest
+/// revocation `R`, and its greatest identity-signed withdrawal `W`, each by
+/// stamp and then identity. `W` withdraws the pair when it outranks `R` (a
+/// revocation still wins a tie) and either
+///
+/// - **(a)** `W` is an authority row at `head`: it names the identity in
+///   force and verifies under that identity's `ID_S_pub`; or
+/// - **(b)** `R` is **not** an authority row at `head`, and `W` names the
+///   identity `R` names. Both were signed under one identity the chain has
+///   since moved past (or `R`'s signature never verified), so `R` folds as
+///   an ordinary claim of its sender, and `W`, carried by the same sender,
+///   withdraws it under ADR-0056's own rule. This is what keeps a pair the
+///   identity withdrew inert across a rotation, which does not carry it
+///   forward ([`Engine::authority_revocations_at`]).
+///
+/// Anything else leaves `R` live: a withdrawal signed by a retired identity
+/// cannot withdraw an authority row of the identity in force, and one whose
+/// signature does not verify withdraws nothing an authority row holds. The
+/// sender is the authenticated envelope's, and every row of the pair is that
+/// sender's, so no device's signature reaches another sender's pair, and no
+/// identity-signed withdrawal reaches an ordinary pair at all.
+///
+/// The compaction keeps exactly `R` and `W` of an authority pair, so this
+/// too is the same function of the full ledger as of the compacted one.
 pub(super) fn pair_heads(
     rows: Vec<RevokeLedgerRow>,
+    head: &IdentityHead,
 ) -> (Vec<RevokeLedgerRow>, Vec<RevokeLedgerRow>) {
-    let mut head: BTreeMap<(Vec<u8>, Vec<u8>, bool), usize> = BTreeMap::new();
+    // Per pair and kind, the greatest row. An ordinary pair reads only the
+    // greater of its two; an authority pair reads both.
+    let mut greatest: BTreeMap<(Vec<u8>, Vec<u8>, bool, bool), usize> = BTreeMap::new();
     for (i, row) in rows.iter().enumerate() {
         let (sender, revoked, named) = row.pair();
-        let key = (sender.to_vec(), revoked.to_vec(), named);
-        match head.get(&key) {
+        let key = (sender.to_vec(), revoked.to_vec(), named, row.withdraw);
+        match greatest.get(&key) {
             Some(&j) if !row.outranks(&rows[j]) => {}
             _ => {
-                head.insert(key, i);
+                greatest.insert(key, i);
             }
         }
     }
-    let heads: BTreeSet<usize> = head.into_values().collect();
+    let mut live_at: BTreeSet<usize> = BTreeSet::new();
+    let mut withdrawn_at: BTreeSet<usize> = BTreeSet::new();
+    for (&(ref sender, ref revoked, named, withdraw), &i) in &greatest {
+        if withdraw {
+            continue;
+        }
+        let w = greatest
+            .get(&(sender.clone(), revoked.clone(), named, true))
+            .copied()
+            .filter(|&w| rows[w].outranks(&rows[i]));
+        let Some(w) = w else {
+            live_at.insert(i);
+            continue;
+        };
+        let (r_row, w_row) = (&rows[i], &rows[w]);
+        let withdraws = !named
+            || w_row.is_authority_at(head)
+            || (!r_row.is_authority_at(head)
+                && w_row.authority_identity_id == r_row.authority_identity_id);
+        if withdraws {
+            withdrawn_at.insert(w);
+        } else {
+            live_at.insert(i);
+        }
+    }
+    // An ordinary pair whose only row is a withdrawal: the compaction removed
+    // the revocation it withdrew, and it is still that pair's head.
+    for (&(ref sender, ref revoked, named, withdraw), &w) in &greatest {
+        if withdraw
+            && !named
+            && !greatest.contains_key(&(sender.clone(), revoked.clone(), named, false))
+        {
+            withdrawn_at.insert(w);
+        }
+    }
     let mut live = Vec::new();
     let mut withdrawn = Vec::new();
     for (i, row) in rows.into_iter().enumerate() {
-        if !heads.contains(&i) {
-            continue;
-        }
-        if row.withdraw {
-            withdrawn.push(row);
-        } else {
+        if live_at.contains(&i) {
             live.push(row);
+        } else if withdrawn_at.contains(&i) {
+            withdrawn.push(row);
         }
     }
     (live, withdrawn)
@@ -156,61 +259,100 @@ pub(super) fn release_withdrawn_read_bounds(
     Ok(())
 }
 
+/// The live pairs `(sender, target, names an identity)` of the ledger rows
+/// `filter` selects, read at their heads as the fold reads them at `head`
+/// ([`pair_heads`]). `filter` is a `WHERE` clause over `device_revoke_ops`
+/// with `?1` bound to `arg`.
+fn live_pairs(
+    conn: &Connection,
+    head: &IdentityHead,
+    filter: &str,
+    arg: &[u8],
+) -> rusqlite::Result<Vec<RevokeLedgerRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
+                recorded_at_ms, authority_identity_id, authority_sig, kind
+         FROM device_revoke_ops
+         WHERE {filter}
+         ORDER BY op_hlc_ms ASC, op_hlc_logical ASC, sender ASC,
+                  revoked_device_id ASC, authority_identity_id ASC, kind ASC"
+    ))?;
+    let rows = stmt
+        .query_map(params![arg], ledger_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(pair_heads(rows, head).0)
+}
+
 /// Whether a live revocation names `target`: a pair whose head is a
 /// revocation, from `sender` when one is given and from anyone otherwise.
 ///
-/// The pair and the head are the fold's (ADR-0056 §2): `(sender, target,
-/// names an identity)`, the greatest stamp, a revocation winning a tie. Gated
-/// or not, because the question is whether a claim stands in the ledger, which
-/// is what keeps a read bound (§4 (b)) and what a device may withdraw (§1).
+/// The pair and the head are the fold's (ADR-0056 §2, ADR-0058 §6), read at
+/// `head`. Gated or not, because the question is whether a claim stands in the
+/// ledger, which is what keeps a read bound (§4 (b)) and what a device may
+/// withdraw (§1).
 pub(crate) fn live_revocation_names(
     conn: &Connection,
+    head: &IdentityHead,
     target: &[u8],
     sender: Option<&[u8]>,
 ) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (
-             SELECT 1 FROM (
-                 SELECT sender, kind, ROW_NUMBER() OVER (
-                     PARTITION BY sender, authority_identity_id IS NULL
-                     ORDER BY op_hlc_ms DESC, op_hlc_logical DESC, kind = 'revoke' DESC
-                 ) AS pos
-                 FROM device_revoke_ops
-                 WHERE revoked_device_id = ?1
-             )
-             WHERE pos = 1 AND kind = 'revoke' AND (?2 IS NULL OR sender = ?2)
-         )",
-        params![target, sender],
-        |r| r.get(0),
-    )
+    Ok(live_pairs(conn, head, "revoked_device_id = ?1", target)?
+        .iter()
+        .any(|r| sender.is_none_or(|s| r.sender == s)))
 }
 
-/// Whether this device's own **ordinary** revocation of `target` is live: the
-/// one claim [`Engine::withdraw_revocation`] can withdraw.
-///
-/// An authority revocation (ADR-0058) is not one: the identity is its author,
-/// and the identity-signed withdrawal ADR-0058 §6 decides is not built.
-fn own_ordinary_revocation_live(
-    conn: &Connection,
-    me: &[u8; 16],
-    target: &[u8; 16],
-) -> rusqlite::Result<bool> {
-    let head: Option<String> = conn
-        .query_row(
-            "SELECT kind FROM device_revoke_ops
-             WHERE sender = ?1 AND revoked_device_id = ?2
-               AND authority_identity_id IS NULL
-             ORDER BY op_hlc_ms DESC, op_hlc_logical DESC, kind = 'revoke' DESC
-             LIMIT 1",
-            params![&me[..], &target[..]],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(head.as_deref() == Some("revoke"))
+/// Which of `me`'s own pairs are live, per device they name, at `head`: the
+/// claims [`Engine::withdraw_revocation`] can withdraw, and what
+/// `DeviceRow::withdrawable` reads.
+pub(crate) struct OwnClaims {
+    /// Devices `me`'s ordinary pair revokes.
+    pub(crate) ordinary: BTreeSet<Vec<u8>>,
+    /// Devices `me`'s authority pair revokes, whether or not the row is an
+    /// authority row at `head`: one signed under a retired identity is still
+    /// `me`'s own claim in that pair, and only an identity-signed withdrawal
+    /// reaches it.
+    pub(crate) authority: BTreeSet<Vec<u8>>,
+}
+
+impl OwnClaims {
+    /// Read `me`'s live pairs at `head`.
+    pub(crate) fn read(
+        conn: &Connection,
+        head: &IdentityHead,
+        me: &[u8; 16],
+    ) -> rusqlite::Result<Self> {
+        let mut out = Self {
+            ordinary: BTreeSet::new(),
+            authority: BTreeSet::new(),
+        };
+        for row in live_pairs(conn, head, "sender = ?1", &me[..])? {
+            if row.authority_identity_id.is_some() {
+                out.authority.insert(row.revoked);
+            } else {
+                out.ordinary.insert(row.revoked);
+            }
+        }
+        Ok(out)
+    }
 }
 
 impl Engine {
     /// Withdraw this device's own revocation of `device_id` (ADR-0056).
+    ///
+    /// # Which claims it withdraws
+    ///
+    /// Every live claim of this device's own on the device, as the fold reads
+    /// them at the head: its ordinary pair with a `device_revoke_withdraw`,
+    /// and its authority pair with a `device_revoke_withdraw_by_identity`
+    /// signed as the identity in force (ADR-0058 §6). It signs only where it
+    /// holds the head's `ID_S_priv`; a device that does not cannot withdraw an
+    /// authority claim, and when that is the only claim it holds the result is
+    /// [`WithdrawalOutcome::NotAuthor`]. Each op needs its own feature,
+    /// `core.revoke_withdraw` and `core.revoke_withdraw_authority`. While some
+    /// device could drop the identity-signed op, a device that also holds an
+    /// ordinary claim withdraws that one alone and reports
+    /// [`WithdrawalOutcome::StillClaimed`]; one whose only claim is the
+    /// authority one is refused as below.
     ///
     /// # What it refuses, and what it reports instead
     ///
@@ -229,9 +371,10 @@ impl Engine {
     ///
     /// # What happens, in one transaction
     ///
-    /// 1. `VaultRequires` naming `core.revoke_withdraw` is emitted first when
-    ///    the vault does not require it yet (ADR-0045 §7's emission order).
-    /// 2. The `device_revoke_withdraw` op is applied through the same
+    /// 1. `VaultRequires` naming each feature the ops use is emitted first
+    ///    when the vault does not require it yet (ADR-0045 §7's emission
+    ///    order).
+    /// 2. Each withdrawal op is applied through the same
     ///    [`Self::apply_control_op`] a peer's takes, and logged. The fold
     ///    releases the device's read bound here when ADR-0056 §4's three
     ///    conditions hold.
@@ -273,7 +416,18 @@ impl Engine {
                 "this build does not support `{REVOKE_WITHDRAW_FEATURE}`"
             )));
         }
-        if !own_ordinary_revocation_live(db.conn(), &me, &target)? {
+        // Which of this device's own claims on the target stand, read at the
+        // head as the fold reads them. The ordinary one it withdraws with a
+        // `device_revoke_withdraw`; the authority one only as the identity in
+        // force, so only where this device holds the head's `ID_S_priv`
+        // (ADR-0058 §6).
+        let head = self.current_identity(db.conn())?;
+        let own = OwnClaims::read(db.conn(), &head, &me)?;
+        let ordinary = own.ordinary.contains(&target[..]);
+        let mut by_identity = own.authority.contains(&target[..])
+            && self.keychain.can_rotate_identity()
+            && head.identity_id == self.keychain.identity_id();
+        if !ordinary && !by_identity {
             return Ok(
                 CommandResult::new(device_id, None, [0u8; 16], 0).with_withdrawal(Withdrawal {
                     outcome: WithdrawalOutcome::NotAuthor,
@@ -285,57 +439,96 @@ impl Engine {
         }
         // Read outside the transaction, so the refusal is a typed error; the
         // `&mut Db` keeps anything else from writing in between.
-        let mut lacking = self.devices_lacking(db.conn(), REVOKE_WITHDRAW_FEATURE)?;
-        if !advertises(db.conn(), &target, REVOKE_WITHDRAW_FEATURE)? {
-            lacking.push(target);
-            lacking.sort_unstable();
-            lacking.dedup();
+        //
+        // The authority claim is withdrawn only once every device that could
+        // drop the op advertises its feature. Until then a device that also
+        // holds an ordinary claim withdraws that one alone and the result says
+        // the device is still claimed, as ADR-0058 §7 has the holder revoke
+        // ordinarily rather than refuse; one whose only claim is the authority
+        // one is refused, naming the devices to update, as ADR-0056 §7 refuses
+        // the ordinary withdrawal.
+        if by_identity {
+            let lacking =
+                self.lacking_for_withdrawal(db.conn(), &target, REVOKE_WITHDRAW_AUTHORITY_FEATURE)?;
+            if !self
+                .features
+                .iter()
+                .any(|f| f.id == REVOKE_WITHDRAW_AUTHORITY_FEATURE)
+            {
+                if !ordinary {
+                    return Err(EngineError::Invalid(format!(
+                        "this build does not support `{REVOKE_WITHDRAW_AUTHORITY_FEATURE}`"
+                    )));
+                }
+                by_identity = false;
+            } else if !lacking.is_empty() {
+                if !ordinary {
+                    return Err(EngineError::FeatureUnsupportedByDevices {
+                        feature: REVOKE_WITHDRAW_AUTHORITY_FEATURE.to_owned(),
+                        devices: lacking,
+                    });
+                }
+                by_identity = false;
+            }
         }
-        if !lacking.is_empty() {
-            return Err(EngineError::FeatureUnsupportedByDevices {
-                feature: REVOKE_WITHDRAW_FEATURE.to_owned(),
-                devices: lacking,
-            });
+        if ordinary {
+            let lacking =
+                self.lacking_for_withdrawal(db.conn(), &target, REVOKE_WITHDRAW_FEATURE)?;
+            if !lacking.is_empty() {
+                return Err(EngineError::FeatureUnsupportedByDevices {
+                    feature: REVOKE_WITHDRAW_FEATURE.to_owned(),
+                    devices: lacking,
+                });
+            }
+        }
+        let mut needed: Vec<&str> = Vec::new();
+        if ordinary {
+            needed.push(REVOKE_WITHDRAW_FEATURE);
+        }
+        if by_identity {
+            needed.push(REVOKE_WITHDRAW_AUTHORITY_FEATURE);
         }
 
-        let op_id = self.fresh_op_id(now_ms);
+        let mut op_id = [0u8; 16];
         let report = db.with_tx(|tx| -> rusqlite::Result<(u64, Withdrawal)> {
-            if !self.vault_requires(tx, REVOKE_WITHDRAW_FEATURE)? {
-                self.require_in_tx(tx, REVOKE_WITHDRAW_FEATURE, now_ms)?;
+            for feature in &needed {
+                if !self.vault_requires(tx, feature)? {
+                    self.require_in_tx(tx, feature, now_ms)?;
+                }
             }
             let bounded_before = self.is_read_bounded(tx, &target)?;
             let sent_before = envelopes_sent_to(tx, &target)?;
 
-            let op = InnerOp::DeviceRevokeWithdraw(DeviceRevokeWithdrawPayload {
-                revoked_device_id: target,
-            });
-            let inner =
-                encode_inner_op(&op).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-            let hlc = self.hlc.send();
-            let at_epoch = self
-                .keychain
-                .current_epoch_tx(tx, &META_STREAM)?
-                .unwrap_or(0);
-            self.apply_control_op(tx, &op, &me, hlc, now_ms, at_epoch)?;
-            let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
-            let seq = self.next_seq_tx(tx, &META_STREAM)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                hlc,
-                &inner,
-                op.inner_kind(),
-                op.target_kind(),
-                Some(&target),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                seal_under.0,
-                &seal_under.1,
-            )?;
+            let mut seq = 0;
+            if ordinary {
+                let hlc = self.hlc.send();
+                let op = InnerOp::DeviceRevokeWithdraw(DeviceRevokeWithdrawPayload {
+                    revoked_device_id: target,
+                });
+                (op_id, seq) = self.emit_withdrawal(tx, &op, &target, hlc, now_ms)?;
+            }
+            if by_identity {
+                let hlc = self.hlc.send();
+                let claim = WithdrawalClaim {
+                    identity_id: head.identity_id,
+                    sender_device_id: me,
+                    revoked_device_id: target,
+                    hlc_physical_ms: hlc.physical_ms,
+                    hlc_logical: hlc.logical,
+                };
+                let identity_sig = self
+                    .keychain
+                    .sign_withdrawal_claim(&claim)
+                    .map_err(crate::keychain::sqlite_from)?;
+                let op = InnerOp::DeviceRevokeWithdrawByIdentity(
+                    DeviceRevokeWithdrawByIdentityPayload {
+                        revoked_device_id: target,
+                        identity_id: head.identity_id,
+                        identity_sig,
+                    },
+                );
+                (op_id, seq) = self.emit_withdrawal(tx, &op, &target, hlc, now_ms)?;
+            }
 
             // The intents table holds one row per device, and every claim this
             // device makes of the target shares it, the identity-signed one
@@ -345,8 +538,8 @@ impl Engine {
             // A claim of this device's that the walk gates keeps the row too,
             // so the relay is told should the gate lift; the drain sends only
             // what the register names, so a kept row is never sent early.
-            let still_owed =
-                self.is_revoked(tx, &target)? || live_revocation_names(tx, &target, Some(&me[..]))?;
+            let still_owed = self.is_revoked(tx, &target)?
+                || live_revocation_names(tx, &head, &target, Some(&me[..]))?;
             let relay_intent_cancelled = !still_owed
                 && tx.execute(
                     "DELETE FROM relay_revocation_intents WHERE device_id = ?",
@@ -372,20 +565,20 @@ impl Engine {
             }
             let keys_resent = envelopes_sent_to(tx, &target)?.saturating_sub(sent_before);
 
-            let head = self.current_identity(tx)?;
-            let outcome =
-                if self.is_revoked(tx, &target)? || live_revocation_names(tx, &target, None)? {
-                    WithdrawalOutcome::StillClaimed
-                } else if member
-                    .as_ref()
-                    .and_then(|(id, _)| id.as_deref())
-                    .and_then(to16)
-                    != Some(head.identity_id)
-                {
-                    WithdrawalOutcome::RepairRequired
-                } else {
-                    WithdrawalOutcome::Reinstated
-                };
+            let outcome = if self.is_revoked(tx, &target)?
+                || live_revocation_names(tx, &head, &target, None)?
+            {
+                WithdrawalOutcome::StillClaimed
+            } else if member
+                .as_ref()
+                .and_then(|(id, _)| id.as_deref())
+                .and_then(to16)
+                != Some(head.identity_id)
+            {
+                WithdrawalOutcome::RepairRequired
+            } else {
+                WithdrawalOutcome::Reinstated
+            };
             Ok((
                 seq,
                 Withdrawal {
@@ -406,27 +599,95 @@ impl Engine {
         Ok(CommandResult::new(device_id, None, op_id, seq).with_withdrawal(withdrawal))
     }
 
-    /// Apply one `device_revoke_withdraw`, from a peer or from this device's
-    /// own [`Self::withdraw_revocation`].
+    /// The devices that could drop a withdrawal op of `feature` naming
+    /// `target`: every device the register does not call revoked whose build
+    /// does not advertise it, and `target` itself when it does not, because it
+    /// must fold its own reinstatement (ADR-0056 §7).
+    fn lacking_for_withdrawal(
+        &self,
+        conn: &Connection,
+        target: &[u8; 16],
+        feature: &str,
+    ) -> rusqlite::Result<Vec<[u8; 16]>> {
+        let mut lacking = self.devices_lacking(conn, feature)?;
+        if !advertises(conn, target, feature)? {
+            lacking.push(*target);
+            lacking.sort_unstable();
+            lacking.dedup();
+        }
+        Ok(lacking)
+    }
+
+    /// Apply `op`, one withdrawal this device emits, and log it on the
+    /// vault-meta stream, through the same [`Self::apply_control_op`] a
+    /// peer's takes. Returns its op id and sequence number.
+    fn emit_withdrawal(
+        &self,
+        tx: &Transaction<'_>,
+        op: &InnerOp,
+        target: &[u8; 16],
+        hlc: Hlc,
+        now_ms: u64,
+    ) -> rusqlite::Result<([u8; 16], u64)> {
+        let me = self.keychain.device_id();
+        let inner = encode_inner_op(op).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+        let at_epoch = self
+            .keychain
+            .current_epoch_tx(tx, &META_STREAM)?
+            .unwrap_or(0);
+        self.apply_control_op(tx, op, &me, hlc, now_ms, at_epoch)?;
+        let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+        let seq = self.next_seq_tx(tx, &META_STREAM)?;
+        let op_id = self.fresh_op_id(now_ms);
+        self.ops_insert_at(
+            tx,
+            &op_id,
+            &META_STREAM,
+            seq,
+            hlc,
+            &inner,
+            op.inner_kind(),
+            op.target_kind(),
+            Some(target),
+            Some(now_ms),
+            None,
+            now_ms,
+            &[],
+            seal_under.0,
+            &seal_under.1,
+        )?;
+        Ok((op_id, seq))
+    }
+
+    /// Apply one withdrawal, from a peer or from this device's own
+    /// [`Self::withdraw_revocation`]: a `device_revoke_withdraw` or a
+    /// `device_revoke_withdraw_by_identity`.
     ///
-    /// Stored like a revocation and folded with them: a row of the sender's
-    /// ordinary pair, kind `withdraw`, with no reason and no identity
-    /// (migration 0053). The sender is the authenticated envelope's, so the
-    /// row can make inert nothing but its author's own claim, and the
-    /// register needs no check of the author's standing (ADR-0056 §3): a
-    /// withdrawn pair reads as a pair its sender never wrote. The read bound
-    /// does need one, and the fold applies it (§4 (c)).
+    /// Stored like a revocation and folded with them, as a row of kind
+    /// `withdraw` with no reason (migration 0053). A `device_revoke_withdraw`
+    /// names no identity, so it is a row of the sender's **ordinary** pair. A
+    /// `device_revoke_withdraw_by_identity` keeps its identity and signature,
+    /// unchecked as an authority revocation's are, so it is a row of the
+    /// sender's **authority** pair, and the fold decides against the head it
+    /// folds whether it withdraws that pair ([`pair_heads`], ADR-0058 §6).
+    ///
+    /// The sender is the authenticated envelope's, so the row can make inert
+    /// nothing but its author's own claim, and the register needs no check of
+    /// the author's standing (ADR-0056 §3): a withdrawn pair reads as a pair
+    /// its sender never wrote. The read bound does need one, and the fold
+    /// applies it (§4 (c)).
     ///
     /// A withdrawal naming its own sender is refused, as a revocation naming
     /// its own sender is: no such pair can exist for it to withdraw.
     pub(super) fn apply_device_revoke_withdraw(
         &self,
         tx: &Transaction<'_>,
-        p: &DeviceRevokeWithdrawPayload,
+        p: impl Into<WithdrawClaim>,
         sender: &[u8; 16],
         hlc: Hlc,
         now_ms: u64,
     ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
+        let p: WithdrawClaim = p.into();
         if p.revoked_device_id == *sender {
             tracing::warn!(
                 ev = "core.device.revoke_refused",
@@ -438,21 +699,30 @@ impl Engine {
         }
         // `OR IGNORE` for the reason `apply_device_revoke` gives: a
         // re-delivered op must not move `recorded_at_ms`.
+        let authority_id = p.authority.as_ref().map(|(id, _)| id.to_vec());
+        let authority_sig = p.authority.as_ref().map(|(_, sig)| sig.to_vec());
         tx.execute(
             "INSERT OR IGNORE INTO device_revoke_ops
                  (op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
                   recorded_at_ms, authority_identity_id, authority_sig, kind)
-             VALUES (?1, ?2, ?3, ?4, '', ?5, NULL, NULL, ?6)",
+             VALUES (?1, ?2, ?3, ?4, '', ?5, ?6, ?7, ?8)",
             params![
                 i64::try_from(hlc.physical_ms).unwrap_or(i64::MAX),
                 i64::from(hlc.logical),
                 &sender[..],
                 &p.revoked_device_id[..],
                 i64::try_from(now_ms).unwrap_or(i64::MAX),
+                authority_id,
+                authority_sig,
                 WITHDRAW_KIND,
             ],
         )?;
-        if Self::cap_device_revoke_targets(tx, sender, &p.revoked_device_id, None)? {
+        if Self::cap_device_revoke_targets(
+            tx,
+            sender,
+            &p.revoked_device_id,
+            authority_id.as_deref(),
+        )? {
             tracing::warn!(
                 ev = "core.device.revoke_refused",
                 reason = "sender_over_cap",

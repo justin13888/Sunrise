@@ -112,13 +112,28 @@ impl Engine {
     /// [`Self::cap_device_revoke_targets`] already lets it drop. A tie on the
     /// stamp is broken on the identity, so which row is kept is a function of
     /// the rows.
+    ///
+    /// # An authority pair keeps its revocation beside its withdrawal
+    ///
+    /// Since ADR-0058 §6 an authority pair can hold an identity-signed
+    /// withdrawal, and whether it withdraws the pair depends on the head the
+    /// fold reads: it must verify under the identity in force, unless the
+    /// revocation it withdraws has stopped being an authority row too
+    /// ([`super::revocation_withdraw::pair_heads`]). A withdrawal that stopped
+    /// counting must leave the revocation it outranked standing, so this
+    /// keeps an authority pair's greatest revocation and its greatest
+    /// withdrawal, and deletes the withdrawal too when the revocation
+    /// outranks it, because then no head can make it count. That is every
+    /// row the fold reads, and at most two per pair.
     pub(super) fn compact_device_revoke_ops(tx: &Transaction<'_>) -> rusqlite::Result<usize> {
-        tx.execute(
+        let lesser = tx.execute(
             "DELETE FROM device_revoke_ops WHERE rowid IN (
                  SELECT rowid FROM (
                      SELECT rowid, ROW_NUMBER() OVER (
                          PARTITION BY sender, revoked_device_id,
-                                      authority_identity_id IS NULL
+                                      authority_identity_id IS NULL,
+                                      CASE WHEN authority_identity_id IS NULL
+                                           THEN '' ELSE kind END
                          ORDER BY op_hlc_ms DESC, op_hlc_logical DESC,
                                   kind = 'revoke' DESC,
                                   authority_identity_id DESC
@@ -127,7 +142,22 @@ impl Engine {
                  ) WHERE pos > 1
              )",
             [],
-        )
+        )?;
+        let outranked = tx.execute(
+            "DELETE FROM device_revoke_ops
+             WHERE kind = 'withdraw' AND authority_identity_id IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM device_revoke_ops r
+                   WHERE r.kind = 'revoke' AND r.authority_identity_id IS NOT NULL
+                     AND r.sender = device_revoke_ops.sender
+                     AND r.revoked_device_id = device_revoke_ops.revoked_device_id
+                     AND (r.op_hlc_ms > device_revoke_ops.op_hlc_ms
+                          OR (r.op_hlc_ms = device_revoke_ops.op_hlc_ms
+                              AND r.op_hlc_logical >= device_revoke_ops.op_hlc_logical))
+               )",
+            [],
+        )?;
+        Ok(lesser + outranked)
     }
 
     /// Keep at most [`REVOKE_TARGETS_PER_SENDER`] distinct targets per sender,
