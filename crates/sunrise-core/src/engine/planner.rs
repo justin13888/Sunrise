@@ -230,13 +230,20 @@ impl Engine {
     /// Solve `intent` against the vault as it stands at `now_ms`, in the
     /// reader's zone. Writes nothing.
     ///
+    /// A recurring block is read as its occurrences in the window, and a
+    /// block intent on one names the occurrence it drags
+    /// (`docs/08-features/planner.md` §Recurring blocks).
+    ///
     /// A block move the commit would refuse because it strands a recurring
-    /// block's exception ([`move_anchor`]) is flagged here, as a Blocking
+    /// block's exception (`move_anchor`), or a drag of every event from one
+    /// an exception already moved on its own, is flagged here, as a Blocking
     /// `Invalid` violation on the block, and the diff is not committable.
     ///
     /// # Errors
     /// [`PlanError::Invalid`] for an intent naming nothing the vault holds,
-    /// or the wrong kind; [`PlanError::Engine`] for a failed read.
+    /// or the wrong kind, or a recurring block without one of its
+    /// occurrences, a cancelled one, or one its rule does not produce;
+    /// [`PlanError::Engine`] for a failed read.
     pub fn plan_preview(
         &self,
         db: &Db,
@@ -279,11 +286,13 @@ impl Engine {
     /// Write `diff`, previewed at `now_ms`, exactly: `planned_at` for each
     /// task, `starts_at` and `ends_at` for each block, and for a
     /// [`PlanIntent::BulkDefer`] one more `deferred_count` on each task it
-    /// names, as one group (ADR-0065 §6). A recurring block's write also
-    /// re-keys its `exceptions` and `occurrence_tasks` to the occurrences
-    /// they named, as an edit of the whole block does ([`move_anchor`]).
-    /// Returns how many items it moved, and the commit whose inverse it
-    /// stored.
+    /// names, as one group (ADR-0065 §6). A drag of one event of a recurring
+    /// block writes that occurrence's exception instead; a drag of every
+    /// event moves the anchor by as much as the event moved, and that write,
+    /// like any move of an anchor, re-keys the block's `exceptions` and
+    /// `occurrence_tasks` to the occurrences they named, as an edit of the
+    /// whole block does (`move_anchor`). Returns how many items it moved, and
+    /// the commit whose inverse it stored.
     ///
     /// In the same transaction it stores the commit's inverse
     /// (`planner_commits`, `planner_commit_fields`): for each field whose
@@ -471,7 +480,11 @@ impl Engine {
     ///
     /// A field whose register still holds the commit's write is restored to
     /// the value the commit replaced, as a new write; a restored deferral
-    /// also takes one off `deferred_count`. A field written again since, by
+    /// also takes one off `deferred_count`, and a drag of one event of a
+    /// recurring block restores that occurrence's exception's start and end
+    /// (skipped where the exception is gone or cancelled since). A field
+    /// this undo's write renews and leaves as it was keeps every other kept
+    /// commit's hold on it. A field written again since, by
     /// any device, is skipped and reported, as is every field of an item
     /// deleted since or one its restored fields would leave invalid. Never
     /// refuses as stale and never re-solves. The commit is forgotten: a
