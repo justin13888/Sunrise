@@ -104,7 +104,7 @@ pub(in crate::engine::merge) fn upsert_block_row(
 ///
 /// A binding to the whole block (`tasks`) is stored with the empty
 /// `occurrence_key`, and a binding to one occurrence (`occurrence_tasks`)
-/// with its key (migration 0050, #1162).
+/// with its key (migration 0051, #1162).
 pub(in crate::engine::merge) fn replace_block_tasks(
     tx: &Transaction<'_>,
     b: &Block,

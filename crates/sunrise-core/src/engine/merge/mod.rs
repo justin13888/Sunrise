@@ -176,7 +176,7 @@ pub(super) use versions::{heads, precedes};
 /// `location`, `notes`, `source` and `external_id` into their columns
 /// (migration 0049, #1147), where a build before it kept them in `extra`.
 /// `11` projects a Block's `occurrence_tasks` into `block_tasks`, each with
-/// its `occurrence_key` (migration 0050, #1162), where a build before it
+/// its `occurrence_key` (migration 0051, #1162), where a build before it
 /// kept them in `extra`.
 pub(crate) const FOLD_V: u32 = 11;
 
