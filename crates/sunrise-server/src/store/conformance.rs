@@ -10,7 +10,7 @@ use std::time::Duration;
 use super::{
     Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, IdentityChainPinned,
     KeyBundlePinned, MetadataError, MetadataStore, NewDevice, NewTombstone, PinnedIdentityChain,
-    PinnedKeyBundle, PinnedSnapshot, RetiredRecoveryBlob, StoreStats,
+    PinnedKeyBundle, PinnedSnapshot, Reinstatement, RetiredRecoveryBlob, SignedBy, StoreStats,
 };
 use crate::account_ns::account_key;
 use crate::auth::Subject;
@@ -18,6 +18,7 @@ use crate::relay::{FrameHead, StreamKey};
 use crate::relay_log::{Appended, DurableCaps, Replay};
 
 mod pins;
+mod reinstatement;
 
 /// A backend that never answers, standing in for a shared one that lost its
 /// connection.
@@ -118,8 +119,17 @@ impl MetadataStore for Unreachable {
         &self,
         _: &str,
         _: &str,
+        _: Option<SignedBy<'_>>,
         _: u64,
     ) -> Result<usize, MetadataError> {
+        Err(down())
+    }
+    async fn reinstate_devices_by_vault_id(
+        &self,
+        _: &str,
+        _: &str,
+        _: SignedBy<'_>,
+    ) -> Result<Reinstatement, MetadataError> {
         Err(down())
     }
     async fn touch_device(&self, _: &str, _: u64) -> Result<(), MetadataError> {
@@ -308,6 +318,9 @@ fn head(seq: u64) -> Vec<FrameHead> {
 pub(crate) async fn run(store: &dyn MetadataStore) {
     accounts(store).await;
     revocation_is_atomic_and_scoped(store).await;
+    reinstatement::only_the_recorded_revoker_reinstates(store).await;
+    reinstatement::an_unrecorded_revoke_cannot_be_reinstated(store).await;
+    reinstatement::a_reinstatement_signed_before_the_revoke_changes_nothing(store).await;
     relay_log_is_ordered_and_deduplicated(store).await;
     the_size_bound_evicts_oldest_first(store).await;
     the_blob_ledger_sums_what_is_readable(store).await;

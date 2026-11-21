@@ -57,8 +57,8 @@ use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use sunrise_sync::transport::{
-    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin,
-    Transport, TransportError,
+    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, ReinstateOutcome,
+    RevokeOutcome, SnapshotPin, Transport, TransportError,
 };
 use sunrise_wire_protocol::{decode_frame, MsgKind};
 
@@ -350,6 +350,14 @@ impl<T: Transport> Transport for Toxic<T> {
     ) -> Result<RevokeOutcome, TransportError> {
         self.refuse_if_partitioned()?;
         self.inner.revoke_device(device_id).await
+    }
+
+    async fn reinstate_device(
+        &mut self,
+        device_id: [u8; 16],
+    ) -> Result<ReinstateOutcome, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.reinstate_device(device_id).await
     }
 
     async fn blob_init(

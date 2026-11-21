@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use sunrise_core::{BoxTransport, CredentialRead, TransportFactory};
 use sunrise_server::{ServerConfig, ServerState};
 use sunrise_sync::transport::{
-    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin,
-    Transport, TransportError,
+    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, ReinstateOutcome,
+    RevokeOutcome, SnapshotPin, Transport, TransportError,
 };
 use sunrise_sync::{DeviceSigner, SseTransport};
 use tokio::task::JoinHandle;
@@ -265,6 +265,13 @@ impl Transport for RefusesFirstUpload {
         device_id: [u8; 16],
     ) -> Result<RevokeOutcome, TransportError> {
         self.inner.revoke_device(device_id).await
+    }
+
+    async fn reinstate_device(
+        &mut self,
+        device_id: [u8; 16],
+    ) -> Result<ReinstateOutcome, TransportError> {
+        self.inner.reinstate_device(device_id).await
     }
 
     async fn blob_init(

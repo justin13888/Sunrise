@@ -7,7 +7,7 @@ use tokio_postgres::Row;
 use super::{signed, unavailable, unsigned, PgStore};
 use crate::auth::Subject;
 use crate::store::tx::op;
-use crate::store::{mint_id, Account, Device, MetadataError, NewDevice};
+use crate::store::{mint_id, Account, Device, MetadataError, NewDevice, Reinstatement, SignedBy};
 
 const ACCOUNT_COLUMNS: &str = "account_id, oidc_iss, oidc_sub, email, identity_pub_s, \
      identity_pub_d, tier, terms_at_ms, created_at_ms";
@@ -332,6 +332,7 @@ impl PgStore {
         &self,
         account_id: &str,
         vault_device_id: &str,
+        revoked_by: Option<SignedBy<'_>>,
         now_ms: u64,
     ) -> Result<usize, MetadataError> {
         let _op = op("store.revoke_devices_by_vault_id");
@@ -339,10 +340,17 @@ impl PgStore {
         let tx = c.transaction().await.map_err(unavailable)?;
         let ids: Vec<String> = tx
             .query(
-                "UPDATE devices SET revoked = TRUE, revoked_at_ms = $3
+                "UPDATE devices SET revoked = TRUE, revoked_at_ms = $3, revoked_by_key = $4,
+                 revoked_signed_at_ms = $5
                  WHERE account_id = $1 AND vault_device_id = $2 AND NOT revoked
                  RETURNING device_id",
-                &[&account_id, &vault_device_id, &signed(now_ms)],
+                &[
+                    &account_id,
+                    &vault_device_id,
+                    &signed(now_ms),
+                    &revoked_by.map(|s| s.key),
+                    &revoked_by.map(|s| signed(s.at_ms)),
+                ],
             )
             .await
             .map_err(unavailable)?
@@ -357,6 +365,80 @@ impl PgStore {
             .map_err(unavailable)?;
         tx.commit().await.map_err(unavailable)?;
         Ok(ids.len())
+    }
+
+    /// `Store::reinstate_devices_by_vault_id`: the caller's own revocations of
+    /// that vault id undone, and what the rows say when there were none.
+    pub(super) async fn reinstate_devices_by_vault_id(
+        &self,
+        account_id: &str,
+        vault_device_id: &str,
+        caller: SignedBy<'_>,
+    ) -> Result<Reinstatement, MetadataError> {
+        let _op = op("store.reinstate_devices_by_vault_id");
+        let mut c = self.client().await?;
+        let tx = c.transaction().await.map_err(unavailable)?;
+        // Locked first, so a revoke committing between the date check and the
+        // update cannot slip a later revocation under a reinstatement signed
+        // before it. SQLite gets the same from its single connection.
+        tx.execute(
+            "SELECT 1 FROM devices WHERE account_id = $1 AND vault_device_id = $2 FOR UPDATE",
+            &[&account_id, &vault_device_id],
+        )
+        .await
+        .map_err(unavailable)?;
+        // A recorded key with no recorded date cannot occur (the revoke writes
+        // both), and counts as later than any reinstatement, failing closed.
+        let later: i64 = tx
+            .query_one(
+                "SELECT COUNT(*) FROM devices
+                 WHERE account_id = $1 AND vault_device_id = $2 AND revoked
+                 AND revoked_by_key = $3
+                 AND (revoked_signed_at_ms IS NULL OR revoked_signed_at_ms >= $4)",
+                &[
+                    &account_id,
+                    &vault_device_id,
+                    &caller.key,
+                    &signed(caller.at_ms),
+                ],
+            )
+            .await
+            .map_err(unavailable)?
+            .get(0);
+        if later > 0 {
+            return Ok(Reinstatement::PredatesRevocation);
+        }
+        let changed = tx
+            .execute(
+                "UPDATE devices SET revoked = FALSE, revoked_at_ms = NULL, revoked_by_key = NULL,
+                 revoked_signed_at_ms = NULL
+                 WHERE account_id = $1 AND vault_device_id = $2 AND revoked AND revoked_by_key = $3",
+                &[&account_id, &vault_device_id, &caller.key],
+            )
+            .await
+            .map_err(unavailable)?;
+        let outcome = if changed > 0 {
+            Reinstatement::Reinstated(usize::try_from(changed).unwrap_or(usize::MAX))
+        } else {
+            let row = tx
+                .query_one(
+                    "SELECT COUNT(*) FILTER (WHERE NOT revoked), COUNT(*) FILTER (WHERE revoked)
+                     FROM devices WHERE account_id = $1 AND vault_device_id = $2",
+                    &[&account_id, &vault_device_id],
+                )
+                .await
+                .map_err(unavailable)?;
+            let (active, revoked): (i64, i64) = (row.get(0), row.get(1));
+            if active > 0 {
+                Reinstatement::AlreadyActive
+            } else if revoked > 0 {
+                Reinstatement::NotRevoker
+            } else {
+                return Err(MetadataError::NotFound);
+            }
+        };
+        tx.commit().await.map_err(unavailable)?;
+        Ok(outcome)
     }
 
     pub(super) async fn touch_device(
