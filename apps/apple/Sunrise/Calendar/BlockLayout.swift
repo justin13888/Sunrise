@@ -142,8 +142,8 @@ enum BlockLayout {
         let resolved = tasks.compactMap { task -> Resolved<TaskItem>? in
             guard let start = timedStartMs(of: task, timeZone: timeZone) else { return nil }
             let seconds = task.estimatedDurationS.flatMap { $0 > 0 ? $0 : nil } ?? defaultDurationS
-            // Capped at a year so the sum cannot overflow; a column is a day,
-            // and anything longer is clamped to it below.
+            // Capped as the planner caps the slot it moves the task in; a
+            // column is a day, and the part on it is clamped to it below.
             let lengthMs = Int64(min(max(1, seconds), maxTaskLengthS)) * 1000
             return Resolved(item: task, key: task.id, start: start, end: start + lengthMs)
         }
@@ -152,7 +152,11 @@ enum BlockLayout {
         }
     }
 
-    private static let maxTaskLengthS: UInt64 = 366 * 86_400
+    /// The longest a task is drawn: seven days, the cap the planner puts on
+    /// a task's slot (`crates/sunrise-domain/src/planner/world.rs`), so the
+    /// grid draws the span a planned move works with. The grid reads tasks
+    /// this far back for the same reason (`CalendarModel.timedTasks()`).
+    static let maxTaskLengthS: UInt64 = 7 * 86_400
 
     /// Every task an Upcoming report plans for a time of day, once each: a
     /// task is listed under one day, but the report's days and the grid's

@@ -239,13 +239,14 @@ final class CalendarModel {
 
     /// The open tasks planned for a time of day that the window can draw,
     /// read through `Query::Upcoming`, the core's fold of which open task is
-    /// planned for which day. Its days start at "now", so it is asked from
-    /// the day before the window over a span that covers the window whatever
-    /// bounds the day schedule gives a planner day; each column keeps what
-    /// falls in it (``placedTasks(dayOffset:)``).
+    /// planned for which day. Its days start at "now", so it is asked from a
+    /// day (a planner day can start early) plus the longest drawn task before
+    /// the window, which finds a task that still runs into it, over 14 or 30
+    /// days, the first spans reaching past the window (``placedTasks(dayOffset:)``).
     private func timedTasks() async throws -> [TaskItem] {
-        let from = UInt64(max(0, windowStartMs - 86_400_000))
-        let query = CoreQuery.upcoming(nowMs: from, spanDays: span == .day ? 7 : 14, contexts: [])
+        let back = 86_400_000 + Int64(BlockLayout.maxTaskLengthS) * 1000
+        let from = UInt64(max(0, windowStartMs - back))
+        let query = CoreQuery.upcoming(nowMs: from, spanDays: span == .day ? 14 : 30, contexts: [])
         guard case let .upcoming(report) = try await bridge.query(query) else { return [] }
         return BlockLayout.timedTasks(in: report, timeZone: timeZone)
     }

@@ -178,6 +178,79 @@ struct CalendarModelTests {
         #expect(model.rows.isEmpty)
         await vault.bridge.shutdown()
     }
+}
+
+/// The rest of the suite, in an extension so neither body passes
+/// swiftlint's type-length limit.
+extension CalendarModelTests {
+    /// A week grid stepped back into a past week draws a task on its last
+    /// column: the week's read reaches every day it shows, not only the
+    /// days after "now".
+    @Test
+    func aPastWeekGridDrawsATaskOnItsLastDay() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        model.span = .week
+        await model.step(-2)
+        let at = model.dayStartMs(offset: 6) + 10 * 3_600_000
+        _ = try await plannedTask("Late in the week", at: model.timeValue(ms: at, kind: .zoned), in: vault)
+
+        await model.refresh()
+
+        #expect(model.placedTasks(dayOffset: 6).map(\.task.title) == ["Late in the week"])
+        #expect((0..<6).allSatisfy { model.placedTasks(dayOffset: $0).isEmpty })
+        await vault.bridge.shutdown()
+    }
+
+    /// A task planned two days before the window with a three-day estimate
+    /// still covers the window's first day, so it is drawn from its top.
+    @Test
+    func aLongTaskThatStartedBeforeTheWindowIsDrawnOnIt() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await model.step(-3)
+        let at = hour(model, -40)
+        _ = try await plannedTask(
+            "Long haul", at: model.timeValue(ms: at, kind: .zoned), estimateS: 3 * 86_400, in: vault
+        )
+
+        await model.refresh()
+
+        let placed = try #require(model.placedTasks(dayOffset: 0).first)
+        #expect(placed.task.title == "Long haul")
+        #expect(placed.startMs == model.windowStartMs)
+        #expect(placed.endMs == model.dayStartMs(offset: 1))
+        await vault.bridge.shutdown()
+    }
+
+    /// A task with no estimate is drawn as long as the vault's
+    /// `planner.default_task_duration_s`, not the 30-minute fallback.
+    @Test
+    func aTaskWithNoEstimateTakesTheDefaultDurationPreference() async throws {
+        let vault = try await TestVault()
+        _ = try await vault.bridge.submit(
+            .setPreference(key: "planner.default_task_duration_s", value: .uint(value: 5400), target: .vault)
+        )
+        let model = await model(vault)
+        let at = hour(model, 10)
+        _ = try await plannedTask("Unestimated", at: model.timeValue(ms: at, kind: .zoned), in: vault)
+
+        await model.refresh()
+
+        #expect(model.defaultTaskDurationS == 5400)
+        let placed = try #require(model.placedTasks(dayOffset: 0).first)
+        #expect(placed.endMs - placed.startMs == 5_400_000)
+        await vault.bridge.shutdown()
+    }
+
+    private func plannedTask(
+        _ title: String, at: TimeValue?, estimateS: UInt64? = nil, in vault: borrowing TestVault
+    ) async throws -> EntityRef {
+        var new = draft(title)
+        new.scheduledAt = at
+        new.estimatedDurationS = estimateS
+        return try await vault.bridge.submit(.createTask(draft: new)).entity
+    }
 
     /// The whole Resolve flow, and the one thing that must survive it: the
     /// union's time range.

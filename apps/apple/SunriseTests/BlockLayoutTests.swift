@@ -264,6 +264,17 @@ struct BlockLayoutTests {
         #expect(placed.last?.endMs == Self.dayStart + 86_400_000)
     }
 
+    /// A task estimated past a week is drawn for seven days, the slot the
+    /// planner gives it (`planner/world.rs`), so it ends seven days after it
+    /// starts and is gone from the eighth day's column.
+    @Test
+    func aTaskIsDrawnNoLongerThanThePlannersSevenDaySlot() {
+        let day: Int64 = 86_400_000
+        let long = task("a", at: at(9) - 7 * day, estimateS: 30 * 86_400)
+        #expect(placeTasks([long]).first?.endMs == at(9))
+        #expect(placeTasks([task("b", at: at(9) - 8 * day, estimateS: 30 * 86_400)]).isEmpty)
+    }
+
     /// A task's ghost is drawn in the task track, a block's beside it.
     @Test
     func aGhostKnowsWhetherItIsATask() {
