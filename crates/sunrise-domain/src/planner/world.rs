@@ -3,9 +3,9 @@
 
 use super::encode::{diff_id, plan_base};
 use super::{
-    intent_items, retime, rules, to_ts, MoveRole, PlanDay, PlanDiff, PlanDiffId, PlanInputs,
-    PlanIntent, PlanIntentError, PlanMove, PlanPosition, PlanRule, PlanSeverity, PlanTask,
-    PlanUnscheduled, PlanViolation, UnscheduleReason,
+    intent_items, retime, rules, to_ts, MoveRole, OccurrenceScope, PlanDay, PlanDiff, PlanDiffId,
+    PlanInputs, PlanIntent, PlanIntentError, PlanMove, PlanPosition, PlanRule, PlanSeverity,
+    PlanTask, PlanUnscheduled, PlanViolation, UnscheduleReason,
 };
 use crate::time::SunriseTime;
 use jiff::civil::Date;
@@ -53,6 +53,8 @@ pub(crate) enum Class {
 #[derive(Debug, Clone)]
 pub(crate) struct Item<'a> {
     pub(crate) id: EntityRef,
+    /// The occurrence key of one occurrence of a recurring block.
+    pub(crate) occurrence: Option<String>,
     pub(crate) is_task: bool,
     pub(crate) class: Class,
     pub(crate) before: Pos,
@@ -71,6 +73,8 @@ pub(crate) struct World<'a> {
     pub(crate) window: Vec<PlanDay>,
     /// Every item, by id.
     pub(crate) items: Vec<Item<'a>>,
+    /// Each item by id, but for the occurrences of a recurring block the
+    /// intent does not name: fixed, they are never looked up.
     pub(crate) index: BTreeMap<EntityRef, usize>,
     pub(crate) subjects: Vec<usize>,
     /// Each task's dependents in the world.
@@ -90,6 +94,7 @@ impl<'a> World<'a> {
         window.sort_by_key(|d| d.date);
         window.dedup_by_key(|d| d.date);
         let named: BTreeSet<EntityRef> = intent_items(intent)?;
+        let occurrence = intent.occurrence();
         let day_of = |s: i64| {
             window
                 .iter()
@@ -136,6 +141,7 @@ impl<'a> World<'a> {
             }
             items.push(Item {
                 id: t.id,
+                occurrence: None,
                 is_task: true,
                 class,
                 before,
@@ -153,18 +159,28 @@ impl<'a> World<'a> {
             };
             let (s, e) = (s.as_second(), e.as_second());
             let day = day_of(s);
-            let subject = named.contains(&b.id);
+            let named_block = named.contains(&b.id);
+            let subject = named_block && b.occurrence.as_ref() == occurrence.map(|o| &o.key);
+            // The other occurrences a gesture on the whole series reaches
+            // move with the one dragged, so none is in its way.
+            if named_block
+                && !subject
+                && occurrence.is_some_and(|o| o.scope == OccurrenceScope::All)
+            {
+                continue;
+            }
             let class = if subject {
                 Class::Subject
             } else if day.is_none() && day_of(e - 1).is_none() {
                 continue;
-            } else if b.fixed || s < now || day.is_none() {
+            } else if b.fixed || b.occurrence.is_some() || s < now || day.is_none() {
                 Class::Fixed
             } else {
                 Class::Movable
             };
             items.push(Item {
                 id: b.id,
+                occurrence: b.occurrence.clone(),
                 is_task: false,
                 class,
                 before: Pos::Slot(s, e.max(s)),
@@ -185,6 +201,7 @@ impl<'a> World<'a> {
             }
             items.push(Item {
                 id: ev.id,
+                occurrence: None,
                 is_task: false,
                 class: Class::Fixed,
                 before: Pos::Slot(s, e),
@@ -195,15 +212,24 @@ impl<'a> World<'a> {
                 task: None,
             });
         }
-        items.sort_by_key(|i| i.id);
-        items.dedup_by_key(|i| i.id);
-        let index: BTreeMap<EntityRef, usize> =
-            items.iter().enumerate().map(|(n, i)| (i.id, n)).collect();
+        items.sort_by(|a, b| {
+            a.id.cmp(&b.id)
+                .then_with(|| a.occurrence.cmp(&b.occurrence))
+        });
+        items.dedup_by(|a, b| a.id == b.id && a.occurrence == b.occurrence);
+        let index: BTreeMap<EntityRef, usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.occurrence.is_none() || i.class == Class::Subject)
+            .map(|(n, i)| (i.id, n))
+            .collect();
         let mut subjects = Vec::new();
         for id in &named {
+            // A block named with an occurrence it does not have, or without
+            // the one it has, is not in the inputs.
             match index.get(id) {
-                Some(&i) => subjects.push(i),
-                None => return Err(PlanIntentError::Unknown(*id)),
+                Some(&i) if items[i].class == Class::Subject => subjects.push(i),
+                _ => return Err(PlanIntentError::Unknown(*id)),
             }
         }
         let mut dependents: BTreeMap<EntityRef, Vec<usize>> = BTreeMap::new();
@@ -323,6 +349,8 @@ impl<'a> World<'a> {
                 .then(a.rule.cmp(&b.rule))
                 .then(a.with.cmp(&b.with))
         });
+        // Two occurrences of one block break a rule the same way once each.
+        violations.dedup();
         let mut moves = Vec::new();
         for (&i, pos) in out_after {
             if unscheduled.contains_key(&i) || after[i] == self.items[i].before {
@@ -335,6 +363,7 @@ impl<'a> World<'a> {
             };
             moves.push(PlanMove {
                 item: self.items[i].id,
+                occurrence: self.items[i].occurrence.clone(),
                 role,
                 before: self.before_out(i),
                 after: pos.clone(),

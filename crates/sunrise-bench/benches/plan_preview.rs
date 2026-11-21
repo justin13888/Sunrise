@@ -152,6 +152,7 @@ fn seed(v: &mut BenchVault) -> Week {
     Week {
         ripple: PlanIntent::MoveBlock {
             block: dragged,
+            occurrence: None,
             to_start: at(0, 12 * 60),
         },
         cross_day: PlanIntent::MoveTask {

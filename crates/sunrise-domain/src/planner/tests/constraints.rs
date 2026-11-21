@@ -49,6 +49,7 @@ fn a_rippled_task_with_a_hard_window_moves_only_inside_it() {
     let diff = solve(
         &i,
         &PlanIntent::MoveBlock {
+            occurrence: None,
             block: bid(1),
             to_start: at(D, 9, 0),
         },
@@ -73,6 +74,7 @@ fn a_rippled_task_with_no_lawful_position_stays_where_it_is() {
     let diff = solve(
         &i,
         &PlanIntent::MoveBlock {
+            occurrence: None,
             block: bid(1),
             to_start: at(D, 9, 0),
         },
@@ -98,6 +100,7 @@ fn a_rippled_task_that_would_miss_its_hard_deadline_is_unscheduled() {
     let diff = solve(
         &i,
         &PlanIntent::MoveBlock {
+            occurrence: None,
             block: bid(1),
             to_start: at(D, 7, 0),
         },

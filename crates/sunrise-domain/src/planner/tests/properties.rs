@@ -25,6 +25,7 @@ fn world(starts: &[(u8, u8)], deps: &[(u8, u8)], event_at: u8, now_q: u8) -> Pla
     }
     i.blocks.push(PlanBlock {
         id: bid(100),
+        occurrence: None,
         starts_at: SunriseTime::instant(Timestamp::from_second(q(20)).unwrap()),
         ends_at: SunriseTime::instant(Timestamp::from_second(q(24)).unwrap()),
         fixed: true,

@@ -1000,6 +1000,7 @@ fn plan_block(block: Block) -> PlanBlock {
     PlanBlock {
         fixed: block.effective_kind() != BlockKind::Flexible,
         id: block.id,
+        occurrence: None,
         starts_at: block.starts_at,
         ends_at: block.ends_at,
     }

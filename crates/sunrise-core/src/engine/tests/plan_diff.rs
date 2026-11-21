@@ -83,6 +83,7 @@ fn moving_onto_moves(kind: Option<BlockKind>, source: Option<BlockSource>) -> bo
 
 fn move_to_eleven(b: EntityRef) -> PlanIntent {
     PlanIntent::MoveBlock {
+        occurrence: None,
         block: b,
         to_start: at(11, 0),
     }
@@ -460,6 +461,7 @@ fn an_in_progress_flexible_block_is_not_moved() {
         .as_millisecond()
         .cast_unsigned();
     let intent = PlanIntent::MoveBlock {
+        occurrence: None,
         block: b,
         to_start: at(10, 0),
     };
@@ -538,6 +540,7 @@ mod recurring {
         to_start: SunriseTime,
     ) -> Result<crate::engine::PlanCommitId, PlanError> {
         let intent = PlanIntent::MoveBlock {
+            occurrence: None,
             block: id,
             to_start,
         };
@@ -622,6 +625,7 @@ mod recurring {
 
     fn move_to_thursday(id: EntityRef) -> PlanIntent {
         PlanIntent::MoveBlock {
+            occurrence: None,
             block: id,
             to_start: thursday(),
         }
