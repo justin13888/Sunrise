@@ -339,7 +339,7 @@ The guarantee, stated positively and in the terms a reader of
 > (`crates/sunrise-core/src/engine/revocation.rs:1310-1324#refold_device_revocations`).
 > The one other writer is a joiner adopting its sponsor's bound in the
 > transaction that creates its vault
-> (`crates/sunrise-core/src/engine/revocation.rs:1702-1709#adopt_sponsor_read_bounds`),
+> (`crates/sunrise-core/src/engine/revocation.rs:1708-1715#adopt_sponsor_read_bounds`),
 > so on a paired device a row can bound a device whose revocation every fold
 > there gates — the #282 case, and the point of the adoption
 > ([ADR-0041 §5. A paired device adopts its sponsor's read

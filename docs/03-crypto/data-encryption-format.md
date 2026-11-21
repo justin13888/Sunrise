@@ -202,6 +202,7 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 | `device_revoke` | 1 | `{ revoked_device_id, reason_code }` — the cut is the op's own HLC, so there is no `effective_at` field |
 | `device_revoke_by_identity` | 1 | `{ revoked_device_id, reason_code, identity_id, identity_sig }` — `device_revoke` signed by the account identity in force ([ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md)); see the CDDL below |
 | `device_revoke_withdraw` | 1 | `{ revoked_device_id }` — the sender withdraws its own revocation of that device ([ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md)); the sender is the envelope's, so the op can withdraw nothing else |
+| `device_revoke_withdraw_by_identity` | 1 | `{ revoked_device_id, identity_id, identity_sig }` — the account identity in force withdraws the sender's own authority revocation of that device ([ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) §6); it reaches only the sender's authority pair, never an ordinary one; see the CDDL below |
 | `key_envelope` | 1 | `{ stream_id, epoch, recipient, key_id, hpke_ciphertext }` |
 | `share_grant` | 0 | `{ stream_id, epoch, recipient_identity_id, role, expires_at?, hpke_ciphertext, identity_sig }` |
 | `share_revoke` | 0 | `{ stream_id, recipient_identity_id, effective_at }` |
@@ -215,7 +216,7 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 
 ### The six families that are implemented
 
-[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `Patch`, an entity family rather than a control one, followed at `DOC_SCHEMA_V = 8` ([ADR-0044](../11-adr/0044-per-field-ops.md)), and the `StreamDigest` control family, a replica's frontier and digest in one stream, at `DOC_SCHEMA_V = 9` ([ADR-0043](../11-adr/0043-commit-tree.md)); it takes the place `checkpoint` was sketched for. [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 10`. [ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) added `device_revoke_by_identity` at `DOC_SCHEMA_V = 23`, behind the structural feature `core.revoke_authority`, and [ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md) added `device_revoke_withdraw` at `DOC_SCHEMA_V = 28`, behind the structural feature `core.revoke_withdraw`. `share_grant`, `share_revoke` and `snapshot` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
+[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `Patch`, an entity family rather than a control one, followed at `DOC_SCHEMA_V = 8` ([ADR-0044](../11-adr/0044-per-field-ops.md)), and the `StreamDigest` control family, a replica's frontier and digest in one stream, at `DOC_SCHEMA_V = 9` ([ADR-0043](../11-adr/0043-commit-tree.md)); it takes the place `checkpoint` was sketched for. [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 10`. [ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) added `device_revoke_by_identity` at `DOC_SCHEMA_V = 23`, behind the structural feature `core.revoke_authority`, and [ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md) added `device_revoke_withdraw` at `DOC_SCHEMA_V = 28`, behind the structural feature `core.revoke_withdraw`. ADR-0058 §6 added `device_revoke_withdraw_by_identity` at `DOC_SCHEMA_V = 30`, behind the structural feature `core.revoke_withdraw_authority`. `share_grant`, `share_revoke` and `snapshot` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
 
 The six are **not** the `OpKind`-tagged shape sketched above. The inner op is a Rust enum encoded externally tagged, so what is on the wire is a one-entry map from the variant name to its payload — the same shape the 21 domain variants already have. This is the encoder's shape, and it is normative:
 
@@ -228,6 +229,7 @@ InnerOp /= { "KeyEnvelope" => KeyEnvelopePayload }
          / { "DeviceFeatures" => FeatureList }    ; latest per sending device, by HLC
          / { "DeviceRevokeByIdentity" => DeviceRevokeByIdentityPayload }
          / { "DeviceRevokeWithdraw" => DeviceRevokeWithdrawPayload }
+         / { "DeviceRevokeWithdrawByIdentity" => DeviceRevokeWithdrawByIdentityPayload }
 
 FeatureList = {
     "features" => [ + feature-id ],   ; never emitted empty
@@ -257,6 +259,12 @@ DeviceRevokeByIdentityPayload = {
 
 DeviceRevokeWithdrawPayload = {
     "revoked_device_id" => bstr .size 16,   ; the sender's own revocation of it is withdrawn
+}
+
+DeviceRevokeWithdrawByIdentityPayload = {
+    "revoked_device_id" => bstr .size 16,   ; the sender's own authority revocation of it is withdrawn
+    "identity_id"       => bstr .size 16,   ; identity_id_from_pub(ID_S_pub) of the signer
+    "identity_sig"      => bstr .size 64,   ; see below
 }
 
 IdentityTransitionPayload = {
@@ -290,6 +298,16 @@ identity_sig = Ed25519(ID_S_priv, "sunrise.device_revoke.identity.v1" || BLAKE3(
 ```
 
 `sender_device_id`, `hlc_physical_ms` and `hlc_logical` are the envelope's `device_id` and `hlc`, and `reason_code` is the reason's text spelling. The receiver stores the op whether or not the signature verifies, and the revocation fold checks it: the row is an authority row only while `identity_id` is the head of the identity chain and the signature verifies under that head's `ID_S_pub`, and is otherwise an ordinary revocation from its sender ([ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) §3). `crates/sunrise-crypto/src/identity_revocation.rs#RevocationClaim` is the encoder.
+
+`identity_sig` on `DeviceRevokeWithdrawByIdentity` is taken the same way over the same claim less the reason, under its own domain, so a revocation's signature never verifies as a withdrawal's or the other way round:
+
+```text
+claim        = canonical_cbor({ identity_id, sender_device_id, revoked_device_id,
+                                hlc_physical_ms, hlc_logical })
+identity_sig = Ed25519(ID_S_priv, "sunrise.device_revoke_withdraw.identity.v1" || BLAKE3(claim))
+```
+
+The receiver stores it unchecked as a withdrawal row of the sender's authority pair. The fold reads that pair as its greatest revocation and its greatest withdrawal, and the withdrawal makes the pair inert only when it outranks the revocation (a revocation wins a tie) and either verifies under the head, or names the same identity as a revocation that is itself no longer an authority row ([ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) §6). `crates/sunrise-crypto/src/identity_revocation.rs#WithdrawalClaim` is the encoder.
 
 The transition's signatures are taken over a **body that is not on the wire**:
 

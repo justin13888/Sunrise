@@ -5,9 +5,8 @@
 **Answers** [#394](https://github.com/justin13888/Sunrise/issues/394).
 
 **Built by** [#454](https://github.com/justin13888/Sunrise/issues/454), §2–§5
-and §7. The identity-signed withdrawal of §6 is
-[#383](https://github.com/justin13888/Sunrise/issues/383)'s to build, since it
-lands second.
+and §7, and [#1239](https://github.com/justin13888/Sunrise/issues/1239), the
+identity-signed withdrawal of §6.
 
 **Amends** [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) §"What a user
 sees" item 4, which says no ledger-only rule settles two expelled devices one
@@ -246,13 +245,110 @@ not, and the authority gets no un-revoke of ordinary rows:
   does not need it: a device it wants reinstated, it can pair again, and a
   device it wants out, it revokes by authority.
 
-The identity-signed withdrawal is built by whichever of #383 and this
-record's implementation lands second. This record's implementation (#454)
-landed first, and #383 built the ordinary withdrawal without it: the
-withdrawal joins only a sender's ordinary pair, so an authority pair stays
-live, and `Command::WithdrawRevocation` reports a device this device revoked
-only by authority as not its own to withdraw. The identity-signed withdrawal
-is [#1239](https://github.com/justin13888/Sunrise/issues/1239).
+#454 landed first and #383 built the ordinary withdrawal without this one,
+which joins only a sender's ordinary pair.
+[#1239](https://github.com/justin13888/Sunrise/issues/1239) built the
+identity-signed withdrawal as follows.
+
+**The op.** `DeviceRevokeWithdrawByIdentity { revoked_device_id, identity_id,
+identity_sig }`, inner kind `device.revoke_withdraw_by_identity`, at
+`DOC_SCHEMA_V = 30`, behind the structural feature
+`core.revoke_withdraw_authority`. The signature covers §2's claim less the
+reason, under its own domain:
+
+```text
+claim        = canonical_cbor({identity_id, sender_device_id, revoked_device_id,
+                               hlc_physical_ms, hlc_logical})
+identity_sig = Ed25519(ID_S_priv, "sunrise.device_revoke_withdraw.identity.v1" || BLAKE3(claim))
+```
+
+It is a new kind rather than a signature on `device_revoke_withdraw`, for
+ADR-0056 §Alternatives (d)'s reason: an older build would ignore the field
+and fold the op into the sender's ordinary pair, which leaves the authority
+pair live while every newer build withdrew it.
+
+**The ledger and the fold.** The op is stored unchecked, like an authority
+revocation, as a withdrawal row (`kind = 'withdraw'`) that names its identity.
+So it is a row of the sender's authority pair and of no other pair. The fold
+reads that pair as two rows: its greatest revocation `R` and its greatest
+identity-signed withdrawal `W`, each by stamp and then identity. `W` makes
+the pair inert when it outranks `R`, a revocation winning a tie as in any
+pair, and one of these holds:
+
+- **(a)** `W` is an authority row at this fold: it names the head and
+  verifies under the head's `ID_S_pub`; or
+- **(b)** `R` is not an authority row at this fold, and `W` names the
+  identity `R` names. The chain has moved past both, so `R` folds as an
+  ordinary claim of its sender, and `W`, carried by the same sender,
+  withdraws it under ADR-0056's own rule.
+
+Anything else leaves `R` live. Unlike an ordinary pair, the compaction keeps
+both `R` and `W` of an authority pair, because whether `W` counts depends on
+the head and the head can move after the compaction ran. It deletes `W` too
+once `R` outranks it, since no head can then make it count. That bounds the
+pair at two rows, and keeps the fold the same function of the full ledger as
+of the compacted one.
+
+**The carry-forward.** §5 re-signs only the authority pairs the fold reads as
+live, so a rotation does not re-sign a withdrawn one. Clause (b) is what keeps
+the withdrawn pair inert after the rotation: its revocation and its
+withdrawal both name the retired identity. Without (b), the retired
+revocation would fold back as an ordinary revocation from the holder, and
+every rotation would undo every identity-signed withdrawal.
+
+**The command.** On the holder of the head's `ID_S_priv`,
+`Command::WithdrawRevocation` signs this op when its own authority pair is
+live, beside the ordinary withdrawal when its ordinary pair is live too.
+It applies §7's rule: it signs only once every device that could drop the
+op advertises the feature, and requires the feature first. Until then it
+withdraws an ordinary claim alone and reports the device still claimed. It
+refuses, naming the devices to update, when the authority claim is the
+only one it holds. A device that does not hold the head's key reports
+the claim as not its own. `DeviceRow::withdrawable` counts the authority
+claim on the holder.
+
+**Threat analysis.** The rule is that only the identity in force withdraws an
+authority revocation, and only its own. Each way around that rule is refused
+as follows:
+
+- **A device-signed withdrawal.** A `device_revoke_withdraw` names no identity,
+  so it is a row of its sender's ordinary pair and never reaches an authority
+  pair. A device that holds no identity key, the holder's own device included
+  once it has lost the key, cannot withdraw an authority row at all.
+- **A forged or failed signature.** The claim is rebuilt from the row and
+  checked under the head's `ID_S_pub`. A row that fails withdraws nothing an
+  authority row holds: (a) fails, and (b) requires `R` itself not to be an
+  authority row. The compaction cannot be used to drop `R` behind such a
+  withdrawal, because it keeps `R` beside `W`.
+- **A rotated-away identity.** This is the threat a rotation exists to
+  retire. Whoever holds a retired `ID_S_priv` signs a withdrawal that is not
+  an authority row at the new head, so (a) fails. The revocation it would
+  withdraw is the carry-forward's row under the successor, which is an
+  authority row, so (b) fails as well. Pinned by
+  `a_withdrawal_signed_by_a_retired_identity_is_refused`.
+- **A lifted or re-dated signature.** The claim covers the envelope's sender
+  and HLC, so a signature moved into another device's op, or onto another
+  stamp, does not verify. A withdrawal from any sender lands only in that
+  sender's own pair, and only the device whose key signed the envelope can
+  write to that pair.
+- **The identity reaching an ordinary row.** The op is stored in the
+  authority pair, so it cannot withdraw a revocation a device made. That is
+  the third-party un-revoke ADR-0056 §Alternatives (b) rejects.
+- **A revocation's signature used as a withdrawal's.** The two signatures use
+  different domain separators, so neither verifies as the other.
+
+**What it does not defend against.** The holder of the head's `ID_S_priv`
+can withdraw any authority revocation the identity made, including one made
+against a device that stole a copy of the key. That is §5's creator residual,
+and it is no wider here: the same key can already re-certify the device
+under a rotation. The remedy is also §5's: rotate the identity from the
+recovery code, leaving the stolen device out of the roster. Clause (b) gives
+a retired pair's own sender the ordinary author's power over a claim the
+chain has already reduced to that sender's ordinary claim, and nothing more.
+The read-bound release keeps ADR-0056 §4's three conditions unchanged.
+Condition (c) asks about the standing of the device that carried the
+withdrawal. So a withdrawal carried by a device the walk gates updates the
+register and leaves the bound in place, which fails closed.
 
 ### 7. The op waits for #324 and is emitted only behind a feature id
 
