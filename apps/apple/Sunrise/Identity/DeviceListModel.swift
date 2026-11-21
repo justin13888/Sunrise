@@ -99,8 +99,93 @@ final class DeviceListModel {
         /// words the two differently so a user can tell them apart. Never
         /// `true` without ``revoked``.
         let revokedByAuthority: Bool
+        /// **This** device holds a live ordinary removal of this row's device,
+        /// and may withdraw it (ADR-0056 §6).
+        ///
+        /// The only rows that offer "Withdraw removal". A removal another
+        /// device made is that device's to withdraw, and one this device
+        /// signed as the account identity is not withdrawn at all. Not implied
+        /// by ``revoked``: a removal of this device's that the account gates
+        /// is still this device's to withdraw.
+        let withdrawable: Bool
         /// Whether this row is the device the user is holding.
         let isThisDevice: Bool
+    }
+
+    /// What a finished withdrawal achieved (ADR-0056 §6).
+    ///
+    /// Only ``WithdrawalOutcomeKind/reinstated`` means the device is back, so
+    /// the copy is chosen here, where a test reads it, rather than in the view:
+    /// a client that printed "back" over `stillClaimed` or `repairRequired`
+    /// would tell a user a device was readmitted that the account still keeps
+    /// out.
+    struct Withdrawal: Equatable {
+        let nickname: String
+        let outcome: WithdrawalOutcomeKind
+        /// This device released the device's read bound, so it is sent keys
+        /// again.
+        let readBoundReleased: Bool
+        /// Keys sealed to the device, the ones minted while it was revoked
+        /// included.
+        let keysResent: Int
+        /// This device's unsent telling of the relay was cancelled. `false`
+        /// means the relay may already refuse the device, and nothing can tell
+        /// it otherwise until the relay's reinstatement lands
+        /// ([#1299](https://github.com/justin13888/Sunrise/issues/1299)).
+        let relayIntentCancelled: Bool
+
+        /// Read straight off what the command returned. A missing report is
+        /// read as `notAuthor`, the one outcome that claims nothing happened.
+        init(nickname: String, outcome: CommandOutcome) {
+            self.nickname = nickname
+            let report = outcome.withdrawal
+            self.outcome = report?.outcome ?? .notAuthor
+            readBoundReleased = report?.readBoundReleased ?? false
+            keysResent = Int(report?.keysResent ?? 0)
+            relayIntentCancelled = report?.relayIntentCancelled ?? false
+        }
+
+        /// The report, title first. `device` is the platform's word for the
+        /// device the user holds.
+        func lines(device: String) -> [String] {
+            let name = nickname.isEmpty ? L10n.Devices.unnamed : nickname
+            var out: [String]
+            switch outcome {
+            case .notAuthor:
+                // Nothing was emitted, so nothing below applies: no keys moved
+                // and the relay's telling was not touched.
+                return [
+                    L10n.Devices.withdrawNotAuthorTitle,
+                    L10n.Devices.withdrawNotAuthor(device: device, name: name)
+                ]
+            case .stillClaimed:
+                out = [
+                    L10n.Devices.withdrawnStillClaimedTitle(name: name),
+                    L10n.Devices.withdrawnStillClaimed
+                ]
+            case .repairRequired:
+                out = [
+                    L10n.Devices.withdrawnRepairTitle(name: name),
+                    L10n.Devices.withdrawnRepair(name: name)
+                ]
+            case .reinstated:
+                out = [L10n.Devices.withdrawnReinstated(name: name)]
+            }
+            if keysResent > 0 {
+                out.append(L10n.Devices.withdrawnKeys(count: keysResent, device: device))
+            }
+            // The CLI's rule: back on the register, yet this replica would not
+            // release the bound, because its own word does not count (§4 (c)).
+            if outcome == .reinstated, !readBoundReleased {
+                out.append(L10n.Devices.withdrawnStillBounded(device: device))
+            }
+            out.append(
+                relayIntentCancelled
+                    ? L10n.Devices.withdrawnRelayCancelled
+                    : L10n.Devices.withdrawnRelayTold(name: name)
+            )
+            return out
+        }
     }
 
     /// What a finished revocation actually achieved, in the two halves that
@@ -186,6 +271,8 @@ final class DeviceListModel {
     private(set) var holdsIdentityKey = false
     /// The last revocation's disclosure, until the user dismisses it.
     private(set) var lastRevocation: Revocation?
+    /// The last withdrawal's report, until the user dismisses it.
+    private(set) var lastWithdrawal: Withdrawal?
     private(set) var errorMessage: String?
     private(set) var busy = false
 
@@ -215,6 +302,7 @@ final class DeviceListModel {
                     current: row.current,
                     admittedAfterRevocation: row.admittedAfterRevocation,
                     revokedByAuthority: row.revokedByAuthority,
+                    withdrawable: row.withdrawable,
                     isThisDevice: row.deviceId == me
                 )
             }
@@ -266,6 +354,48 @@ final class DeviceListModel {
 
     func dismissRevocation() {
         lastRevocation = nil
+    }
+
+    /// Withdraw this device's own removal of `row` (ADR-0056), and keep what
+    /// the withdrawal did.
+    ///
+    /// Not recorded for undo: its inverse is a new removal, which the user
+    /// makes deliberately. A refusal is shown and nothing is reported as
+    /// withdrawn; the feature gate's refusal (§7) has no override, so it says
+    /// what to update rather than offering to go ahead.
+    func withdraw(_ row: DeviceRow) async {
+        busy = true
+        defer { busy = false }
+        do {
+            let outcome = try await bridge.submit(.withdrawRevocation(deviceId: row.id))
+            lastWithdrawal = Withdrawal(nickname: row.nickname, outcome: outcome)
+            errorMessage = nil
+            await refresh()
+        } catch {
+            lastWithdrawal = nil
+            errorMessage = Self.withdrawalRefusal(error)
+        }
+    }
+
+    /// What to show for a withdrawal the core refused.
+    ///
+    /// The feature gate's refusal crosses the seam as `BindingError.Core`
+    /// carrying `EngineError::FeatureUnsupportedByDevices`'s message — the
+    /// seam has no typed variant for it yet, so the device ids do not cross —
+    /// and is recognised by the feature id it names and the count it states.
+    /// Anything else, or that message reworded, falls back to the core's own
+    /// words: never to a claim that the removal was withdrawn.
+    nonisolated static func withdrawalRefusal(_ error: Error) -> String {
+        guard case let .Core(message)? = error as? BindingError,
+              message.contains("`core.revoke_withdraw`"),
+              let match = message.firstMatch(of: /needs (\d+) other device/),
+              let count = Int(match.1)
+        else { return error.localizedDescription }
+        return L10n.Devices.withdrawAwaitsUpdate(count: count)
+    }
+
+    func dismissWithdrawal() {
+        lastWithdrawal = nil
     }
 
     func dismissError() {

@@ -3637,7 +3637,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. This cannot be undone: to use this device again, pair it as a new device."
+            "value": "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, and once the relay has been told, which happens on the next sync, the device must be paired again as a new device to sync."
           }
         }
       }
@@ -3781,6 +3781,270 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Withdraw"
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw_awaits_update": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "NOT withdrawn: one device runs a version of Sunrise that would drop a withdrawal and keep the device removed for good. Update Sunrise on it, or remove it if you cannot, then try again."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "NOT withdrawn: %arg devices run a version of Sunrise that would drop a withdrawal and keep the device removed for good. Update Sunrise on them, or remove the ones you cannot update, then try again."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw_confirm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Withdraw removal"
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw_confirm_keys": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The device is sent every key this %1$@ holds, including the keys made while it was removed, so it can read what was written while it was out."
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw_confirm_others": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If another device also removed it, it stays removed until that device withdraws its removal too."
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw_confirm_relay": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If the relay has already been told of the removal, it goes on refusing the device: Sunrise cannot yet tell the relay to let it back in, so the device must be paired again as a new device to sync."
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw_confirm_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Withdraw your removal of %1$@?"
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw_confirm_title_unnamed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Withdraw your removal of this device?"
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw_ellipsis": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Withdraw removal…"
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw_not_author": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This %1$@ holds no removal of %2$@ it can withdraw. A removal another device made is withdrawn from that device, and one signed by the account identity cannot be withdrawn; otherwise pair %2$@ again as a new device."
+          }
+        }
+      }
+    },
+    "apple.devices.withdraw_not_author_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing was withdrawn."
+          }
+        }
+      }
+    },
+    "apple.devices.withdrawn_keys": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "This %2$@ sent it one key, including any made while it was removed: it can read what was written while it was out."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "This %2$@ sent it %arg keys, including those made while it was removed: it can read what was written while it was out."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.devices.withdrawn_reinstated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ is a current device again."
+          }
+        }
+      }
+    },
+    "apple.devices.withdrawn_relay_cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The relay had not been told of the removal yet, and that telling is cancelled."
+          }
+        }
+      }
+    },
+    "apple.devices.withdrawn_relay_told": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If the relay was already told of the removal, it still refuses %1$@, and Sunrise cannot yet tell it otherwise. If %1$@ cannot sync, pair it again as a new device."
+          }
+        }
+      }
+    },
+    "apple.devices.withdrawn_repair": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your removal is withdrawn, but it rotated the account identity away from %1$@, and a withdrawal cannot certify it again. Pair it again as a new device."
+          }
+        }
+      }
+    },
+    "apple.devices.withdrawn_repair_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ is NOT back."
+          }
+        }
+      }
+    },
+    "apple.devices.withdrawn_still_bounded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This %1$@ still sends it no keys: the account does not count this %1$@'s word on it, because this %1$@ has itself been removed."
+          }
+        }
+      }
+    },
+    "apple.devices.withdrawn_still_claimed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Another device removed it too. It stays removed until that device withdraws its removal as well."
+          }
+        }
+      }
+    },
+    "apple.devices.withdrawn_still_claimed_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Withdrew your removal of %1$@, but it is still removed."
           }
         }
       }

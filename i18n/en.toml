@@ -121,7 +121,10 @@ remove_confirm_title = "Remove {name}?"
 # Confirmation dialog title when the device has no nickname.
 remove_confirm_title_unnamed = "Remove this device?"
 # Confirmation dialog body. "Stream" is a product term (a list of tasks).
-remove_confirm_message = "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. This cannot be undone: to use this device again, pair it as a new device."
+# Must keep that only the removing device can take it back, and that the relay
+# being told (on the next sync) or the identity rotating makes re-pairing the
+# only way back (ADR-0056 §1, §4, §5).
+remove_confirm_message = "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, and once the relay has been told, which happens on the next sync, the device must be paired again as a new device to sync."
 # The four removal reasons, as confirmation dialog buttons.
 reason_lost = "I lost it"
 reason_stolen = "It was stolen"
@@ -165,6 +168,41 @@ authority_ordinary = "This removal comes from this {device}, not the account ide
 authority_awaits_update = "{count, plural, one {The account identity did NOT sign this removal, because one device runs a version of Sunrise too old to read a signed one. Until it is signed, a later change on the account can take it back off the list. Update Sunrise on that device; removals after that are signed.} other {The account identity did NOT sign this removal, because # devices run a version of Sunrise too old to read a signed one. Until it is signed, a later change on the account can take it back off the list. Update Sunrise on those devices; removals after that are signed.}}"
 # {count} earlier removals the account stopped recording; their ids follow.
 unwound = "{count, plural, one {The account no longer records a removal of one other device, because the device that removed it was itself removed. It is not back in — it receives no keys and reads nothing written since — but the account does not say it was removed. Remove it again from a device you still trust.} other {The account no longer records a removal of # other devices, because the device that removed them was itself removed. They are not back in — they receive no keys and read nothing written since — but the account does not say they were removed. Remove each of them again from a device you still trust.}}"
+# Swipe action on a row this device removed and may take back (ADR-0056 §6).
+# "Removal" is this surface's word for a revocation.
+withdraw = "Withdraw"
+# Context-menu item for the same; the ellipsis says a confirmation follows.
+withdraw_ellipsis = "Withdraw removal…"
+# Confirmation dialog title. {name} is the device's nickname.
+withdraw_confirm_title = "Withdraw your removal of {name}?"
+# Confirmation dialog title when the device has no nickname.
+withdraw_confirm_title_unnamed = "Withdraw your removal of this device?"
+# The confirmation's three warnings, in ADR-0056 §6's order. Each must keep its
+# consequence. {device} is the platform's word for this device ("Mac").
+withdraw_confirm_keys = "The device is sent every key this {device} holds, including the keys made while it was removed, so it can read what was written while it was out."
+withdraw_confirm_others = "If another device also removed it, it stays removed until that device withdraws its removal too."
+# Must keep that the relay cannot be told to readmit a device yet (#1299).
+withdraw_confirm_relay = "If the relay has already been told of the removal, it goes on refusing the device: Sunrise cannot yet tell the relay to let it back in, so the device must be paired again as a new device to sync."
+# Confirmation dialog: the button that withdraws.
+withdraw_confirm = "Withdraw removal"
+# The result of a withdrawal. Only `withdrawn_reinstated` may say the device is
+# back. {name} is the device's nickname.
+withdrawn_reinstated = "{name} is a current device again."
+withdrawn_still_claimed_title = "Withdrew your removal of {name}, but it is still removed."
+withdrawn_still_claimed = "Another device removed it too. It stays removed until that device withdraws its removal as well."
+withdrawn_repair_title = "{name} is NOT back."
+withdrawn_repair = "Your removal is withdrawn, but it rotated the account identity away from {name}, and a withdrawal cannot certify it again. Pair it again as a new device."
+withdraw_not_author_title = "Nothing was withdrawn."
+withdraw_not_author = "This {device} holds no removal of {name} it can withdraw. A removal another device made is withdrawn from that device, and one signed by the account identity cannot be withdrawn; otherwise pair {name} again as a new device."
+# {count} keys this device sealed to the reinstated device.
+withdrawn_keys = "{count, plural, one {This {device} sent it one key, including any made while it was removed: it can read what was written while it was out.} other {This {device} sent it # keys, including those made while it was removed: it can read what was written while it was out.}}"
+withdrawn_still_bounded = "This {device} still sends it no keys: the account does not count this {device}'s word on it, because this {device} has itself been removed."
+withdrawn_relay_cancelled = "The relay had not been told of the removal yet, and that telling is cancelled."
+# Must keep that nothing can tell the relay to readmit it yet (#1299).
+withdrawn_relay_told = "If the relay was already told of the removal, it still refuses {name}, and Sunrise cannot yet tell it otherwise. If {name} cannot sync, pair it again as a new device."
+# A withdrawal refused because {count} devices, possibly including the one
+# being reinstated, run a build that would drop it (ADR-0056 §7). No override.
+withdraw_awaits_update = "{count, plural, one {NOT withdrawn: one device runs a version of Sunrise that would drop a withdrawal and keep the device removed for good. Update Sunrise on it, or remove it if you cannot, then try again.} other {NOT withdrawn: # devices run a version of Sunrise that would drop a withdrawal and keep the device removed for good. Update Sunrise on them, or remove the ones you cannot update, then try again.}}"
 
 # Account, sign-in, pairing, recovery, onboarding and sync status.
 
