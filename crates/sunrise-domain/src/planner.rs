@@ -67,13 +67,19 @@ pub enum PlanIntent {
     MoveBlock {
         /// The block.
         block: EntityRef,
-        /// Its new start.
+        /// For a recurring block, the occurrence dragged and how far the
+        /// drag reaches; `None` for a block with no rule.
+        occurrence: Option<PlanOccurrence>,
+        /// Its new start: the occurrence's, for a recurring block.
         to_start: SunriseTime,
     },
     /// Drag a block's top or bottom edge.
     ResizeBlock {
         /// The block.
         block: EntityRef,
+        /// For a recurring block, the occurrence dragged and how far the
+        /// drag reaches; `None` for a block with no rule.
+        occurrence: Option<PlanOccurrence>,
         /// Which edge.
         edge: Edge,
         /// Where the edge lands.
@@ -106,6 +112,40 @@ pub enum PlanIntent {
         /// No slot starts before this.
         not_before: Option<SunriseTime>,
     },
+}
+
+/// One occurrence of a recurring block a gesture drags, and how far the
+/// change reaches (`docs/08-features/planner.md` §Recurring blocks).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanOccurrence {
+    /// The occurrence key, `YYYY-MM-DDTHH:MM`, as the calendar query gives
+    /// it.
+    pub key: String,
+    /// How far the change reaches.
+    pub scope: OccurrenceScope,
+}
+
+/// How far a gesture on one occurrence of a recurring block reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OccurrenceScope {
+    /// That occurrence alone: the commit writes its exception.
+    This,
+    /// Every occurrence: the commit moves the series' anchor by as much as
+    /// the gesture moved the occurrence.
+    All,
+}
+
+impl PlanIntent {
+    /// The occurrence a block gesture names, if any.
+    #[must_use]
+    pub const fn occurrence(&self) -> Option<&PlanOccurrence> {
+        match self {
+            Self::MoveBlock { occurrence, .. } | Self::ResizeBlock { occurrence, .. } => {
+                occurrence.as_ref()
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Where a moved task lands.
@@ -180,11 +220,15 @@ pub struct PlanBlocker {
     pub end: Option<Timestamp>,
 }
 
-/// A Sunrise block in the window.
+/// A Sunrise block in the window, or one occurrence of a recurring one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanBlock {
     /// The block.
     pub id: EntityRef,
+    /// The occurrence key, for one occurrence of a recurring block; `None`
+    /// for a block with no rule. An occurrence the intent does not name is
+    /// held fixed: rippling it would write an exception nobody asked for.
+    pub occurrence: Option<String>,
     /// Its start.
     pub starts_at: SunriseTime,
     /// Its end.
@@ -273,6 +317,9 @@ pub enum MoveRole {
 pub struct PlanMove {
     /// The task or block.
     pub item: EntityRef,
+    /// The occurrence that moves, for a recurring block the intent names;
+    /// `None` otherwise.
+    pub occurrence: Option<String>,
     /// Why.
     pub role: MoveRole,
     /// Where it was.
@@ -435,7 +482,9 @@ pub fn solve(inputs: &PlanInputs, intent: &PlanIntent) -> Result<PlanDiff, PlanI
                 }
             }
         }
-        PlanIntent::MoveBlock { block, to_start } => {
+        PlanIntent::MoveBlock {
+            block, to_start, ..
+        } => {
             let i = world.subject_index(*block)?;
             let s = resolve(to_start, &inputs.zone)?;
             let e = s + world.items[i].dur;
@@ -449,7 +498,9 @@ pub fn solve(inputs: &PlanInputs, intent: &PlanIntent) -> Result<PlanDiff, PlanI
                 },
             );
         }
-        PlanIntent::ResizeBlock { block, edge, to } => {
+        PlanIntent::ResizeBlock {
+            block, edge, to, ..
+        } => {
             let i = world.subject_index(*block)?;
             let at = resolve(to, &inputs.zone)?;
             let Pos::Slot(s, e) = world.items[i].before else {
@@ -634,10 +685,11 @@ pub(crate) fn to_ts(s: i64) -> Timestamp {
     Timestamp::from_second(s).unwrap_or(Timestamp::MAX)
 }
 
-/// `at`, written in the kind `template` is: an instant stays an instant, a
-/// zoned time keeps its zone, and a floating time stays floating in the
-/// reader's zone.
-fn retime(template: &SunriseTime, at: i64, zone: &TimeZone) -> SunriseTime {
+/// `at`, epoch seconds, written in the kind `template` is: an instant stays
+/// an instant, a zoned time keeps its zone, and a floating time stays
+/// floating in the reader's zone `zone`.
+#[must_use]
+pub fn retime(template: &SunriseTime, at: i64, zone: &TimeZone) -> SunriseTime {
     let ts = to_ts(at);
     match template {
         SunriseTime::Zoned { tz, .. } => {

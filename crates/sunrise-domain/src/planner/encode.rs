@@ -2,8 +2,9 @@
 //! id of the diff it returns.
 
 use super::{
-    Edge, PlanBase, PlanBlock, PlanBlocker, PlanDay, PlanDiff, PlanDiffId, PlanEvent, PlanInputs,
-    PlanIntent, PlanPosition, PlanTask, SlotTarget, UnscheduleKeep,
+    Edge, OccurrenceScope, PlanBase, PlanBlock, PlanBlocker, PlanDay, PlanDiff, PlanDiffId,
+    PlanEvent, PlanInputs, PlanIntent, PlanOccurrence, PlanPosition, PlanTask, SlotTarget,
+    UnscheduleKeep,
 };
 use crate::time::SunriseTime;
 use jiff::tz::TimeZone;
@@ -56,10 +57,14 @@ pub fn plan_base(inputs: &PlanInputs) -> PlanBase {
         f.u8(u8::from(t.in_progress) | (u8::from(t.bound) << 1));
     }
     let mut blocks: Vec<&PlanBlock> = inputs.blocks.iter().collect();
-    blocks.sort_by_key(|b| b.id);
+    blocks.sort_by(|a, b| {
+        a.id.cmp(&b.id)
+            .then_with(|| a.occurrence.cmp(&b.occurrence))
+    });
     f.u64(blocks.len() as u64);
     for b in blocks {
         f.id(b.id);
+        f.opt_str(b.occurrence.as_deref());
         f.time(&b.starts_at);
         f.time(&b.ends_at);
         f.u8(u8::from(b.fixed));
@@ -109,6 +114,28 @@ impl Feed {
     fn ts(&mut self, t: Timestamp) {
         self.i64(t.as_second());
         self.i64(i64::from(t.subsec_nanosecond()));
+    }
+    fn opt_str(&mut self, s: Option<&str>) {
+        match s {
+            Some(s) => {
+                self.u8(1);
+                self.str(s);
+            }
+            None => self.u8(0),
+        }
+    }
+    fn occurrence(&mut self, o: Option<&PlanOccurrence>) {
+        match o {
+            Some(o) => {
+                self.u8(1);
+                self.str(&o.key);
+                self.u8(match o.scope {
+                    OccurrenceScope::This => 0,
+                    OccurrenceScope::All => 1,
+                });
+            }
+            None => self.u8(0),
+        }
     }
     fn opt_ts(&mut self, t: Option<Timestamp>) {
         match t {
@@ -179,14 +206,25 @@ impl Feed {
                     }
                 }
             }
-            PlanIntent::MoveBlock { block, to_start } => {
+            PlanIntent::MoveBlock {
+                block,
+                occurrence,
+                to_start,
+            } => {
                 self.u8(1);
                 self.id(*block);
+                self.occurrence(occurrence.as_ref());
                 self.time(to_start);
             }
-            PlanIntent::ResizeBlock { block, edge, to } => {
+            PlanIntent::ResizeBlock {
+                block,
+                occurrence,
+                edge,
+                to,
+            } => {
                 self.u8(2);
                 self.id(*block);
+                self.occurrence(occurrence.as_ref());
                 self.u8(u8::from(*edge == Edge::End));
                 self.time(to);
             }
@@ -224,6 +262,7 @@ pub(super) fn diff_id(diff: &PlanDiff) -> PlanDiffId {
     f.u64(diff.moves.len() as u64);
     for m in &diff.moves {
         f.id(m.item);
+        f.opt_str(m.occurrence.as_deref());
         f.u8(m.role as u8);
         f.position(&m.before);
         f.position(&m.after);

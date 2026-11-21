@@ -15,7 +15,9 @@
 //! - `ripple`: a 90-minute block dropped onto three 30-minute tasks planted
 //!   at 12:00 (and the day's own tasks around them, so the ripple chains);
 //! - `cross_day`: a task dragged onto a busy hour of the next day;
-//! - `auto_place`: twenty unplanned tasks placed into a day's free time.
+//! - `auto_place`: twenty unplanned tasks placed into a day's free time;
+//! - `occurrence`: one event of a daily recurring stand-in dragged onto the
+//!   day's blocks, with four more series expanded into every day's inputs.
 
 #![allow(clippy::doc_markdown)]
 
@@ -25,8 +27,8 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use jiff::civil::{date, Date};
 use sunrise_bench::{open_vault, BenchVault, FIXED_NOW_MS};
 use sunrise_core::Command;
-use sunrise_domain::planner::{PlanIntent, SlotTarget};
-use sunrise_domain::{BlockDraft, SunriseTime, TaskDraft, TaskPatch};
+use sunrise_domain::planner::{OccurrenceScope, PlanIntent, PlanOccurrence, SlotTarget};
+use sunrise_domain::{BlockDraft, RRule, SunriseTime, TaskDraft, TaskPatch};
 use sunrise_id::EntityRef;
 
 /// The Monday after `FIXED_NOW_MS` (2025-06-15).
@@ -98,11 +100,45 @@ fn event(v: &mut BenchVault, title: String, start: SunriseTime, end: SunriseTime
         .entity
 }
 
+/// A recurring stand-in for an external event: a block an `.ics` import of
+/// an `RRULE` writes, which the planner expands into its occurrences.
+fn series(
+    v: &mut BenchVault,
+    title: String,
+    start: SunriseTime,
+    end: SunriseTime,
+    rule: &str,
+) -> EntityRef {
+    v.engine
+        .apply(
+            &mut v.db,
+            Command::ImportBlock {
+                source: "ics".into(),
+                uid: format!("{title}@bench.invalid"),
+                draft: BlockDraft {
+                    stream_id: None,
+                    starts_at: start,
+                    ends_at: end,
+                    title: Some(title),
+                    title_track_task: false,
+                    tasks: Vec::new(),
+                },
+                fields: sunrise_core::ImportedFields {
+                    rrule: Some(RRule::parse(rule).expect("rule")),
+                    ..sunrise_core::ImportedFields::default()
+                },
+            },
+        )
+        .expect("import series")
+        .entity
+}
+
 /// The gestures the bench measures, over the seeded week.
 struct Week {
     ripple: PlanIntent,
     cross_day: PlanIntent,
     auto_place: PlanIntent,
+    occurrence: PlanIntent,
 }
 
 fn seed(v: &mut BenchVault) -> Week {
@@ -123,6 +159,25 @@ fn seed(v: &mut BenchVault) -> Week {
         let day = i8::try_from(n % 7).expect("day");
         let start = 15 * 60 + (n / 7) * 60;
         event(v, format!("event {n}"), at(day, start), at(day, start + 30));
+    }
+    // Five recurring event stand-ins, read as occurrences on every day; the
+    // daily standup's day-1 event is the one the occurrence drag moves.
+    let standup = series(
+        v,
+        "standup".into(),
+        at(0, 8 * 60 + 30),
+        at(0, 8 * 60 + 45),
+        "FREQ=DAILY",
+    );
+    for n in 0..4i32 {
+        let start = 6 * 60 + n * 15;
+        series(
+            v,
+            format!("series {n}"),
+            at(0, start),
+            at(0, start + 15),
+            "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+        );
     }
     // 177 planned tasks over the week's evenings and gaps, the dependent
     // half of 20 pairs among them, and 20 unplanned for the auto-place.
@@ -152,6 +207,7 @@ fn seed(v: &mut BenchVault) -> Week {
     Week {
         ripple: PlanIntent::MoveBlock {
             block: dragged,
+            occurrence: None,
             to_start: at(0, 12 * 60),
         },
         cross_day: PlanIntent::MoveTask {
@@ -164,6 +220,18 @@ fn seed(v: &mut BenchVault) -> Week {
                 .checked_add(jiff::Span::new().days(3))
                 .expect("in range"),
             not_before: None,
+        },
+        occurrence: PlanIntent::MoveBlock {
+            block: standup,
+            occurrence: Some(PlanOccurrence {
+                key: format!(
+                    "{}T08:30",
+                    WEEK.checked_add(jiff::Span::new().days(1))
+                        .expect("in range")
+                ),
+                scope: OccurrenceScope::This,
+            }),
+            to_start: at(1, 9 * 60),
         },
     }
 }
@@ -185,6 +253,7 @@ fn bench_plan_preview(c: &mut Criterion) {
         ("ripple", &week.ripple),
         ("cross_day", &week.cross_day),
         ("auto_place", &week.auto_place),
+        ("occurrence", &week.occurrence),
     ] {
         group.bench_function(BenchmarkId::from_parameter(name), |b| {
             b.iter(|| {

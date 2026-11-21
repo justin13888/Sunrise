@@ -3,6 +3,7 @@ use crate::constraint::{ConstraintSeverity, TimeOfDayRange};
 use jiff::civil::{date, time, DateTime};
 
 mod constraints;
+mod occurrences;
 mod properties;
 
 const NY: &str = "America/New_York";
@@ -86,6 +87,7 @@ fn ptask(n: u8, start: Option<SunriseTime>, minutes: u64) -> PlanTask {
 fn pblock(n: u8, start: SunriseTime, end: SunriseTime, fixed: bool) -> PlanBlock {
     PlanBlock {
         id: bid(n),
+        occurrence: None,
         starts_at: start,
         ends_at: end,
         fixed,
@@ -162,6 +164,7 @@ fn a_moved_block_pushes_the_task_it_lands_on_to_the_nearest_free_slot() {
     let diff = solve(
         &i,
         &PlanIntent::MoveBlock {
+            occurrence: None,
             block: bid(1),
             to_start: at(D, 11, 0),
         },
@@ -202,6 +205,7 @@ fn a_drop_where_the_subject_already_is_changes_nothing() {
     let diff = solve(
         &i,
         &PlanIntent::MoveBlock {
+            occurrence: None,
             block: bid(1),
             to_start: at(D, 9, 0),
         },
@@ -322,6 +326,7 @@ fn nothing_is_placed_past_sleep_and_a_full_evening_unschedules() {
     let diff = solve(
         &i,
         &PlanIntent::MoveBlock {
+            occurrence: None,
             block: bid(1),
             to_start: at(D, 22, 0),
         },
@@ -347,6 +352,7 @@ fn a_sleep_past_midnight_is_part_of_the_day() {
     let diff = solve(
         &i,
         &PlanIntent::MoveBlock {
+            occurrence: None,
             block: bid(1),
             to_start: at(D, 23, 0),
         },
@@ -367,6 +373,7 @@ fn a_rippled_task_moves_before_rather_than_past_its_hard_deadline() {
     let diff = solve(
         &i,
         &PlanIntent::MoveBlock {
+            occurrence: None,
             block: bid(1),
             to_start: at(D, 11, 0),
         },
@@ -538,6 +545,7 @@ fn a_resize_that_inverts_the_block_is_blocking() {
     let diff = solve(
         &i,
         &PlanIntent::ResizeBlock {
+            occurrence: None,
             block: bid(1),
             edge: Edge::End,
             to: at(D, 8, 0),
@@ -556,6 +564,7 @@ fn a_resize_keeps_the_other_edge_and_ripples_the_task_it_now_covers() {
     let diff = solve(
         &i,
         &PlanIntent::ResizeBlock {
+            occurrence: None,
             block: bid(1),
             edge: Edge::End,
             to: at(D, 10, 30),
@@ -582,6 +591,7 @@ fn a_resize_keeps_the_other_edge_and_ripples_the_task_it_now_covers() {
     assert!(solve(
         &after,
         &PlanIntent::ResizeBlock {
+            occurrence: None,
             block: bid(1),
             edge: Edge::End,
             to: at(D, 10, 30),
@@ -595,6 +605,7 @@ fn a_resize_keeps_the_other_edge_and_ripples_the_task_it_now_covers() {
     let diff = solve(
         &i,
         &PlanIntent::ResizeBlock {
+            occurrence: None,
             block: bid(1),
             edge: Edge::Start,
             to: at(D, 8, 0),
@@ -656,6 +667,7 @@ fn a_past_item_is_fixed() {
     let diff = solve(
         &i,
         &PlanIntent::MoveBlock {
+            occurrence: None,
             block: bid(1),
             to_start: at(D, 12, 0),
         },

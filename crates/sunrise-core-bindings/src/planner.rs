@@ -9,8 +9,8 @@ use crate::dto::TimeValue;
 use crate::{BindingError, SunriseCore};
 use sunrise_core::{PlanCommitId, PlanError, PlanField};
 use sunrise_domain::planner::{
-    Edge, MoveRole, PlanDiff, PlanDiffId, PlanIntent, PlanPosition, PlanRule, PlanSeverity,
-    SlotTarget, UnscheduleKeep, UnscheduleReason,
+    Edge, MoveRole, OccurrenceScope, PlanDiff, PlanDiffId, PlanIntent, PlanOccurrence,
+    PlanPosition, PlanRule, PlanSeverity, SlotTarget, UnscheduleKeep, UnscheduleReason,
 };
 use sunrise_id::EntityRef;
 
@@ -38,6 +38,13 @@ impl From<PlanEdge> for Edge {
 pub enum UnscheduleKeep {
     Day,
     Nothing,
+}
+
+/// See [`sunrise_domain::planner::OccurrenceScope`].
+#[uniffi::remote(Enum)]
+pub enum OccurrenceScope {
+    This,
+    All,
 }
 
 /// See [`sunrise_domain::planner::MoveRole`].
@@ -96,17 +103,42 @@ pub enum PlanIntentItem {
         /// The day.
         day: jiff::civil::Date,
     },
-    /// Drag a block. Its duration is kept.
+    /// Drag a block with no rule. Its duration is kept.
     MoveBlock {
         /// The block.
         block: EntityRef,
         /// Its new start.
         to_start: TimeValue,
     },
-    /// Drag a block's top or bottom edge.
+    /// Drag a block with no rule by its top or bottom edge.
     ResizeBlock {
         /// The block.
         block: EntityRef,
+        /// Which edge.
+        edge: PlanEdge,
+        /// Where the edge lands.
+        to: TimeValue,
+    },
+    /// Drag one occurrence of a recurring block. Its duration is kept. The
+    /// diff's subject move is that occurrence.
+    MoveBlockOccurrence {
+        /// The block.
+        block: EntityRef,
+        /// The occurrence key, as the calendar query gave it.
+        key: String,
+        /// How far the drag reaches.
+        scope: OccurrenceScope,
+        /// The occurrence's new start.
+        to_start: TimeValue,
+    },
+    /// Drag one occurrence of a recurring block by its top or bottom edge.
+    ResizeBlockOccurrence {
+        /// The block.
+        block: EntityRef,
+        /// The occurrence key, as the calendar query gave it.
+        key: String,
+        /// How far the drag reaches.
+        scope: OccurrenceScope,
         /// Which edge.
         edge: PlanEdge,
         /// Where the edge lands.
@@ -152,10 +184,34 @@ impl From<PlanIntentItem> for PlanIntent {
             },
             PlanIntentItem::MoveBlock { block, to_start } => Self::MoveBlock {
                 block,
+                occurrence: None,
                 to_start: to_start.into(),
             },
             PlanIntentItem::ResizeBlock { block, edge, to } => Self::ResizeBlock {
                 block,
+                occurrence: None,
+                edge: edge.into(),
+                to: to.into(),
+            },
+            PlanIntentItem::MoveBlockOccurrence {
+                block,
+                key,
+                scope,
+                to_start,
+            } => Self::MoveBlock {
+                block,
+                occurrence: Some(PlanOccurrence { key, scope }),
+                to_start: to_start.into(),
+            },
+            PlanIntentItem::ResizeBlockOccurrence {
+                block,
+                key,
+                scope,
+                edge,
+                to,
+            } => Self::ResizeBlock {
+                block,
+                occurrence: Some(PlanOccurrence { key, scope }),
                 edge: edge.into(),
                 to: to.into(),
             },
@@ -207,7 +263,8 @@ impl From<&PlanPosition> for PlanPositionItem {
 }
 
 /// One item whose position changes: a ghost at `after`, an outline at
-/// `before`.
+/// `before`. For a recurring block the intent names, the subject move is the
+/// occurrence the intent names; no other occurrence ever moves.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PlanMoveItem {
     /// The task or block.
@@ -324,6 +381,8 @@ pub enum PlanField {
     PlannedAt,
     StartsAt,
     EndsAt,
+    OccurrenceStartsAt,
+    OccurrenceEndsAt,
 }
 
 /// A field an undo left as it is. See [`sunrise_core::PlanUndoSkip`].

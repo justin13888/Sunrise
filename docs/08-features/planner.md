@@ -20,9 +20,11 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 > (`apps/apple/Sunrise/Calendar/CalendarPlanner.swift`); the keyboard path is
 > `Keymap.planning`. Where that client stops short of the contract below:
 >
-> - One event of a repeating block is not planned: the planner reads a
->   block's series row, not its events, so the drag keeps its "which
->   events?" question and writes an ordinary edit
+> - One event of a repeating block is not planned by the client yet: the
+>   core reads a recurring block as its occurrences and plans a drag of one
+>   of them (§Recurring blocks), and UniFFI carries it as
+>   `MoveBlockOccurrence` and `ResizeBlockOccurrence`, but the Apple drag
+>   still asks "which events?" and writes an ordinary edit
 >   ([#1224](https://github.com/justin13888/Sunrise/issues/1224)).
 > - A task dropped on the grid is sized by a `MoveTask` preview (its
 >   estimate, or `default_task_duration_s`) and becomes a bound block; the
@@ -78,7 +80,8 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   The newest 64 commits keep their inverse (`PLAN_UNDO_HISTORY`), and an
 >   undone commit is forgotten, so a second undo is `PLAN_UNKNOWN`.
 >   `PlanUndoSkip::field` is a `PlanField` (`PlannedAt`, `StartsAt`,
->   `EndsAt`), and `restored` counts fields. An item deleted since the commit,
+>   `EndsAt`, and `OccurrenceStartsAt` and `OccurrenceEndsAt` for the
+>   exception a drag of one event wrote), and `restored` counts fields. An item deleted since the commit,
 >   or one its restored fields would leave invalid, is skipped whole. In a
 >   vault an older device shares, every write is a full-state op that writes
 >   every field, so an edit of any field of an item since the commit skips
@@ -145,10 +148,12 @@ pub enum PlanIntent {
     /// Drag a task onto the grid, or along it. `to` is the new start;
     /// the duration is the task's estimate, or `default_task_duration_s`.
     MoveTask { task: EntityRef, to: SlotTarget },
-    /// Drag a block. Its duration is kept.
-    MoveBlock { block: EntityRef, to_start: SunriseTime },
+    /// Drag a block. Its duration is kept. For a recurring block, `occurrence`
+    /// names the event dragged and how far the drag reaches, and `to_start`
+    /// is that event's; it is `None` for a block with no rule.
+    MoveBlock { block: EntityRef, occurrence: Option<PlanOccurrence>, to_start: SunriseTime },
     /// Drag a block's top or bottom edge.
-    ResizeBlock { block: EntityRef, edge: Edge, to: SunriseTime },
+    ResizeBlock { block: EntityRef, occurrence: Option<PlanOccurrence>, edge: Edge, to: SunriseTime },
     /// Move many tasks to a day (Upcoming drag, triage Defer, "Move to tomorrow").
     /// `place` = false keeps them date-only on that day; true slots them into
     /// free time as AutoPlace would.
@@ -168,6 +173,18 @@ pub enum SlotTarget {
 }
 
 pub enum Edge { Start, End }
+
+/// One event of a recurring block, by its occurrence key (the key the
+/// calendar query gives its row), and how far a drag of it reaches.
+pub struct PlanOccurrence { key: String, scope: OccurrenceScope }
+
+pub enum OccurrenceScope {
+    /// That event alone: the commit writes its exception.
+    This,
+    /// Every event: the commit moves the series' anchor by as much as the
+    /// event moved.
+    All,
+}
 
 pub enum UnscheduleKeep {
     /// Keep the civil date; drop the time of day. The item moves to the
@@ -295,7 +312,7 @@ pub struct PlanInputs {
     pub zone: TimeZone,                 // the reader's zone; resolves Floating and AllDay
     pub window: Vec<PlannerDay>,        // the planner days the intent touches, resolved
     pub tasks: Vec<PlanTask>,           // open tasks placed in, or targeted at, the window
-    pub blocks: Vec<PlanBlock>,         // Sunrise blocks in the window, recurrences expanded
+    pub blocks: Vec<PlanBlock>,         // Sunrise blocks in the window, recurrences expanded: one per occurrence, with its key
     pub events: Vec<PlanEvent>,         // external calendar events in the window
     pub snap_s: u32,                    // preference `planner.snap_s`; default 900 (15 min)
     pub default_task_duration_s: u32,   // preference `planner.default_task_duration_s`; default 1800
@@ -421,21 +438,63 @@ by one snap re-solves one day's movable set and no more.
    `Command::Triage` with `Defer` writes
    ([ADR-0047](../11-adr/0047-deadlines-and-lateness.md) §4). Rippled items get
    positions only. Nothing else is written, and `target_at` and `hard_due_at`
-   are never written. A recurring block is planned by its series anchor, and
-   a move of the anchor carries its exceptions and occurrence bindings with
+   are never written. A recurring block is written as §Recurring blocks
+   says: a drag of one event writes that occurrence's exception, and a drag
+   of every event moves the series anchor. A move of the anchor carries its
+   exceptions and occurrence bindings with
    the occurrences they named, through the same path an edit of the whole
    block takes (`time-blocks.md` §Recurring blocks). A move that would leave
    an exception applying to nothing is flagged by the preview, through the
    same check, as a Blocking `Invalid` violation the diff introduces on the
    block, so the diff is not committable and step 3 refuses it. The base
-   does not digest a block's rule, so a rule changed since the preview can
-   still strand one here: that commit is refused as `PLAN_INVALID`, and
-   nothing is written.
+   digests a block's occurrences in the window but not its rule, so a rule
+   changed since the preview can still strand one here: that commit is
+   refused as `PLAN_INVALID`, and nothing is written.
 5. Stores the inverse (each written field's prior value, and the stamp this
    commit wrote) with a commit record in the local database, and returns the
    commit's id.
 
 The staleness check (step 2) is a commit rule. It does not apply to undo.
+
+### Recurring blocks
+
+The planner reads a recurring block as its occurrences, as the calendar query
+expands them (`time-blocks.md` §Recurring blocks): each occurrence overlapping
+the window is one `PlanBlock` with its occurrence key, at the times its
+exception gives it, and a cancelled one is not there. A block intent on a
+recurring block names the event dragged, by key, and how far the drag
+reaches; one that names no occurrence, a key the rule does not produce, or a
+cancelled event is `PLAN_INVALID`, and so is an occurrence named on a block
+with no rule. The diff's subject move carries the occurrence key; nothing
+else that moves ever has one.
+
+- **This event.** Only that occurrence moves. Every other occurrence in the
+  window, of this series or another, is fixed: rippling one would write an
+  exception nobody asked for. The commit writes the occurrence's exception
+  (its `starts_at` and `ends_at`, over whatever else it overrides), as an
+  edit of one occurrence does, and leaves the series alone.
+- **All events.** The other occurrences of the series in the window move with
+  the dragged one, so none is in its way. The commit moves the anchor's start
+  and end by as much as the dragged event's moved, in the anchor's own kind,
+  as the calendar's edit of every event does. An event an exception already
+  moved on its own would stay where its exception puts it, so a drag of every
+  event from it is flagged as a Blocking `Invalid` violation.
+
+"This and following" is not planned yet: it splits the series into a new
+block, which the per-field inverse below cannot undo. The client keeps its
+edit for that answer.
+
+A drag of one event stores its inverse against the occurrence's entry in the
+`exceptions` map (`OccurrenceStartsAt`, `OccurrenceEndsAt`, the prior value
+`None` where the exception overrode nothing), and its undo writes the
+exception's start and end back. An exception the undo leaves overriding
+nothing, neither cancelled nor setting any field, is removed from the map, so
+the event is the rule's again: it is not exported as a `RECURRENCE-ID`
+override, and a later move of the anchor does not count it as an exception it
+could strand. A block's every write is full-state, so it
+renews every field's stamp; a planner commit or undo moves every kept
+commit's record of a field it renewed and left as it was on to the new stamp,
+so dragging a second event of a series keeps the first drag's undo.
 
 ### Undo
 
@@ -455,7 +514,10 @@ inverse **per field**, in one local transaction:
 - a recurring block's restored anchor carries its exceptions and occurrence
   bindings back with it, as the commit carried them; one it would leave
   applying to nothing skips the block whole, like a restore that would leave
-  it invalid.
+  it invalid;
+- a drag of one event restores that occurrence's exception's start and end;
+  an exception gone or cancelled since skips them, and one the restore would
+  leave ending before it starts skips the block whole.
 
 Undos of successive commits on one item restore newest-first. Undoing the
 newer commit writes the field back to the older commit's value, and the older
@@ -517,8 +579,9 @@ for the typical week defined in
 §Planner preview (200 open tasks, 60 blocks, 40 external events, 20
 dependencies). The bench `plan_preview` in `sunrise-bench` measures a
 single-block move dropped onto three tasks (the ripple chains through the
-day's own tasks), a cross-day move, and an `AutoPlace` of 20 tasks over that
-fixture, and joins the baseline set; the measured figures are in
+day's own tasks), a cross-day move, an `AutoPlace` of 20 tasks, and a drag of
+one event of a daily recurring stand-in, over that fixture with five
+recurring stand-ins added, and joins the baseline set; the measured figures are in
 `performance-budgets.md` §Planner preview.
 
 ## Tests

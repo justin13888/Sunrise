@@ -28,6 +28,7 @@ async fn one_block(core: &Core) -> sunrise_id::EntityRef {
 
 fn move_to(block: sunrise_id::EntityRef, h: i8) -> PlanIntent {
     PlanIntent::MoveBlock {
+        occurrence: None,
         block,
         to_start: at(h),
     }
