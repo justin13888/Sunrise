@@ -28,7 +28,7 @@ use std::time::Duration;
 use super::{
     Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, IdentityChainPinned,
     KeyBundlePinned, NewDevice, NewTombstone, PinnedIdentityChain, PinnedKeyBundle, PinnedSnapshot,
-    Reinstatement, RetiredRecoveryBlob, Store, StoreError, StoreStats,
+    Reinstatement, RetiredRecoveryBlob, SignedBy, Store, StoreError, StoreStats,
 };
 use crate::auth::Subject;
 use crate::relay::{FrameHead, StreamKey};
@@ -167,7 +167,7 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        revoked_by_key: Option<&str>,
+        revoked_by: Option<SignedBy<'_>>,
         now_ms: u64,
     ) -> Result<usize, MetadataError>;
     /// [`Store::reinstate_devices_by_vault_id`].
@@ -175,7 +175,7 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        caller_key: &str,
+        caller: SignedBy<'_>,
     ) -> Result<Reinstatement, MetadataError>;
     /// [`Store::touch_device`].
     async fn touch_device(&self, device_id: &str, now_ms: u64) -> Result<(), MetadataError>;
@@ -501,14 +501,14 @@ impl MetadataStore for Store {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        revoked_by_key: Option<&str>,
+        revoked_by: Option<SignedBy<'_>>,
         now_ms: u64,
     ) -> Result<usize, MetadataError> {
         Ok(Self::revoke_devices_by_vault_id(
             self,
             account_id,
             vault_device_id,
-            revoked_by_key,
+            revoked_by,
             now_ms,
         )?)
     }
@@ -516,13 +516,13 @@ impl MetadataStore for Store {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        caller_key: &str,
+        caller: SignedBy<'_>,
     ) -> Result<Reinstatement, MetadataError> {
         Ok(Self::reinstate_devices_by_vault_id(
             self,
             account_id,
             vault_device_id,
-            caller_key,
+            caller,
         )?)
     }
     async fn touch_device(&self, device_id: &str, now_ms: u64) -> Result<(), MetadataError> {

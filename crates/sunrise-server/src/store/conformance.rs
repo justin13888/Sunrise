@@ -10,7 +10,7 @@ use std::time::Duration;
 use super::{
     Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, IdentityChainPinned,
     KeyBundlePinned, MetadataError, MetadataStore, NewDevice, NewTombstone, PinnedIdentityChain,
-    PinnedKeyBundle, PinnedSnapshot, Reinstatement, RetiredRecoveryBlob, StoreStats,
+    PinnedKeyBundle, PinnedSnapshot, Reinstatement, RetiredRecoveryBlob, SignedBy, StoreStats,
 };
 use crate::account_ns::account_key;
 use crate::auth::Subject;
@@ -119,7 +119,7 @@ impl MetadataStore for Unreachable {
         &self,
         _: &str,
         _: &str,
-        _: Option<&str>,
+        _: Option<SignedBy<'_>>,
         _: u64,
     ) -> Result<usize, MetadataError> {
         Err(down())
@@ -128,7 +128,7 @@ impl MetadataStore for Unreachable {
         &self,
         _: &str,
         _: &str,
-        _: &str,
+        _: SignedBy<'_>,
     ) -> Result<Reinstatement, MetadataError> {
         Err(down())
     }
@@ -320,6 +320,7 @@ pub(crate) async fn run(store: &dyn MetadataStore) {
     revocation_is_atomic_and_scoped(store).await;
     reinstatement::only_the_recorded_revoker_reinstates(store).await;
     reinstatement::an_unrecorded_revoke_cannot_be_reinstated(store).await;
+    reinstatement::a_reinstatement_signed_before_the_revoke_changes_nothing(store).await;
     relay_log_is_ordered_and_deduplicated(store).await;
     the_size_bound_evicts_oldest_first(store).await;
     the_blob_ledger_sums_what_is_readable(store).await;

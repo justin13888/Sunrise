@@ -5,10 +5,20 @@
 //! the relay id route.
 
 use super::{subject, NOW};
-use crate::store::{MetadataError, MetadataStore, NewDevice, Reinstatement};
+use crate::store::{MetadataError, MetadataStore, NewDevice, Reinstatement, SignedBy};
 
 const PHONE: &str = "01J8ZQ7X9K3M5N7P9R1T3V5W7Y";
 const TABLET: &str = "01J8ZQ7X9K3M5N7P9R1T3V5W82";
+const LAPTOP: &str = "01J8ZQ7X9K3M5N7P9R1T3V5W80";
+
+/// The `Date` a revoke is signed under, and one a second later, both on the
+/// signing device's clock and whole seconds as the header carries them.
+const SIGNED: u64 = 1_800_000_000_000;
+const LATER: u64 = SIGNED + 1_000;
+
+fn by(key: &str, at_ms: u64) -> SignedBy<'_> {
+    SignedBy { key, at_ms }
+}
 
 fn device(nickname: &str, vault_device_id: &str) -> NewDevice {
     NewDevice {
@@ -49,7 +59,7 @@ pub(super) async fn only_the_recorded_revoker_reinstates(store: &dyn MetadataSto
     assert!(
         matches!(
             store
-                .reinstate_devices_by_vault_id(account, PHONE, laptop)
+                .reinstate_devices_by_vault_id(account, PHONE, by(laptop, LATER))
                 .await,
             Ok(Reinstatement::AlreadyActive)
         ),
@@ -58,7 +68,7 @@ pub(super) async fn only_the_recorded_revoker_reinstates(store: &dyn MetadataSto
 
     assert_eq!(
         store
-            .revoke_devices_by_vault_id(account, PHONE, Some(laptop), NOW + 1)
+            .revoke_devices_by_vault_id(account, PHONE, Some(by(laptop, SIGNED)), NOW + 1)
             .await
             .unwrap(),
         2
@@ -66,7 +76,7 @@ pub(super) async fn only_the_recorded_revoker_reinstates(store: &dyn MetadataSto
     assert!(
         matches!(
             store
-                .reinstate_devices_by_vault_id(account, PHONE, desktop)
+                .reinstate_devices_by_vault_id(account, PHONE, by(desktop, LATER))
                 .await,
             Ok(Reinstatement::NotRevoker)
         ),
@@ -75,7 +85,7 @@ pub(super) async fn only_the_recorded_revoker_reinstates(store: &dyn MetadataSto
     assert!(
         matches!(
             store
-                .reinstate_devices_by_vault_id(&bob.account_id, PHONE, laptop)
+                .reinstate_devices_by_vault_id(&bob.account_id, PHONE, by(laptop, LATER))
                 .await,
             Err(MetadataError::NotFound)
         ),
@@ -89,7 +99,7 @@ pub(super) async fn only_the_recorded_revoker_reinstates(store: &dyn MetadataSto
 
     assert!(matches!(
         store
-            .reinstate_devices_by_vault_id(account, PHONE, laptop)
+            .reinstate_devices_by_vault_id(account, PHONE, by(laptop, LATER))
             .await,
         Ok(Reinstatement::Reinstated(2))
     ));
@@ -109,7 +119,7 @@ pub(super) async fn only_the_recorded_revoker_reinstates(store: &dyn MetadataSto
     assert!(
         matches!(
             store
-                .reinstate_devices_by_vault_id(account, PHONE, laptop)
+                .reinstate_devices_by_vault_id(account, PHONE, by(laptop, LATER))
                 .await,
             Ok(Reinstatement::AlreadyActive)
         ),
@@ -119,12 +129,12 @@ pub(super) async fn only_the_recorded_revoker_reinstates(store: &dyn MetadataSto
     // The revoker is cleared on reinstatement, so a later revoke records its
     // own author and the earlier one no longer speaks for the rows.
     store
-        .revoke_devices_by_vault_id(account, PHONE, Some(desktop), NOW + 2)
+        .revoke_devices_by_vault_id(account, PHONE, Some(by(desktop, SIGNED)), NOW + 2)
         .await
         .unwrap();
     assert!(matches!(
         store
-            .reinstate_devices_by_vault_id(account, PHONE, laptop)
+            .reinstate_devices_by_vault_id(account, PHONE, by(laptop, LATER))
             .await,
         Ok(Reinstatement::NotRevoker)
     ));
@@ -149,15 +159,115 @@ pub(super) async fn an_unrecorded_revoke_cannot_be_reinstated(store: &dyn Metada
         .unwrap();
     assert!(matches!(
         store
-            .reinstate_devices_by_vault_id(account, TABLET, laptop)
+            .reinstate_devices_by_vault_id(account, TABLET, by(laptop, LATER))
             .await,
         Ok(Reinstatement::NotRevoker)
     ));
 
     assert!(matches!(
         store
-            .reinstate_devices_by_vault_id(account, "01J8ZQ7X9K3M5N7P9R1T3V5W84", laptop)
+            .reinstate_devices_by_vault_id(account, "01J8ZQ7X9K3M5N7P9R1T3V5W84", by(laptop, LATER))
             .await,
         Err(MetadataError::NotFound)
     ));
+}
+
+/// A reinstatement must be signed after the revocation it undoes. One the
+/// revoker signed before revoking the device again, replayed inside the
+/// signature's window, changes nothing, and nor does one signed in the same
+/// second as the revoke; the same revoker signing later still succeeds.
+pub(super) async fn a_reinstatement_signed_before_the_revoke_changes_nothing(
+    store: &dyn MetadataStore,
+) {
+    let alice = store
+        .resolve_account(&subject("reinstate-replay"), true, NOW)
+        .await
+        .unwrap();
+    let account = alice.account_id.as_str();
+    let laptop = "key-laptop";
+    let first = store
+        .register_device(account, &device("laptop", LAPTOP), NOW)
+        .await
+        .unwrap();
+
+    // Revoked at SIGNED, reinstated at LATER: the request an eavesdropper
+    // captured.
+    store
+        .revoke_devices_by_vault_id(account, LAPTOP, Some(by(laptop, SIGNED)), NOW + 1)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .reinstate_devices_by_vault_id(account, LAPTOP, by(laptop, LATER))
+            .await,
+        Ok(Reinstatement::Reinstated(1))
+    ));
+
+    // The revoker revokes it again a second later, and a second row appears
+    // for the device before that, so a replay that reinstated only the older
+    // rows would still let the device back in.
+    let second = store
+        .register_device(account, &device("laptop", LAPTOP), NOW)
+        .await
+        .unwrap();
+    let again = LATER + 1_000;
+    store
+        .revoke_devices_by_vault_id(account, LAPTOP, Some(by(laptop, again)), NOW + 2)
+        .await
+        .unwrap();
+
+    for replayed_at in [LATER, again] {
+        assert!(
+            matches!(
+                store
+                    .reinstate_devices_by_vault_id(account, LAPTOP, by(laptop, replayed_at))
+                    .await,
+                Ok(Reinstatement::PredatesRevocation)
+            ),
+            "a reinstatement signed at {replayed_at} does not undo a revoke signed at {again}"
+        );
+    }
+    for id in [&first.device_id, &second.device_id] {
+        assert!(
+            store.active_device(account, id).await.unwrap().is_none(),
+            "a refused replay left every row revoked"
+        );
+    }
+
+    assert!(matches!(
+        store
+            .reinstate_devices_by_vault_id(account, LAPTOP, by(laptop, again + 1_000))
+            .await,
+        Ok(Reinstatement::Reinstated(2))
+    ));
+
+    // All or nothing: rows revoked under different dates (the device
+    // registered a third row after the first two were revoked, and that one
+    // was revoked later) are not split by a reinstatement signed between them.
+    let t3 = again + 2_000;
+    let t4 = t3 + 2_000;
+    store
+        .revoke_devices_by_vault_id(account, LAPTOP, Some(by(laptop, t3)), NOW + 3)
+        .await
+        .unwrap();
+    store
+        .register_device(account, &device("laptop", LAPTOP), NOW)
+        .await
+        .unwrap();
+    store
+        .revoke_devices_by_vault_id(account, LAPTOP, Some(by(laptop, t4)), NOW + 4)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .reinstate_devices_by_vault_id(account, LAPTOP, by(laptop, t3 + 1_000))
+            .await,
+        Ok(Reinstatement::PredatesRevocation)
+    ));
+    for id in [&first.device_id, &second.device_id] {
+        assert!(
+            store.active_device(account, id).await.unwrap().is_none(),
+            "a reinstatement signed between two revokes reinstated neither"
+        );
+    }
 }

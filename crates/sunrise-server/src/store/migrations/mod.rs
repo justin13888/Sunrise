@@ -216,14 +216,18 @@ fn recovery_across_rotation(conn: &Connection) -> rusqlite::Result<()> {
 
 /// 0009: `devices.revoked_by_key`, the signing key (`device_pub_s`) of the
 /// device whose signed `DELETE /api/v1/devices/by-vault-id/{id}` revoked the
-/// row (ADR-0056 §5).
+/// row, and `devices.revoked_signed_at_ms`, the `Date` that request was signed
+/// under, which a reinstatement must be signed after (ADR-0056 §5).
 ///
 /// Nullable, and left `NULL` on every row already revoked: the relay did not
 /// record who revoked those, and a reinstatement is accepted only from the
 /// recorded key, so a row with none stays revoked. `devices::SCHEMA` is
-/// frozen as part of 0001, so the column exists only through this step.
+/// frozen as part of 0001, so the columns exist only through this step.
 fn devices_revoked_by_key(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch("ALTER TABLE devices ADD COLUMN revoked_by_key TEXT;")
+    conn.execute_batch(
+        "ALTER TABLE devices ADD COLUMN revoked_by_key TEXT;
+         ALTER TABLE devices ADD COLUMN revoked_signed_at_ms INTEGER;",
+    )
 }
 
 /// The database's `user_version`.

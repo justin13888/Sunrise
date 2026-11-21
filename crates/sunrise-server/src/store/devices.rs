@@ -13,7 +13,8 @@
 //!
 //! The table's later history — the `vault_device_id` column added to databases
 //! that predate it, and the index over it, in migration 0002, and the
-//! `revoked_by_key` column reinstatement reads, in migration 0009 — is in
+//! `revoked_by_key` and `revoked_signed_at_ms` columns reinstatement reads, in
+//! migration 0009 — is in
 //! [`super::migrations`], because every schema change now goes through that
 //! numbered list.
 
@@ -108,6 +109,22 @@ pub enum Reinstatement {
     /// another device revoked it, or nobody recorded did (an unsigned revoke,
     /// or one from before the relay recorded revokers).
     NotRevoker,
+    /// The caller did revoke the rows that are still revoked, but signed that
+    /// revocation no earlier than it signed this reinstatement. A replayed
+    /// reinstatement, captured before the revoker revoked the device again,
+    /// lands here and stays here. So does a genuine one signed in the same
+    /// second as its revoke, and that one succeeds when it is signed again.
+    PredatesRevocation,
+}
+
+/// A device's signature on a revoke or a reinstatement, as the relay verified
+/// it: the key that signed, and the `Date` the signature covered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignedBy<'a> {
+    /// The signing device's Ed25519 key (`device_pub_s`).
+    pub key: &'a str,
+    /// The signed `Date`, in milliseconds, on the signer's own clock.
+    pub at_ms: u64,
 }
 
 /// Fields `POST /api/v1/devices` supplies.
@@ -283,6 +300,12 @@ impl Store {
     /// can sign as it. `None`, for an unsigned request, records nobody, and
     /// such a row cannot be reinstated.
     ///
+    /// The signed `Date` is recorded beside the key (`revoked_signed_at_ms`),
+    /// and a reinstatement must be signed strictly later on the same device's
+    /// clock. That is what stops a captured reinstatement, replayed inside the
+    /// signature's ±300 s window, from undoing a revocation the revoker made
+    /// after it.
+    ///
     /// Returns [`StoreError::NotFound`] when no active row on this account
     /// carries that vault id — a second revoke, a device that never registered
     /// its vault id, and one aimed at another account's device all land here.
@@ -290,7 +313,7 @@ impl Store {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        revoked_by_key: Option<&str>,
+        revoked_by: Option<SignedBy<'_>>,
         now_ms: u64,
     ) -> Result<usize, StoreError> {
         let mut conn = self.tx("store.revoke_devices_by_vault_id");
@@ -309,13 +332,15 @@ impl Store {
             return Err(StoreError::NotFound);
         }
         tx.execute(
-            "UPDATE devices SET revoked = 1, revoked_at_ms = ?3, revoked_by_key = ?4 \
+            "UPDATE devices SET revoked = 1, revoked_at_ms = ?3, revoked_by_key = ?4, \
+             revoked_signed_at_ms = ?5 \
              WHERE account_id = ?1 AND vault_device_id = ?2 AND revoked = 0",
             params![
                 account_id,
                 vault_device_id,
                 i64::try_from(now_ms).unwrap_or(i64::MAX),
-                revoked_by_key,
+                revoked_by.map(|s| s.key),
+                revoked_by.map(|s| i64::try_from(s.at_ms).unwrap_or(i64::MAX)),
             ],
         )?;
         for id in &ids {
@@ -326,14 +351,24 @@ impl Store {
     }
 
     /// Reinstate the rows carrying `vault_device_id` that the device signing
-    /// with `caller_key` revoked, on that device's word (ADR-0056 §5).
+    /// as `caller` revoked, on that device's word (ADR-0056 §5).
     ///
-    /// Only a row whose recorded `revoked_by_key` is the caller's is touched: a
-    /// device that let any account device reinstate any other would be the
-    /// third-party un-revoke ADR-0056 §3 rejects. A reinstated row is active
-    /// again with `revoked_at_ms` and `revoked_by_key` cleared, so a later revoke
-    /// records its own author. Push tokens the revocation deleted are not
-    /// restored; the device files them again on its next session.
+    /// Only a row whose recorded `revoked_by_key` is the caller's key is
+    /// touched: a device that let any account device reinstate any other would
+    /// be the third-party un-revoke ADR-0056 §3 rejects. A reinstated row is
+    /// active again with `revoked_at_ms`, `revoked_by_key` and
+    /// `revoked_signed_at_ms` cleared, so a later revoke records its own
+    /// author. Push tokens the revocation deleted are not restored; the device
+    /// files them again on its next session.
+    ///
+    /// The reinstatement must be signed strictly after the revocation it
+    /// undoes, both on the caller's clock. Where any row the caller revoked
+    /// was revoked under a signed `Date` at or after `caller.at_ms`, nothing
+    /// changes and the answer is [`Reinstatement::PredatesRevocation`]: a
+    /// reinstatement captured before the revoker revoked the device again
+    /// cannot be replayed to undo that later revocation. All or nothing, so a
+    /// replay cannot reinstate the older rows and leave only the newest
+    /// revoked.
     ///
     /// The answer is idempotent: once the caller's rows are active, asking
     /// again is [`Reinstatement::AlreadyActive`] rather than a refusal, so a
@@ -345,14 +380,30 @@ impl Store {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        caller_key: &str,
+        caller: SignedBy<'_>,
     ) -> Result<Reinstatement, StoreError> {
         let mut conn = self.tx("store.reinstate_devices_by_vault_id");
         let tx = conn.transaction()?;
+        let signed_at = i64::try_from(caller.at_ms).unwrap_or(i64::MAX);
+        // A recorded key with no recorded date cannot occur (the revoke writes
+        // both), and is counted as later than any reinstatement rather than
+        // earlier, so the gap fails closed.
+        let later: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM devices \
+             WHERE account_id = ?1 AND vault_device_id = ?2 AND revoked = 1 \
+             AND revoked_by_key = ?3 \
+             AND (revoked_signed_at_ms IS NULL OR revoked_signed_at_ms >= ?4)",
+            params![account_id, vault_device_id, caller.key, signed_at],
+            |r| r.get(0),
+        )?;
+        if later > 0 {
+            return Ok(Reinstatement::PredatesRevocation);
+        }
         let changed = tx.execute(
-            "UPDATE devices SET revoked = 0, revoked_at_ms = NULL, revoked_by_key = NULL \
+            "UPDATE devices SET revoked = 0, revoked_at_ms = NULL, revoked_by_key = NULL, \
+             revoked_signed_at_ms = NULL \
              WHERE account_id = ?1 AND vault_device_id = ?2 AND revoked = 1 AND revoked_by_key = ?3",
-            params![account_id, vault_device_id, caller_key],
+            params![account_id, vault_device_id, caller.key],
         )?;
         let outcome = if changed > 0 {
             Reinstatement::Reinstated(changed)

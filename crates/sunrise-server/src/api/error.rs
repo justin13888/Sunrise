@@ -52,6 +52,12 @@ pub mod codes {
     /// Not retryable; the device is readmitted only by pairing it again
     /// (ADR-0056 §5).
     pub const DEVICE_NOT_REVOKER: &str = "DEVICE_NOT_REVOKER";
+    /// A reinstatement from the recorded revoker, signed under a `Date` no
+    /// later than the revocation it would undo: a replay of a reinstatement
+    /// captured before the device was revoked again, or a genuine one signed
+    /// in the same second as its revoke. Retryable: signed again, a genuine
+    /// one carries a later `Date` and succeeds (ADR-0056 §5).
+    pub const DEVICE_REINSTATE_PREDATES_REVOKE: &str = "DEVICE_REINSTATE_PREDATES_REVOKE";
     /// Malformed body or field.
     pub const VALIDATION_INVALID: &str = "VALIDATION_INVALID";
     /// A chunk's ciphertext BLAKE3 disagrees with the hash the client supplied.

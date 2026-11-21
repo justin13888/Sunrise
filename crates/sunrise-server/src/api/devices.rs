@@ -9,7 +9,7 @@
 use crate::api::error::{codes, ApiError};
 use crate::api::signed::{Signed, SignedBootstrap, SignedParts};
 use crate::state::ServerState;
-use crate::store::{Device, NewDevice, Reinstatement};
+use crate::store::{Device, NewDevice, Reinstatement, SignedBy};
 use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
 use kynos::extract::params::path::Path;
@@ -346,13 +346,23 @@ pub async fn revoke_by_vault_id(
     // key `reinstate_by_vault_id` will later take a reinstatement from. The
     // key and not the row id: a client re-registers on every start and gets a
     // new row id each time, while the key it signs with stays. An unsigned
-    // request records nobody, so what it revokes stays revoked.
+    // request records nobody, so what it revokes stays revoked. The signed
+    // `Date` is recorded beside the key: a reinstatement must be signed after
+    // it, so one captured before a later revoke cannot be replayed to undo it.
+    let revoked_by = caller
+        .device
+        .as_ref()
+        .zip(caller.signed_at_ms)
+        .map(|(device, at_ms)| SignedBy {
+            key: &device.device_pub_s,
+            at_ms,
+        });
     state
         .store
         .revoke_devices_by_vault_id(
             &caller.principal.account.account_id,
             &path.vault_device_id,
-            caller.device.as_ref().map(|d| d.device_pub_s.as_str()),
+            revoked_by,
             state.clock.now_ms(),
         )
         .await
@@ -385,6 +395,12 @@ pub async fn revoke_by_vault_id(
 ///   none by the caller: another device revoked it, or nobody recorded did
 ///   (an unsigned revoke, or one made before the relay recorded revokers).
 ///   Pairing the device again is the remedy.
+/// - `409 DEVICE_REINSTATE_PREDATES_REVOKE` when the caller revoked the rows
+///   but signed this request under a `Date` no later than that revoke. The
+///   signature carries no nonce and stays valid for ±300 s, so without this a
+///   captured reinstatement could be replayed to undo a revocation its revoker
+///   made after it. A genuine request refused here is signed again and
+///   succeeds once its `Date` passes the revoke's.
 /// - `404 DEVICE_NOT_FOUND` when no row on this account carries the id.
 ///
 /// Push tokens the revocation deleted are not restored; the device files them
@@ -406,7 +422,7 @@ pub async fn reinstate_by_vault_id(
     // Unsigned is refused before the store is asked: no row records a
     // revoker that is not a device, so the store would answer the same, but
     // the reason here is the request and not the row.
-    let Some(device) = caller.device.as_ref() else {
+    let (Some(device), Some(at_ms)) = (caller.device.as_ref(), caller.signed_at_ms) else {
         return Err(ApiError::forbidden(
             codes::DEVICE_NOT_REVOKER,
             "a reinstatement must be signed by the device that revoked it",
@@ -418,7 +434,10 @@ pub async fn reinstate_by_vault_id(
         .reinstate_devices_by_vault_id(
             &caller.principal.account.account_id,
             &path.vault_device_id,
-            &device.device_pub_s,
+            SignedBy {
+                key: &device.device_pub_s,
+                at_ms,
+            },
         )
         .await
         .map_err(|e| match e {
@@ -437,6 +456,10 @@ pub async fn reinstate_by_vault_id(
         Reinstatement::NotRevoker => Err(ApiError::forbidden(
             codes::DEVICE_NOT_REVOKER,
             "this device did not revoke that device, so it cannot reinstate it; pair it again",
+        )),
+        Reinstatement::PredatesRevocation => Err(ApiError::conflict(
+            codes::DEVICE_REINSTATE_PREDATES_REVOKE,
+            "this reinstatement was signed no later than the revocation it would undo; sign it again",
         )),
     }
 }

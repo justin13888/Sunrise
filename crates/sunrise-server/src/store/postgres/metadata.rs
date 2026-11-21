@@ -11,7 +11,7 @@ use crate::relay_log::{Appended, DurableCaps, Replay};
 use crate::store::{
     Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, IdentityChainPinned,
     KeyBundlePinned, MetadataError, MetadataStore, NewDevice, NewTombstone, PinnedIdentityChain,
-    PinnedKeyBundle, PinnedSnapshot, Reinstatement, RetiredRecoveryBlob, StoreStats,
+    PinnedKeyBundle, PinnedSnapshot, Reinstatement, RetiredRecoveryBlob, SignedBy, StoreStats,
 };
 
 #[async_trait::async_trait]
@@ -114,19 +114,19 @@ impl MetadataStore for PgStore {
         &self,
         account_id: &str,
         vault_device_id: &str,
-        revoked_by_key: Option<&str>,
+        revoked_by: Option<SignedBy<'_>>,
         now_ms: u64,
     ) -> Result<usize, MetadataError> {
-        Self::revoke_devices_by_vault_id(self, account_id, vault_device_id, revoked_by_key, now_ms)
+        Self::revoke_devices_by_vault_id(self, account_id, vault_device_id, revoked_by, now_ms)
             .await
     }
     async fn reinstate_devices_by_vault_id(
         &self,
         account_id: &str,
         vault_device_id: &str,
-        caller_key: &str,
+        caller: SignedBy<'_>,
     ) -> Result<Reinstatement, MetadataError> {
-        Self::reinstate_devices_by_vault_id(self, account_id, vault_device_id, caller_key).await
+        Self::reinstate_devices_by_vault_id(self, account_id, vault_device_id, caller).await
     }
     async fn touch_device(&self, device_id: &str, now_ms: u64) -> Result<(), MetadataError> {
         Self::touch_device(self, device_id, now_ms).await
