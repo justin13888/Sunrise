@@ -125,7 +125,7 @@ since_ms}`: `state` one of `late_hard`, `late_soft`, `stale`, `on_track`, and
 | `move <id>... before\|after <id>`, `move <id>... first\|last` | array of tasks: the stream's list in its new order |
 | `search [--kind <k>] [--all] <query>` | `{canonical, notices: [{code, start, end, detail}], groups: [{kind, total, hits: [{id, opens, title, snippet, task}]}]}`, groups in the core's fixed order; `title` and `snippet` are `{text, ranges}` with each range `[start, end]` in Unicode scalars, `snippet` `null` when the body did not match, and `task` the whole task for a task hit, else `null`. A script reads the tasks as `.groups[] \| select(.kind == "task") \| .hits[].task` |
 | `show <id>` | one task, with its `lateness` |
-| `triage`, `triage list` | array of tasks in the triage queue's order, each with its `lateness` |
+| `triage`, `triage list` | array of tasks in the triage queue's order, each with its `lateness` and `hard_violation`: `true` when its plan breaks a `hard` scheduling constraint in the reader's zone now, recomputed on this read, else `false` |
 | `upcoming [7\|14\|30]` | `{today, span_days, days: [{date, start_ms, end_ms, blocks, planned, due, targets}], no_date: [{stream, no_stream, tasks, total}]}`, `blocks` as in `blocks`, `planned`, `due` (hard deadlines), `targets` (soft ones) and `tasks` arrays of tasks |
 | `next` | array of `{task, unblocks}` |
 | `streams` | array of `{id, name, color, open_tasks, archived, paused, sort_order}` |
