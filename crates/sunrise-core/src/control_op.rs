@@ -236,6 +236,39 @@ pub struct DeviceRevokeWithdrawPayload {
     pub revoked_device_id: [u8; 16],
 }
 
+/// The account identity **withdraws its own revocation** of a device
+/// (ADR-0058 §6, `DOC_SCHEMA_V = 30`).
+///
+/// [`DeviceRevokeWithdrawPayload`] signed the way
+/// [`DeviceRevokeByIdentityPayload`] is: by the `ID_S_priv` of the identity it
+/// names, over [`sunrise_crypto::WithdrawalClaim`], which takes the sender and
+/// the HLC from the authenticated envelope. The ledger stores it as a row of
+/// the sender's **authority** pair, the pair its identity-signed revocations
+/// sit in, and the fold lets it withdraw that pair only while it verifies
+/// under the head of the identity chain. It never reaches a sender's ordinary
+/// pair, so the identity cannot withdraw a revocation a device made
+/// (ADR-0056 §Alternatives (b)).
+///
+/// A new op kind rather than an optional signature on
+/// `DeviceRevokeWithdraw`: an older build would ignore the field and fold the
+/// op as a withdrawal of the sender's ordinary pair, leaving the authority
+/// pair live while every newer build withdrew it (ADR-0056 §Alternatives
+/// (d)). It is emitted only into a vault that requires
+/// `core.revoke_withdraw_authority` ([`crate::feature`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRevokeWithdrawByIdentityPayload {
+    /// The device whose authority revocation by the sender is withdrawn.
+    #[serde(with = "serde_bytes")]
+    pub revoked_device_id: [u8; 16],
+    /// The identity that signs, `identity_id_from_pub(ID_S_pub)`.
+    #[serde(with = "serde_bytes")]
+    pub identity_id: [u8; 16],
+    /// `Ed25519(ID_S_priv, "sunrise.device_revoke_withdraw.identity.v1" ||
+    /// BLAKE3(canonical_cbor(claim)))`.
+    #[serde(with = "serde_bytes")]
+    pub identity_sig: [u8; 64],
+}
+
 /// One surviving device's re-issued [`DeviceCert`], signed by the **new**
 /// `ID_S_priv`.
 ///
@@ -440,6 +473,11 @@ sunrise_id::describe_value_types! {
         DeviceRevokeWithdrawPayload {
             revoked_device_id: [u8; 16];
         }
+        DeviceRevokeWithdrawByIdentityPayload {
+            revoked_device_id: [u8; 16];
+            identity_id: [u8; 16];
+            identity_sig: [u8; 64];
+        }
         RosterEntry {
             cert: Vec<u8>;
         }
@@ -539,6 +577,7 @@ op_payloads! {
     DeviceFeatures(DeviceFeaturesPayload),
     DeviceRevokeByIdentity(DeviceRevokeByIdentityPayload),
     DeviceRevokeWithdraw(DeviceRevokeWithdrawPayload),
+    DeviceRevokeWithdrawByIdentity(DeviceRevokeWithdrawByIdentityPayload),
 }
 
 #[cfg(test)]
@@ -625,6 +664,15 @@ mod tests {
             },
             &[],
         );
+        assert_wire_names(
+            "DeviceRevokeWithdrawByIdentityPayload",
+            &DeviceRevokeWithdrawByIdentityPayload {
+                revoked_device_id: [9u8; 16],
+                identity_id: [7u8; 16],
+                identity_sig: [8u8; 64],
+            },
+            &[],
+        );
         let t = a_transition();
         assert_wire_names("IdentityTransitionPayload", &t, &[]);
         assert_wire_names("RosterEntry", &t.roster[0], &[]);
@@ -678,6 +726,7 @@ mod tests {
             "DeviceRevokePayload",
             "DeviceRevokeByIdentityPayload",
             "DeviceRevokeWithdrawPayload",
+            "DeviceRevokeWithdrawByIdentityPayload",
             "IdentityTransitionPayload",
             "RosterEntry",
             "KeyShare",

@@ -102,7 +102,7 @@ The details are in
 |---|---|
 | The generator | `crates/sunrise-core/src/doc_schema.rs#canonical_schema`, test-only |
 | The canonical schema | `schemas/doc-schema/current.json` |
-| The build's registry, which the writer reads | `DOC_SCHEMA_FINGERPRINTS` in `crates/sunrise-cbor/src/version.rs` |
+| The build's registry, which the writer reads | `DOC_SCHEMA_FINGERPRINTS` in `crates/sunrise-cbor/src/version/fingerprint.rs` |
 | The committed registry | `schemas/doc-schema/registry.json`, version (as a decimal string) to lowercase hex |
 | The frozen entries | `DOC_SCHEMA_REGISTRY` in `crates/sunrise-crypto-test-vectors/src/protocol.rs` |
 | The writer | `crates/sunrise-crypto/src/op_envelope/mod.rs#encode_envelope` stamps field 13 |

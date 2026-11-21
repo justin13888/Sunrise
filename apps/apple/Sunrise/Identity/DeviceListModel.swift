@@ -383,11 +383,15 @@ final class DeviceListModel {
     /// carrying `EngineError::FeatureUnsupportedByDevices`'s message — the
     /// seam has no typed variant for it yet, so the device ids do not cross —
     /// and is recognised by the feature id it names and the count it states.
+    /// Either withdrawal feature can refuse: `core.revoke_withdraw` for a
+    /// device's own removal, `core.revoke_withdraw_authority` for one the
+    /// account identity made, which the identity key's holder may withdraw.
     /// Anything else, or that message reworded, falls back to the core's own
     /// words: never to a claim that the removal was withdrawn.
     nonisolated static func withdrawalRefusal(_ error: Error) -> String {
         guard case let .Core(message)? = error as? BindingError,
-              message.contains("`core.revoke_withdraw`"),
+              message.contains("`core.revoke_withdraw`")
+              || message.contains("`core.revoke_withdraw_authority`"),
               let match = message.firstMatch(of: /needs (\d+) other device/),
               let count = Int(match.1)
         else { return error.localizedDescription }

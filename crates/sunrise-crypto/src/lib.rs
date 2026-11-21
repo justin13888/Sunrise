@@ -71,7 +71,7 @@ pub use identity::{device_id_from_pub, identity_id_from_pub, DeviceId, IdentityI
 pub use identity_chain::{
     CarryWalk, ChainLink, IdentityChain, IdentityChainError, IDENTITY_CHAIN_FORMAT_V,
 };
-pub use identity_revocation::{RevocationClaim, RevocationClaimError};
+pub use identity_revocation::{RevocationClaim, RevocationClaimError, WithdrawalClaim};
 // `body_hash` is deliberately not re-exported at the crate root: `device_cert`
 // hashes a body too, and `sunrise_crypto::body_hash` would name neither. It is
 // reachable as `identity_transition::body_hash`.

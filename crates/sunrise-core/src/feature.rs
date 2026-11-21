@@ -96,6 +96,11 @@ pub const REVOKE_AUTHORITY_FEATURE: &str = "core.revoke_authority";
 /// a device withdraws its own revocation only in a vault that requires it.
 pub const REVOKE_WITHDRAW_FEATURE: &str = "core.revoke_withdraw";
 
+/// The id of the feature that carries identity-signed withdrawals
+/// (ADR-0058 §6): the holder of `ID_S_priv` withdraws its own authority
+/// revocation only in a vault that requires it.
+pub const REVOKE_WITHDRAW_AUTHORITY_FEATURE: &str = "core.revoke_withdraw_authority";
+
 /// Every feature this build supports.
 pub static FEATURES: &[Feature] = &[
     // The vault's Preferences entity (ADR-0050, issue #337). It has no op
@@ -281,6 +286,20 @@ pub static FEATURES: &[Feature] = &[
         field_op_kinds: &[],
         retyped: &[],
         since: 28,
+    },
+    // The account identity withdrawing its own authority revocation
+    // (ADR-0058 §6, issue #1239). A build that dropped one would keep the
+    // authority pair live, and so the device revoked, while every other build
+    // reinstated it, so it is gated exactly as `core.revoke_withdraw` is: the
+    // command refuses until every device that could drop it advertises it.
+    // Structural, for the same reason.
+    Feature {
+        id: REVOKE_WITHDRAW_AUTHORITY_FEATURE,
+        op_kinds: &["DeviceRevokeWithdrawByIdentity"],
+        fields: &[],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 30,
     },
 ];
 
