@@ -1165,8 +1165,14 @@ while kill -0 "$boot_pid" 2>/dev/null; do
 done
 wait "$boot_pid"
 echo "built in $((built_at - boot_started))s; waited $((SECONDS - built_at))s more for $ios_sim to finish booting"
+# Under a throwaway loopback relay, so `RestoreFromCodeUITests` runs instead
+# of skipping (#1242). The wrapper starts `sunrise-server` with a fresh data
+# directory, hands its URL to the runner as `TEST_RUNNER_SUNRISE_UI_TEST_RELAY`,
+# and stops it when `xcodebuild` ends, pass or fail; see the script for why
+# every run needs a relay of its own. CI sets `SUNRISE_UI_TEST_RELAY_BIN` to the
+# binary `apple-xcframework` built; here the wrapper builds it with cargo.
 status=0
-xcodebuild test-without-building \\
+../../tools/apple-ui-test-relay.sh xcodebuild test-without-building \\
   -project Sunrise.xcodeproj \\
   -scheme SunriseiOS \\
   -destination "platform=iOS Simulator,id=$udid,arch=arm64" \\
@@ -1220,7 +1226,10 @@ xcodegen generate --quiet
 # Its own scheme, not `-only-testing` on `Sunrise`: that flag cannot select
 # a testable the scheme has skipped, and asking it to made this task fail
 # before it built anything.
-xcodebuild test \\
+#
+# Under a throwaway loopback relay, as in `ios-app`, so
+# `RestoreFromCodeUITests` runs instead of skipping (#1242).
+../../tools/apple-ui-test-relay.sh xcodebuild test \\
   -project Sunrise.xcodeproj \\
   -scheme SunriseUITests \\
   -destination 'platform=macOS,arch=arm64' \\

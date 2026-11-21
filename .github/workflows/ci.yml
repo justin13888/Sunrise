@@ -395,6 +395,28 @@ jobs:
           # day that re-run fails on a expired artefact; a week covers it. The
           # repository is public, so Actions storage is not the constraint.
           retention-days: 7
+      # The relay `ios-app` runs `RestoreFromCodeUITests` against (#1242).
+      # Built here because this is the one Apple job with a Rust toolchain and
+      # the `apple` cache; `ios-app` compiles no Rust. `--build` is the same
+      # cargo build `mise run ios-app` does on a laptop, defined once in the
+      # script, and it prints the binary's path. Copied into `out/` so the
+      # artefact's root is the binary alone.
+      - name: Build the UI-test relay
+        run: |
+          relay=$(tools/apple-ui-test-relay.sh --build)
+          mkdir -p out/ui-test-relay
+          cp "$relay" out/ui-test-relay/sunrise-server
+      # A separate artefact from the framework, so `macos-app`, whose tests
+      # need no relay, does not download it. The zip round trip drops the
+      # executable bit; `ios-app` restores it.
+      - name: Upload the UI-test relay
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: apple-ui-test-relay
+          path: out/ui-test-relay/sunrise-server
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 7
 
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)
@@ -530,6 +552,11 @@ jobs:
     env:
       # As in `macos-app`, and for the reason spelled out there.
       SUNRISE_FFI_PREBUILT: "1"
+      # The relay `apple-xcframework` built, which `mise run ios-app` runs the
+      # UI tests against through `tools/apple-ui-test-relay.sh` (#1242).
+      # Relative to the repository root, where the script resolves it. Unset,
+      # the script would build one with cargo, which this job has no cache for.
+      SUNRISE_UI_TEST_RELAY_BIN: out/ui-test-relay/sunrise-server
     steps:
       # First, and before the runner does anything else. `!cancelled()` in the
       # `if:` above replaces the implicit `success()` that `needs:` would
@@ -553,6 +580,14 @@ jobs:
         with:
           name: apple-xcframework
           path: out
+      # The zip round trip drops the executable bit, so it is set again here.
+      - name: Download the UI-test relay
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: apple-ui-test-relay
+          path: out/ui-test-relay
+      - name: Make the UI-test relay executable
+        run: chmod +x "$SUNRISE_UI_TEST_RELAY_BIN"
       - name: Install mise and XcodeGen
         run: brew install --quiet mise xcodegen
       # mise refuses to run tasks from a config it has not been told to trust,
@@ -570,7 +605,7 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks | grep -i ios
           xcrun simctl list devices available | grep -i iphone
-          du -sh out/SunriseCore.xcframework out/swift
+          du -sh out/SunriseCore.xcframework out/swift "$SUNRISE_UI_TEST_RELAY_BIN"
       # One task, as with macOS. `mise run ios-app` runs `xcodegen generate`,
       # `swiftlint --strict`, and `xcodebuild build-for-testing` then
       # `test-without-building` against the iPhone 17 Pro simulator, booted
