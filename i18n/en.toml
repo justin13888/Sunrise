@@ -2073,8 +2073,10 @@ USAGE:
     sunrise triage <id>...       take tasks out of the Inbox and leave them
                                  with no stream and no date
     sunrise untriage <id>...     put triaged tasks back in the Inbox
-    sunrise triage [list]        the tasks that need a decision: late, hard
-                                 then soft, then stale, oldest first
+    sunrise triage [list]        the tasks that need a decision: a plan that
+                                 breaks a hard constraint first (flagged
+                                 hard_violation), then late, hard then soft,
+                                 then stale, oldest first
     sunrise triage defer <id>... <when>|next
                                  move their plan; `next` is the next free slot
     sunrise triage done <id>... [--on <when>]
