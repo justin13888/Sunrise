@@ -381,6 +381,8 @@ pub enum PlanField {
     PlannedAt,
     StartsAt,
     EndsAt,
+    OccurrenceStartsAt,
+    OccurrenceEndsAt,
 }
 
 /// A field an undo left as it is. See [`sunrise_core::PlanUndoSkip`].

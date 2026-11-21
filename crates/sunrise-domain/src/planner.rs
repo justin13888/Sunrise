@@ -685,10 +685,11 @@ pub(crate) fn to_ts(s: i64) -> Timestamp {
     Timestamp::from_second(s).unwrap_or(Timestamp::MAX)
 }
 
-/// `at`, written in the kind `template` is: an instant stays an instant, a
-/// zoned time keeps its zone, and a floating time stays floating in the
-/// reader's zone.
-fn retime(template: &SunriseTime, at: i64, zone: &TimeZone) -> SunriseTime {
+/// `at`, epoch seconds, written in the kind `template` is: an instant stays
+/// an instant, a zoned time keeps its zone, and a floating time stays
+/// floating in the reader's zone `zone`.
+#[must_use]
+pub fn retime(template: &SunriseTime, at: i64, zone: &TimeZone) -> SunriseTime {
     let ts = to_ts(at);
     match template {
         SunriseTime::Zoned { tz, .. } => {

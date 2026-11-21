@@ -4,9 +4,9 @@
 
 use sunrise_core::PlanField;
 use sunrise_core_bindings::dto::{BlockDraftIn, TaskEdit, TimeValue};
-use sunrise_core_bindings::planner::{PlanIntentItem, PlanPositionItem};
+use sunrise_core_bindings::planner::{PlanEdge, PlanIntentItem, PlanPositionItem};
 use sunrise_core_bindings::{BindingError, CoreCommand};
-use sunrise_domain::planner::MoveRole;
+use sunrise_domain::planner::{MoveRole, OccurrenceScope};
 
 mod support;
 use support::{draft, open_core};
@@ -92,6 +92,59 @@ async fn a_drag_previews_a_ripple_and_commits_it_once() {
         core.plan_undo(commit.commit_id),
         Err(BindingError::PlanUnknown)
     ));
+}
+
+/// No command creates a recurring block across the seam yet, so a drag of
+/// one occurrence is sent for a one-off block, which the core refuses as
+/// not repeating: the refusal shows the key and scope crossed, since the
+/// same drag without them previews.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_drag_of_one_occurrence_reaches_the_core() {
+    let (_dir, core) = open_core().await;
+    let block = core
+        .submit(CoreCommand::CreateBlock {
+            draft: BlockDraftIn {
+                stream_id: sunrise_core_bindings::vocab::inbox_stream_id(),
+                starts_at: at(9),
+                ends_at: at(10),
+                title: Some("Standup".into()),
+                title_track_task: false,
+                tasks: Vec::new(),
+            },
+        })
+        .await
+        .expect("block")
+        .entity;
+    let key = "2030-03-04T09:00".to_owned();
+    for scope in [OccurrenceScope::This, OccurrenceScope::All] {
+        let moved = core.plan_preview(PlanIntentItem::MoveBlockOccurrence {
+            block,
+            key: key.clone(),
+            scope,
+            to_start: at(11),
+        });
+        assert!(
+            matches!(&moved, Err(BindingError::PlanRefused(why)) if why.contains("does not repeat")),
+            "{moved:?}"
+        );
+        let resized = core.plan_preview(PlanIntentItem::ResizeBlockOccurrence {
+            block,
+            key: key.clone(),
+            scope,
+            edge: PlanEdge::End,
+            to: at(11),
+        });
+        assert!(
+            matches!(&resized, Err(BindingError::PlanRefused(why)) if why.contains("does not repeat")),
+            "{resized:?}"
+        );
+    }
+    assert!(core
+        .plan_preview(PlanIntentItem::MoveBlock {
+            block,
+            to_start: at(11),
+        })
+        .is_ok());
 }
 
 #[tokio::test(flavor = "multi_thread")]

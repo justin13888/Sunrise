@@ -488,9 +488,10 @@ fn an_intent_naming_nothing_is_invalid() {
 // ---- a recurring block (#1213, #1276) ----
 
 mod recurring {
-    use super::super::block_recurrence::{key, march, recur, scoped_update, weekly};
+    use super::super::block_recurrence::{at as on, key, march, recur, scoped_update, weekly};
     use super::*;
     use crate::feature::BLOCK_OCCURRENCE_TASKS_FEATURE;
+    use sunrise_domain::planner::{OccurrenceScope, PlanOccurrence};
     use sunrise_domain::{EditScope, OccurrenceBinding};
 
     type Row = (Option<String>, Option<String>, Vec<String>);
@@ -532,7 +533,13 @@ mod recurring {
         (id, task)
     }
 
-    /// Commit the planner's move of block `id` to `to_start`.
+    /// A drag of the series' first event, 2026-03-04, reaching `scope`.
+    fn first_event(scope: OccurrenceScope) -> PlanOccurrence {
+        PlanOccurrence { key: key(4), scope }
+    }
+
+    /// Commit the planner's move of every event of block `id`, dragged by
+    /// its first, to `to_start`.
     fn commit_move(
         e: &Engine,
         db: &mut Db,
@@ -540,7 +547,7 @@ mod recurring {
         to_start: SunriseTime,
     ) -> Result<crate::engine::PlanCommitId, PlanError> {
         let intent = PlanIntent::MoveBlock {
-            occurrence: None,
+            occurrence: Some(first_event(OccurrenceScope::All)),
             block: id,
             to_start,
         };
@@ -625,7 +632,7 @@ mod recurring {
 
     fn move_to_thursday(id: EntityRef) -> PlanIntent {
         PlanIntent::MoveBlock {
-            occurrence: None,
+            occurrence: Some(first_event(OccurrenceScope::All)),
             block: id,
             to_start: thursday(),
         }
@@ -691,5 +698,213 @@ mod recurring {
         ));
         assert_eq!(read_block_row(&db, id), before);
         assert_eq!(op_count(&db), ops, "a refused commit writes nothing");
+    }
+
+    // ---- a drag of one event (#1224) ----
+
+    /// A drag of the standup on 2026-03-`day` to `hour`:00, reaching `scope`.
+    fn drag(id: EntityRef, day: i8, scope: OccurrenceScope, hour: i8) -> PlanIntent {
+        PlanIntent::MoveBlock {
+            block: id,
+            occurrence: Some(PlanOccurrence {
+                key: key(day),
+                scope,
+            }),
+            to_start: on(day, hour),
+        }
+    }
+
+    /// A flexible block on 2026-03-`day` from 10:00 to 11:00.
+    fn flexible(e: &Engine, db: &mut Db, day: i8) -> EntityRef {
+        block_of_kind(e, db, on(day, 10), on(day, 11), None, None)
+    }
+
+    fn slot(db: &Db, id: EntityRef) -> (SunriseTime, SunriseTime) {
+        let b = read_block_row(db, id);
+        (b.starts_at, b.ends_at)
+    }
+
+    /// The weekly standup's event on the 11th dragged an hour later, this
+    /// event alone: the flexible block it lands on that day moves out of its
+    /// way, the one at the same time a week later does not, and the commit
+    /// writes the event's exception and leaves the series alone. One undo
+    /// restores both.
+    #[test]
+    fn a_dragged_event_ripples_its_day_alone_and_one_undo_restores_both() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let (here, next_week) = (flexible(&e, &mut db, 11), flexible(&e, &mut db, 18));
+        let series = read_block_row(&db, id);
+        let (here_was, next_was) = (slot(&db, here), slot(&db, next_week));
+
+        let intent = drag(id, 11, OccurrenceScope::This, 10);
+        let diff = e.plan_preview(&db, &intent, NOW_MS).unwrap();
+        assert!(diff.committable, "{diff:#?}");
+        let subject = &diff.moves[0];
+        assert_eq!(
+            (subject.item, subject.occurrence.as_deref()),
+            (id, Some(key(11).as_str()))
+        );
+        assert_eq!(
+            subject.after,
+            PlanPosition::Slot {
+                start: on(11, 10),
+                end: on(11, 11)
+            }
+        );
+        assert!(diff.moves.iter().any(|m| m.item == here), "{diff:#?}");
+        assert!(!diff.moves.iter().any(|m| m.item == next_week), "{diff:#?}");
+        assert_eq!(diff.moves.len(), 2, "{diff:#?}");
+
+        let (moved, commit) = e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
+        assert_eq!(moved, 2);
+        let written = read_block_row(&db, id);
+        assert_eq!(
+            (&written.starts_at, &written.ends_at, &written.rrule),
+            (&series.starts_at, &series.ends_at, &series.rrule),
+            "the series is not moved"
+        );
+        let x = &written.exceptions[&key(11)];
+        assert_eq!(
+            (x.starts_at.clone(), x.ends_at.clone()),
+            (Some(on(11, 10)), Some(on(11, 11)))
+        );
+        assert_eq!(grid(&e, &db, 11)[0].1.as_deref(), Some(key(11).as_str()));
+        assert_ne!(slot(&db, here), here_was);
+        assert_eq!(slot(&db, next_week), next_was);
+        assert_eq!(grid(&e, &db, 18).len(), 2, "next week's event stays");
+        assert!(e.plan_preview(&db, &intent, NOW_MS).unwrap().is_empty());
+
+        let undone = e.plan_undo(&mut db, commit).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (4, 0),
+            "{undone:?}"
+        );
+        let x = &read_block_row(&db, id).exceptions[&key(11)];
+        assert_eq!((x.starts_at.clone(), x.ends_at.clone()), (None, None));
+        assert_eq!(slot(&db, here), here_was);
+        let rows = day_rows(&e, &db, march(11));
+        let standup = rows.iter().find(|r| r.block.id == id).unwrap();
+        assert_eq!(standup.block.starts_at, on(11, 9));
+        e.assert_rebuild_identity(&db);
+    }
+
+    /// Two events of one series dragged one after the other each keep their
+    /// own undo: the second drag's write leaves the first one's exception as
+    /// it was, so undoing the first restores it.
+    #[test]
+    fn dragging_a_second_event_keeps_the_first_drags_undo() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let first = e
+            .plan_preview(&db, &drag(id, 11, OccurrenceScope::This, 10), NOW_MS)
+            .unwrap();
+        let first = e.plan_apply(&mut db, &first, NOW_MS).unwrap().1;
+        let second = e
+            .plan_preview(&db, &drag(id, 18, OccurrenceScope::This, 12), NOW_MS)
+            .unwrap();
+        let second = e.plan_apply(&mut db, &second, NOW_MS).unwrap().1;
+
+        let undone = e.plan_undo(&mut db, first).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (2, 0),
+            "{undone:?}"
+        );
+        let block = read_block_row(&db, id);
+        assert_eq!(block.exceptions[&key(11)].starts_at, None);
+        assert_eq!(block.exceptions[&key(18)].starts_at, Some(on(18, 12)));
+        let undone = e.plan_undo(&mut db, second).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (2, 0),
+            "{undone:?}"
+        );
+        assert_eq!(read_block_row(&db, id).exceptions[&key(18)].starts_at, None);
+    }
+
+    /// A drag of every event from a later one moves the series' anchor by
+    /// as much as that event moved.
+    #[test]
+    fn a_drag_of_every_event_moves_the_anchor_by_as_much() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let diff = e
+            .plan_preview(&db, &drag(id, 18, OccurrenceScope::All, 11), NOW_MS)
+            .unwrap();
+        assert!(diff.committable, "{diff:#?}");
+        let commit = e.plan_apply(&mut db, &diff, NOW_MS).unwrap().1;
+        assert_eq!(slot(&db, id), (on(4, 11), on(4, 12)));
+        assert!(read_block_row(&db, id).exceptions.is_empty());
+        assert_eq!(grid(&e, &db, 25)[0].1.as_deref(), Some("2026-03-25T11:00"));
+        let undone = e.plan_undo(&mut db, commit).unwrap();
+        assert_eq!(undone.restored, 2);
+        assert_eq!(slot(&db, id), (on(4, 9), on(4, 10)));
+    }
+
+    /// A recurring block is dragged by one of its events, which must be
+    /// there; a block with no rule has none to name.
+    #[test]
+    fn a_drag_names_an_event_the_series_has() {
+        let e = engine();
+        let mut db = db();
+        let (id, _) = standup(&e, &mut db);
+        let whole = PlanIntent::MoveBlock {
+            block: id,
+            occurrence: None,
+            to_start: on(4, 10),
+        };
+        let cancelled = drag(id, 11, OccurrenceScope::This, 10);
+        let missing = PlanIntent::MoveBlock {
+            block: id,
+            occurrence: Some(PlanOccurrence {
+                key: "2026-03-12T09:00".into(),
+                scope: OccurrenceScope::This,
+            }),
+            to_start: on(12, 10),
+        };
+        let plain = block(&e, &mut db, 9);
+        let keyed = PlanIntent::MoveBlock {
+            block: plain,
+            occurrence: Some(first_event(OccurrenceScope::This)),
+            to_start: at(10, 0),
+        };
+        for intent in [whole, cancelled, missing, keyed] {
+            assert!(
+                matches!(
+                    e.plan_preview(&db, &intent, NOW_MS),
+                    Err(PlanError::Invalid(_))
+                ),
+                "{intent:?}"
+            );
+        }
+    }
+
+    /// An event an exception already moved on its own cannot carry a drag
+    /// of every event: the anchor would move and the event would not. The
+    /// preview refuses the drop.
+    #[test]
+    fn a_drag_of_every_event_from_one_moved_alone_is_refused() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let alone = e
+            .plan_preview(&db, &drag(id, 11, OccurrenceScope::This, 10), NOW_MS)
+            .unwrap();
+        e.plan_apply(&mut db, &alone, NOW_MS).unwrap();
+        let mut every = drag(id, 11, OccurrenceScope::All, 12);
+        if let PlanIntent::MoveBlock { to_start, .. } = &mut every {
+            *to_start = on(11, 12);
+        }
+        let diff = e.plan_preview(&db, &every, NOW_MS).unwrap();
+        assert!(!diff.committable, "{diff:#?}");
+        assert!(diff
+            .violations
+            .iter()
+            .any(|v| v.item == id && v.rule == PlanRule::Invalid && v.introduced));
     }
 }
