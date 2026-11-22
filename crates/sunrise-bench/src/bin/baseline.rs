@@ -18,7 +18,10 @@
 //! it without a word (#366). Where a source spells a group's function names
 //! out, as a literal or a `BenchmarkId::from_parameter` over an array literal,
 //! each full `<group>/<function>` must be a row too; a `format!` name, which
-//! carries a size, must start one (#1309).
+//! carries a size, must start one, and every row must be one of those or
+//! start with one (#1309). A `format!` name that opens with a binding, such
+//! as `prime_hlc`'s `{arm}/{rows}`, starts with each string literal that
+//! binding's `let` holds.
 //!
 //! The platform key is derived from the build target (`linux-x86_64`,
 //! `darwin-aarch64`, …). Other platforms and the schema fields in
@@ -575,8 +578,9 @@ mod tests {
         /// literal, or a group's literal name, or its
         /// `BenchmarkId::from_parameter` over a loop's array literal.
         dirs: Vec<(String, String)>,
-        /// The literal start of a `format!` name, as `<group>/<prefix>`: the
-        /// rest is a size, so only the start is known here.
+        /// Each start a `format!` name can take, as `<group>/<prefix>` (see
+        /// [`format_starts`]): the rest is a size, so only the start is known
+        /// here.
         prefixes: Vec<(String, String)>,
     }
 
@@ -639,6 +643,49 @@ mod tests {
         panic!("{file}: `{ident}`'s array literal never closes")
     }
 
+    /// The literal starts a `format!` name `template` can take, up to its
+    /// first size placeholder. `before` is the source up to the call. A
+    /// template that opens with a placeholder, such as `{arm}/{rows}`, starts
+    /// with whatever its last `let arm = …;` before the call binds: each
+    /// string literal in that statement is one start, followed by the
+    /// template's literal text up to its next `{`. A start that is still
+    /// empty would match every row in the group, so it fails here.
+    fn format_starts(file: &str, before: &str, template: &str) -> Vec<String> {
+        let Some(rest) = template.strip_prefix('{') else {
+            assert!(!template.is_empty(), "{file}: a format! name is empty");
+            return vec![template[..template.find('{').unwrap_or(template.len())].to_string()];
+        };
+        let (ident, tail) = rest
+            .split_once('}')
+            .unwrap_or_else(|| panic!("{file}: format!(\"{template}\") never closes its `{{`"));
+        let tail = &tail[..tail.find('{').unwrap_or(tail.len())];
+        assert!(
+            !ident.is_empty() && ident.chars().all(|c| c.is_alphanumeric() || c == '_'),
+            "{file}: format!(\"{template}\") opens with `{{{ident}}}`, which names no binding \
+             this test can read"
+        );
+        let binding = format!("let {ident} = ");
+        let at = before.rfind(&binding).unwrap_or_else(|| {
+            panic!("{file}: format!(\"{template}\") opens with `{{{ident}}}`, bound by no `let`")
+        });
+        let statement = &before[at + binding.len()..];
+        let statement = &statement[..statement
+            .find(';')
+            .unwrap_or_else(|| panic!("{file}: `let {ident}` never ends"))];
+        let starts: Vec<String> = statement
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(|value| format!("{value}{tail}"))
+            .collect();
+        assert!(
+            !starts.is_empty() && starts.iter().all(|s| !s.is_empty()),
+            "{file}: format!(\"{template}\") opens with `{{{ident}}}`, and `let {ident}` binds \
+             no non-empty string literal, so its names have no start to hold a row to"
+        );
+        starts
+    }
+
     /// Read every `benchmark_group` and `bench_function` name in
     /// `benches/*.rs`. A file holds at most one group, and every
     /// `bench_function` in a file with one belongs to it. A name built in a
@@ -695,8 +742,9 @@ mod tests {
                 } else if let Some(inner) = arg.strip_prefix("format!(") {
                     let template = quoted(inner.trim_start())
                         .unwrap_or_else(|| panic!("{file}: a format! name with no literal"));
-                    let start = &template[..template.find('{').unwrap_or(template.len())];
-                    out.prefixes.push((file.clone(), in_group(start)));
+                    for start in format_starts(&file, &text[..at], template) {
+                        out.prefixes.push((file.clone(), in_group(&start)));
+                    }
                 } else if let Some(inner) = arg.strip_prefix("BenchmarkId::from_parameter(") {
                     let ident = inner[..inner.find(')').expect("closing paren")].trim();
                     for name in loop_names(&file, &text[..at], ident) {
@@ -754,13 +802,12 @@ mod tests {
                 "BENCHES row `{}` names no bench in benches/*.rs",
                 b.dir
             );
-            // A group the source names only in full must name each of its rows;
-            // one with a `format!` name writes directories by size, which
-            // only the prefixes above can hold.
+            // Each row must be a directory the source names in full, or one a
+            // `format!` name writes by size, which only its start can hold.
             let sized = src
                 .prefixes
                 .iter()
-                .any(|(_, p)| p.split('/').next() == Some(head(b)));
+                .any(|(_, p)| b.dir.starts_with(p.as_str()));
             assert!(
                 sized || src.dirs.iter().any(|(_, d)| d == b.dir),
                 "BENCHES row `{}` names no bench in benches/*.rs",
