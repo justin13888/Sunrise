@@ -88,20 +88,52 @@ final class UpcomingUITests: SunriseUITestCase {
     /// iPhone 17 Pro simulator, measured for #1234: a 0.3 s press lifts
     /// nothing, 0.4 s and 0.5 s lifted the row on every try (5 of 5 and 8 of
     /// 8), 0.6 s on 4 of 5, and 0.8 s or longer opens the menu every time. So
-    /// 0.5 s, the middle of that window. A press the menu takes instead
-    /// writes nothing and leaves the menu open, which is told apart from a
-    /// refused drop by the menu's own items, so that case alone is dismissed
-    /// and pressed once more, shorter. A refused drop is not retried.
+    /// 0.5 s, the middle of that window, first.
+    ///
+    /// That window was measured on a local simulator, and CI's virtualized
+    /// one is slower: there the 0.5 s press left the row under its day
+    /// (#1312). So every attempt that leaves `row` under its original day is
+    /// pressed again, each at a different point of the window, whether the
+    /// press lifted nothing, the menu took it, or the drag never reached the
+    /// target. A press the menu takes writes nothing and leaves the menu
+    /// open, so the menu is dismissed before the next press. Each attempt's
+    /// outcome is its own activity in the result bundle, so a failure shows
+    /// which of those CI hit.
+    ///
+    /// A refused drop, which is what this test exists to catch, also leaves
+    /// the row where it was. It is pressed again like the rest, and since a
+    /// refusal refuses every attempt, the last one still leaves the row under
+    /// its original day and the caller's assertion fails.
     private func drag(_ row: XCUIElement, onto target: XCUIElement) {
-        row.press(forDuration: 0.5, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 1.0)
+        let presses: [TimeInterval] = [0.5, 0.4, 0.6, 0.45]
         let menu = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Defer a week")).firstMatch
-        guard menu.exists else { return }
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()
-        XCTAssertTrue(
-            waitUntil(timeout: 5) { !menu.exists },
-            "the context menu the first press opened is dismissed before pressing again"
-        )
-        row.press(forDuration: 0.4, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 1.0)
+        for (attempt, press) in presses.enumerated() {
+            let moved = XCTContext.runActivity(
+                named: "Drag attempt \(attempt + 1) of \(presses.count), pressing \(press) s"
+            ) { _ -> Bool in
+                row.press(
+                    forDuration: press, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 1.0
+                )
+                if menu.exists {
+                    XCTContext.runActivity(named: "The context menu took the press; dismissing it") { _ in
+                        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()
+                        XCTAssertTrue(
+                            waitUntil(timeout: 5) { !menu.exists },
+                            "the context menu a press opened is dismissed before pressing again"
+                        )
+                    }
+                    return false
+                }
+                // The drop writes through the core before the row moves, so
+                // give it the time a round trip takes before calling it missed.
+                let left = waitUntil(timeout: 5) { !row.exists }
+                XCTContext.runActivity(
+                    named: left ? "The row left its original day" : "The row is still under its original day"
+                ) { _ in }
+                return left
+            }
+            if moved { return }
+        }
     }
 
     private func openUpcoming() {
