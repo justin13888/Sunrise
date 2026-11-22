@@ -2,8 +2,8 @@
 
 use sunrise_client_core::vocab::zone_or_utc;
 use sunrise_domain::{
-    Energy, NoteBody, RRule, Routine, RoutineCatchupPolicy, ScheduleConstraint, SunriseTime,
-    TaskTemplate,
+    Energy, NoteBody, RRule, Routine, RoutineCatchupPolicy, ScheduleConstraint, ShiftPolicy,
+    SunriseTime, TaskTemplate,
 };
 use sunrise_id::EntityRef;
 
@@ -142,6 +142,10 @@ pub struct RoutineItem {
     /// and future" split it off (#331); none for a routine never split off.
     #[uniffi(default = None)]
     pub split_from: Option<EntityRef>,
+    /// What the routine does while a context shift is in force (ADR-0073
+    /// §3). Always set by the core; absent reads as `pause`.
+    #[uniffi(default = None)]
+    pub shift_policy: Option<ShiftPolicy>,
 }
 
 impl From<&Routine> for RoutineItem {
@@ -172,6 +176,7 @@ impl From<&Routine> for RoutineItem {
             archived,
             deleted,
             split_from,
+            shift_policy,
             unknown: _,
         } = r;
         Self {
@@ -207,6 +212,7 @@ impl From<&Routine> for RoutineItem {
             paused_until_time: paused_until.as_ref().map(TimeValue::from),
             last_completed_at_time: last_completed_at.as_ref().map(TimeValue::from),
             split_from: *split_from,
+            shift_policy: Some(shift_policy.clone()),
         }
     }
 }
@@ -261,6 +267,7 @@ impl From<RoutineItem> for Routine {
             archived: r.archived,
             deleted: r.deleted,
             split_from: r.split_from,
+            shift_policy: r.shift_policy.unwrap_or_default(),
             unknown: sunrise_domain::Unknowns::new(),
         }
         .normalized()
@@ -393,6 +400,10 @@ pub struct RoutineEdit {
     /// How far the edit reaches (#331); the whole series when absent.
     #[uniffi(default = None)]
     pub scope: Option<EditScopeIn>,
+    /// New shift policy (ADR-0073 §3). Anything but `pause` needs every
+    /// device to support `routine.shift_policy`.
+    #[uniffi(default = None)]
+    pub shift_policy: Option<ShiftPolicy>,
 }
 
 /// How far a routine edit reaches; see [`sunrise_domain::EditScope`]. Each
@@ -451,6 +462,7 @@ impl From<RoutineEdit> for sunrise_domain::RoutinePatch {
             paused: e.paused,
             paused_until: patch_field(set_pause, e.clear_paused_until),
             archived: e.archived,
+            shift_policy: e.shift_policy,
         }
     }
 }

@@ -39,6 +39,7 @@ mod tests {
                 "\"preferences\"",
                 "\"savedview\"",
                 "\"place\"",
+                "\"shift\"",
             ]
         );
     }
@@ -51,7 +52,7 @@ mod tests {
             prefixes,
             [
                 "tsk_", "str_", "ctx_", "rtn_", "blk_", "not_", "att_", "prs_", "dev_", "idn_",
-                "fcs_", "rvw_", "prf_", "svw_", "plc_",
+                "fcs_", "rvw_", "prf_", "svw_", "plc_", "shf_",
             ]
         );
     }

@@ -3,6 +3,7 @@
 use crate::common::{Energy, NoteBody};
 use crate::constraint::{validate_list as validate_constraint_list, ScheduleConstraint};
 use crate::rrule::RRule;
+use crate::shift::ShiftPolicy;
 use crate::task::TaskDraft;
 use crate::time::SunriseTime;
 use crate::unknown::{UnknownVariant, Unknowns};
@@ -260,6 +261,14 @@ pub struct Routine {
     /// it uses the feature `routine.series`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split_from: Option<EntityRef>,
+    /// What this routine does while a context shift is in force
+    /// (ADR-0073 §3). Absent on the wire, and omitted when it is `pause`,
+    /// so every routine that never changes it encodes as it did before
+    /// `DOC_SCHEMA_V` 31; an op carrying another value uses the feature
+    /// `routine.shift_policy`. An unknown value reads as `pause` and is
+    /// written back verbatim.
+    #[serde(default, skip_serializing_if = "ShiftPolicy::is_default_pause")]
+    pub shift_policy: ShiftPolicy,
     /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
     /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
     /// `docs/10-cross-cutting/protocol-versioning.md` §7.
@@ -439,6 +448,10 @@ pub struct RoutinePatch {
     pub paused_until: Option<Option<SunriseTime>>,
     /// Archive / unarchive.
     pub archived: Option<bool>,
+    /// Replace the shift policy (ADR-0073 §3). Defaulted, so a patch
+    /// persisted before the field existed still reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shift_policy: Option<ShiftPolicy>,
 }
 
 impl RoutinePatch {
@@ -462,6 +475,16 @@ impl RoutinePatch {
             return Err(ValidationError::Field {
                 field: "routine.starts_at",
                 constraint: "floating_or_zoned",
+            });
+        }
+        if self
+            .shift_policy
+            .as_ref()
+            .is_some_and(ShiftPolicy::is_unknown)
+        {
+            return Err(ValidationError::Field {
+                field: "routine.shift_policy",
+                constraint: "known_policy",
             });
         }
         Ok(())

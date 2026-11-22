@@ -566,6 +566,8 @@ struct RoutinePatchDef {
     paused_until: Option<Option<SunriseTime>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     archived: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shift_policy: Option<sunrise_domain::ShiftPolicy>,
 }
 
 #[cfg(test)]

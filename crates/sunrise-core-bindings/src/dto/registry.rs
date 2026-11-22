@@ -60,10 +60,10 @@ impl Mirrored for Preferences {
     type Dto = PreferencesItem;
 }
 
-// The saved view's mirror lives in `saved_views.rs`, and the place's in
-// `places.rs`.
+// The saved view's mirror lives in `saved_views.rs`, the place's in
+// `places.rs`, and the shift's in `shifts.rs`.
 #[allow(unused_imports)]
-use sunrise_domain::{Place, SavedView};
+use sunrise_domain::{Place, SavedView, Shift};
 
 /// Requires [`Mirrored`] of every record of every entity that syncs.
 /// `Unsynced` entities reach no foreign caller; `Control` ones have no record.

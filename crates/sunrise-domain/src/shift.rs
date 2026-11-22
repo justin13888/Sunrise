@@ -29,10 +29,11 @@ use crate::routine_gen::{occurrence_task_id, ExpandError, Occurrence};
 use crate::streak::DerivedStreak;
 use crate::task::{Task, TaskState};
 use crate::time::SunriseTime;
-use crate::unknown::UnknownVariant;
+use crate::unknown::{UnknownVariant, Unknowns};
 use crate::validation::{validate_title, ValidationError};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -81,6 +82,14 @@ crate::unknown::lossy_enum!(ShiftPolicy, fallback = Pause, {
 });
 
 impl ShiftPolicy {
+    /// Whether this is the known `pause`, which a routine leaves off the
+    /// wire (`Routine::shift_policy`). An unknown policy, which reads as
+    /// `pause`, is not: it is written back verbatim.
+    #[must_use]
+    pub const fn is_default_pause(&self) -> bool {
+        matches!(self, Self::Pause)
+    }
+
     /// Whether the streak excuses an occurrence this policy holds back while
     /// a shift covers it: `pause` and `skip` hold it back, so missing it is
     /// not the user's miss.
@@ -91,24 +100,163 @@ impl ShiftPolicy {
 }
 
 /// A context shift the user started (ADR-0073 §1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// This is the vault's record (`shf_`, tag `shift`): how each field merges is
+/// declared in `sunrise_id::for_each_entity!`. Every field is its own
+/// register, written only by `Patch`; `deleted` is the tombstone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Shift {
+    /// The shift's reference, of kind [`EntityKind::Shift`].
+    pub id: EntityRef,
+    /// Creation time.
+    pub created_at: Timestamp,
+    /// Last-update time (merge-derived).
+    pub updated_at: Timestamp,
     /// What the user calls it ("Travel: Tokyo").
     pub name: String,
     /// When it starts: a recorded moment, so an instant.
     pub starts_at: Timestamp,
     /// When it ends, exclusive; `None` while it runs until ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ends_at: Option<Timestamp>,
     /// The destination's IANA zone, which a `shift_tz` routine re-anchors
     /// to; `None` when the shift does not move the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
     /// The destination place (`plc_`), if the user named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place: Option<EntityRef>,
     /// The streams the shift keeps primary.
+    #[serde(default)]
     pub primary_streams: BTreeSet<EntityRef>,
     /// The contexts the shift keeps primary: a task carrying one stays
     /// primary whatever its stream.
+    #[serde(default)]
     pub primary_contexts: BTreeSet<EntityRef>,
+    /// Tombstoned. A deleted shift is in force nowhere.
+    #[serde(default)]
+    pub deleted: bool,
+    /// Fields a newer build added, kept verbatim.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
+}
+
+/// A new shift. The core mints the id and stamps the times.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShiftDraft {
+    /// What the user calls it.
+    pub name: String,
+    /// When it starts; the core uses the moment of the command when `None`.
+    #[serde(default)]
+    pub starts_at: Option<Timestamp>,
+    /// When it ends, exclusive; `None` runs until ended.
+    #[serde(default)]
+    pub ends_at: Option<Timestamp>,
+    /// The destination's IANA zone.
+    #[serde(default)]
+    pub zone: Option<String>,
+    /// The destination place (`plc_`).
+    #[serde(default)]
+    pub place: Option<EntityRef>,
+    /// The streams the shift keeps primary.
+    #[serde(default)]
+    pub primary_streams: BTreeSet<EntityRef>,
+    /// The contexts the shift keeps primary.
+    #[serde(default)]
+    pub primary_contexts: BTreeSet<EntityRef>,
+}
+
+/// An edit of a shift: each `Some` writes its field, and `None` leaves it.
+/// `Some(None)` clears an optional field.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShiftPatch {
+    /// Rename it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Move its start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<Timestamp>,
+    /// Set or clear its end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<Option<Timestamp>>,
+    /// Set or clear its zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<Option<String>>,
+    /// Set or clear its place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<Option<EntityRef>>,
+    /// Replace the streams it keeps primary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_streams: Option<BTreeSet<EntityRef>>,
+    /// Replace the contexts it keeps primary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_contexts: Option<BTreeSet<EntityRef>>,
+}
+
+impl ShiftPatch {
+    /// Whether the patch names no field.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.starts_at.is_none()
+            && self.ends_at.is_none()
+            && self.zone.is_none()
+            && self.place.is_none()
+            && self.primary_streams.is_none()
+            && self.primary_contexts.is_none()
+    }
+
+    /// `shift` with this patch applied, the fields it does not name kept.
+    /// The result is what [`Shift::validate`] must accept before the edit is
+    /// written, since a new end is only valid against the start it lands on.
+    #[must_use]
+    pub fn applied_to(&self, shift: &Shift) -> Shift {
+        let mut s = shift.clone();
+        if let Some(n) = &self.name {
+            n.trim().clone_into(&mut s.name);
+        }
+        if let Some(v) = self.starts_at {
+            s.starts_at = v;
+        }
+        if let Some(v) = self.ends_at {
+            s.ends_at = v;
+        }
+        if let Some(v) = &self.zone {
+            s.zone.clone_from(v);
+        }
+        if let Some(v) = self.place {
+            s.place = v;
+        }
+        if let Some(v) = &self.primary_streams {
+            s.primary_streams.clone_from(v);
+        }
+        if let Some(v) = &self.primary_contexts {
+            s.primary_contexts.clone_from(v);
+        }
+        s
+    }
+}
+
+impl ShiftDraft {
+    /// The shift this draft writes as `id`, starting at its own start or
+    /// `now`, with its name trimmed.
+    #[must_use]
+    pub fn into_shift(self, id: EntityRef, now: Timestamp) -> Shift {
+        Shift {
+            id,
+            created_at: now,
+            updated_at: now,
+            name: self.name.trim().to_owned(),
+            starts_at: self.starts_at.unwrap_or(now),
+            ends_at: self.ends_at,
+            zone: self.zone,
+            place: self.place,
+            primary_streams: self.primary_streams,
+            primary_contexts: self.primary_contexts,
+            deleted: false,
+            unknown: Unknowns::new(),
+        }
+    }
 }
 
 impl Shift {
@@ -150,11 +298,11 @@ impl Shift {
         Ok(())
     }
 
-    /// Whether the shift is in force at `at`: at or after its start, and
-    /// before its end when it has one.
+    /// Whether the shift is in force at `at`: live, at or after its start,
+    /// and before its end when it has one.
     #[must_use]
     pub fn covers(&self, at: Timestamp) -> bool {
-        self.starts_at <= at && self.ends_at.is_none_or(|end| at < end)
+        !self.deleted && self.starts_at <= at && self.ends_at.is_none_or(|end| at < end)
     }
 
     /// Whether the shift focuses anything. A shift that names no stream and

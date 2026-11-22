@@ -68,6 +68,7 @@ impl RoutinePatch {
             && self.paused.is_none()
             && self.paused_until.is_none()
             && self.archived.is_none()
+            && self.shift_policy.is_none()
     }
 
     /// Apply the patch to `routine`, touching `updated_at` to `now`, and say
@@ -130,6 +131,9 @@ impl RoutinePatch {
         }
         if let Some(a) = self.archived {
             routine.archived = a;
+        }
+        if let Some(p) = self.shift_policy {
+            routine.shift_policy = p;
         }
         routine.updated_at = now;
         Ok(effect)
@@ -462,6 +466,7 @@ mod tests {
             streak_started_at: None,
             forgivenesses_in_window: 0,
             split_from: None,
+            shift_policy: crate::ShiftPolicy::Pause,
             streak_keys: vec!["2026-03-03T09:00".into(), "2026-03-08T09:00".into()],
             paused: false,
             paused_until: None,

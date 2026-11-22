@@ -26,8 +26,8 @@ use crate::{
     Context, Energy, FocusEnd, FocusKind, FocusStart, Interruption, InterruptionReason, Note,
     NoteBody, OccurrenceBinding, Person, Place, Preferences, RRule, ReviewSnapshot,
     ReviewSnapshotStream, ReviewTotals, Routine, RoutineCatchupPolicy, SavedView,
-    ScheduleConstraint, StreakRow, Stream, StreamColor, StreamReviewCadence, SunriseTime, Task,
-    TaskState, TaskTemplate, Unknowns, ViewFilter, ViewKind, ViewSort,
+    ScheduleConstraint, Shift, ShiftPolicy, StreakRow, Stream, StreamColor, StreamReviewCadence,
+    SunriseTime, Task, TaskState, TaskTemplate, Unknowns, ViewFilter, ViewKind, ViewSort,
 };
 #[allow(unused_imports)]
 use jiff::Timestamp;
@@ -406,6 +406,7 @@ mod tests {
                 paused_until: None,
                 archived: false,
                 deleted: false,
+                shift_policy: ShiftPolicy::Pause,
                 unknown: Unknowns::new(),
             },
             &[
@@ -417,6 +418,7 @@ mod tests {
                 "forgivenesses_in_window",
                 "streak_keys",
                 "split_from",
+                "shift_policy",
             ],
         );
         assert_wire_names("TaskTemplate", &template(), &[]);
@@ -652,6 +654,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shifts_write_their_registered_names() {
+        assert_wire_names(
+            "Shift",
+            &Shift {
+                id: eref(EntityKind::Shift, 1),
+                created_at: ts(),
+                updated_at: ts(),
+                name: "Travel: Tokyo".into(),
+                starts_at: ts(),
+                ends_at: None,
+                zone: None,
+                place: None,
+                primary_streams: BTreeSet::new(),
+                primary_contexts: BTreeSet::new(),
+                deleted: false,
+                unknown: Unknowns::new(),
+            },
+            &["ends_at", "zone", "place"],
+        );
+    }
+
     /// Every registered record is reached by one of the tests above.
     #[test]
     fn every_registered_record_is_checked_on_the_wire() {
@@ -672,6 +696,7 @@ mod tests {
             "Preferences",
             "SavedView",
             "Place",
+            "Shift",
         ];
         for r in ENTITIES.iter().flat_map(|e| e.records.iter()) {
             assert!(

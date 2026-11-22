@@ -91,6 +91,7 @@ pub mod saved_views;
 pub mod search;
 pub mod secret_copies;
 pub mod settings;
+pub mod shifts;
 pub mod sync_status;
 pub mod task_order;
 pub mod types;

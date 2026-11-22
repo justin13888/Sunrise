@@ -14,7 +14,8 @@ use sunrise_domain::Routine;
 /// The four `SunriseTime` columns of a routine (migration 0041) that the row
 /// statements do not write: each one's `_kind`, `_tz` and `_civil`. The
 /// index keys are in the row statements. Also `split_from` (migration 0047,
-/// #331), the series root a split routine continues.
+/// #331), the series root a split routine continues, and `shift_policy`
+/// (migration 0054, ADR-0073 §3), its spelling kept verbatim.
 ///
 /// `r` is the projected routine read as the engine acts on it
 /// ([`Routine::normalize_legacy_times`]), so a legacy bare-instant anchor is
@@ -30,7 +31,7 @@ fn write_time_sidecars(tx: &Transaction<'_>, id: &[u8], r: &Routine) -> rusqlite
             ends_at_kind = ?, ends_at_tz = ?, ends_at_civil = ?,
             paused_until_kind = ?, paused_until_tz = ?, paused_until_civil = ?,
             last_completed_at_kind = ?, last_completed_at_tz = ?, last_completed_at_civil = ?,
-            split_from = ?
+            split_from = ?, shift_policy = ?
          WHERE id = ?",
         params![
             s_kind,
@@ -46,6 +47,7 @@ fn write_time_sidecars(tx: &Transaction<'_>, id: &[u8], r: &Routine) -> rusqlite
             l_tz,
             l_civil,
             r.split_from.map(|s| s.bytes().to_vec()),
+            r.shift_policy.as_str(),
             id,
         ],
     )?;

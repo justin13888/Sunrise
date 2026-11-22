@@ -276,6 +276,7 @@ fn routine_patch() -> impl Strategy<Value = RoutinePatch> {
             of(any::<bool>()),
             clearable(time()),
             of(any::<bool>()),
+            of(shift_policy()),
         ),
     )
         .prop_map(|(a, b)| RoutinePatch {
@@ -291,7 +292,12 @@ fn routine_patch() -> impl Strategy<Value = RoutinePatch> {
             paused: b.3,
             paused_until: b.4,
             archived: b.5,
+            shift_policy: b.6,
         })
+}
+
+fn shift_policy() -> impl Strategy<Value = sunrise_domain::ShiftPolicy> {
+    raw(&["pause", "shift_tz", "skip", "unchanged"]).prop_map(sunrise_domain::ShiftPolicy::from_raw)
 }
 
 fn edit_scope() -> impl Strategy<Value = EditScope> {

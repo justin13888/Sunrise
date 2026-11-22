@@ -59,12 +59,16 @@ fn daily(tz: &str, anchor: DateTime, floating: bool) -> Routine {
         archived: false,
         deleted: false,
         split_from: None,
+        shift_policy: crate::ShiftPolicy::Pause,
         unknown: Unknowns::new(),
     }
 }
 
 fn shift(name: &str, start: Timestamp, end: Option<Timestamp>, zone: Option<&str>) -> Shift {
     Shift {
+        id: eref(EntityKind::Shift, 1),
+        created_at: start,
+        updated_at: start,
         name: name.into(),
         starts_at: start,
         ends_at: end,
@@ -72,6 +76,8 @@ fn shift(name: &str, start: Timestamp, end: Option<Timestamp>, zone: Option<&str
         place: None,
         primary_streams: BTreeSet::new(),
         primary_contexts: BTreeSet::new(),
+        deleted: false,
+        unknown: Unknowns::new(),
     }
 }
 
@@ -115,6 +121,110 @@ fn a_policy_reads_its_four_spellings_and_keeps_an_unknown_one() {
     assert!(ShiftPolicy::Pause.excuses_streak() && ShiftPolicy::Skip.excuses_streak());
     assert!(newer.excuses_streak());
     assert!(!ShiftPolicy::ShiftTz.excuses_streak() && !ShiftPolicy::Unchanged.excuses_streak());
+}
+
+/// A routine at `pause` encodes as it did before the field existed; any other
+/// policy, an unknown one included, is written and read back.
+#[test]
+fn a_routine_omits_pause_and_writes_every_other_policy() {
+    let encode = |r: &Routine| {
+        let mut v = Vec::new();
+        ciborium::ser::into_writer(r, &mut v).unwrap();
+        v
+    };
+    let base = daily("UTC", date(2026, 6, 1).at(9, 0, 0, 0), false);
+    let bytes = encode(&base);
+    let value: ciborium::Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+    let keys: Vec<String> = value
+        .into_map()
+        .unwrap()
+        .into_iter()
+        .filter_map(|(k, _)| k.into_text().ok())
+        .collect();
+    assert!(!keys.iter().any(|k| k == "shift_policy"));
+    let back: Routine = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+    assert_eq!(back.shift_policy, ShiftPolicy::Pause);
+
+    for p in [
+        ShiftPolicy::ShiftTz,
+        ShiftPolicy::Skip,
+        ShiftPolicy::Unchanged,
+        ShiftPolicy::from_raw("follow_place"),
+    ] {
+        let r = Routine {
+            shift_policy: p.clone(),
+            ..base.clone()
+        };
+        let back: Routine = ciborium::de::from_reader(encode(&r).as_slice()).unwrap();
+        assert_eq!(back.shift_policy, p);
+    }
+}
+
+/// A patch writes only what it names, and an unknown policy cannot be set.
+#[test]
+fn a_shift_patch_applies_what_it_names() {
+    let start = utc(2026, 6, 10, 0, 0);
+    let s = shift("Trip", start, None, Some("Asia/Tokyo"));
+    assert!(ShiftPatch::default().is_empty());
+    let end = utc(2026, 6, 15, 0, 0);
+    let p = ShiftPatch {
+        name: Some("  Tokyo  ".into()),
+        ends_at: Some(Some(end)),
+        zone: Some(None),
+        ..ShiftPatch::default()
+    };
+    assert!(!p.is_empty());
+    let got = p.applied_to(&s);
+    assert_eq!(got.name, "Tokyo");
+    assert_eq!(got.ends_at, Some(end));
+    assert_eq!(got.zone, None);
+    assert_eq!(got.starts_at, start);
+
+    let bad = crate::RoutinePatch {
+        shift_policy: Some(ShiftPolicy::from_raw("follow_place")),
+        ..crate::RoutinePatch::default()
+    };
+    assert_eq!(
+        bad.validate(),
+        Err(field("routine.shift_policy", "known_policy"))
+    );
+}
+
+/// A draft becomes a live shift starting at its own start, or at `now`.
+#[test]
+fn a_draft_starts_now_unless_it_names_a_start() {
+    let now = utc(2026, 6, 10, 8, 0);
+    let id = eref(EntityKind::Shift, 9);
+    let d = ShiftDraft {
+        name: " Travel ".into(),
+        starts_at: None,
+        ends_at: None,
+        zone: None,
+        place: None,
+        primary_streams: BTreeSet::new(),
+        primary_contexts: BTreeSet::new(),
+    };
+    let s = d.clone().into_shift(id, now);
+    assert_eq!((s.id, s.starts_at, s.name.as_str()), (id, now, "Travel"));
+    assert!(!s.deleted);
+    let earlier = utc(2026, 6, 9, 0, 0);
+    let s = ShiftDraft {
+        starts_at: Some(earlier),
+        ..d
+    }
+    .into_shift(id, now);
+    assert_eq!(s.starts_at, earlier);
+}
+
+/// A deleted shift covers nothing, so it is never the one in force.
+#[test]
+fn a_deleted_shift_is_in_force_nowhere() {
+    let start = utc(2026, 6, 10, 0, 0);
+    let mut s = shift("Trip", start, None, None);
+    assert!(s.covers(start));
+    s.deleted = true;
+    assert!(!s.covers(start));
+    assert!(active_shift(&[(1u8, s)], start).is_none());
 }
 
 // --- the shift -------------------------------------------------------------

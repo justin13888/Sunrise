@@ -183,8 +183,8 @@ pub use saved_view::{
     ViewKind, ViewSort, WindowField,
 };
 pub use shift::{
-    active_shift, away_summary, AwaySummary, MissedOccurrence, Shift, ShiftGeneration, ShiftPolicy,
-    ShiftedOccurrence, CONTEXT_SHIFT_CAUSE, MAX_SHIFT_NAME_LEN,
+    active_shift, away_summary, AwaySummary, MissedOccurrence, Shift, ShiftDraft, ShiftGeneration,
+    ShiftPatch, ShiftPolicy, ShiftedOccurrence, CONTEXT_SHIFT_CAUSE, MAX_SHIFT_NAME_LEN,
 };
 pub use sort_order::{
     append_after as sort_order_append_after, between as sort_order_between, SortOrderError,

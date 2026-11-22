@@ -33,6 +33,7 @@ use super::task::{decode_constraints, read_task};
 use super::write::{Appended, PatchBuilder, WriteMode};
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
+use crate::feature::ROUTINE_SHIFT_POLICY_FEATURE;
 use crate::inner_op::InnerOp;
 use crate::queries::QueryResult;
 use jiff::Timestamp;
@@ -43,8 +44,8 @@ use sunrise_domain::Unknowns;
 use sunrise_domain::{
     catchup_title, catchup_view, materialization_horizon_days, occurrence_key_at,
     parse_occurrence_key, split_routine_id, CatchupView, EditScope, Routine, RoutineCatchupPolicy,
-    RoutineDraft, RoutinePatch, StreakOutcome, SunriseTime, Task, TaskPatch, TaskState,
-    TaskTemplate,
+    RoutineDraft, RoutinePatch, ShiftPolicy, StreakOutcome, SunriseTime, Task, TaskPatch,
+    TaskState, TaskTemplate,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -146,6 +147,13 @@ impl Engine {
         db: &mut Db,
         routine: &Routine,
     ) -> Result<Routine, EngineError> {
+        // A policy other than `pause` is on the wire, which only a vault that
+        // requires `routine.shift_policy` takes (ADR-0073 §3).
+        if !routine.shift_policy.is_default_pause()
+            && !self.vault_requires(db.conn(), ROUTINE_SHIFT_POLICY_FEATURE)?
+        {
+            self.require_features(db, &[ROUTINE_SHIFT_POLICY_FEATURE], false)?;
+        }
         if self.vault_requires(db.conn(), ROUTINE_CIVIL_TIMES_FEATURE)? {
             return Ok(routine.clone());
         }
@@ -261,6 +269,7 @@ impl Engine {
             streak_started_at: None,
             forgivenesses_in_window: 0,
             split_from: None,
+            shift_policy: sunrise_domain::ShiftPolicy::Pause,
             streak_keys: Vec::new(),
             paused: false,
             paused_until: None,
@@ -1408,7 +1417,7 @@ const ROUTINE_COLUMNS: &str = "rrule_text, timezone,
      template, skip_dates, skipped_keys, catchup_policy,
      last_completed_at_ms, last_completed_at_kind, last_completed_at_tz, last_completed_at_civil,
      paused_until_ms, paused_until_kind, paused_until_tz, paused_until_civil,
-     created_at_ms, updated_at_ms, streak_state, extra, rrule_cbor, split_from";
+     created_at_ms, updated_at_ms, streak_state, extra, rrule_cbor, split_from, shift_policy";
 
 /// One `SunriseTime`'s four columns, starting at `at`.
 fn time_at(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Option<SunriseTime>> {
@@ -1444,6 +1453,7 @@ struct RoutineRowRaw {
     extra: Option<Vec<u8>>,
     rrule_blob: Option<Vec<u8>>,
     split_from: Option<Vec<u8>>,
+    shift_policy: String,
 }
 
 impl RoutineRowRaw {
@@ -1470,6 +1480,7 @@ impl RoutineRowRaw {
             extra: r.get(from + 30)?,
             rrule_blob: r.get(from + 31)?,
             split_from: r.get(from + 32)?,
+            shift_policy: r.get(from + 33)?,
         })
     }
 }
@@ -1518,6 +1529,7 @@ fn routine_from_row(id: &[u8; 16], v: RoutineRowRaw) -> Result<Routine, EngineEr
         split_from: v
             .split_from
             .map(|b| EntityRef::new(EntityKind::Routine, super::ids::blob16(&b))),
+        shift_policy: ShiftPolicy::from_raw(&v.shift_policy),
         unknown: decode_unknowns(v.extra),
     };
     Ok(routine.normalized())
