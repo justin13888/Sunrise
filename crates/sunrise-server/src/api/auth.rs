@@ -185,7 +185,9 @@ async fn verify_and_resolve(
             MetadataError::SignupDisabled | MetadataError::Unavailable(_) => {
                 SignedRejection::Binding(ApiError::from(e))
             }
-            MetadataError::NotFound | MetadataError::RecoveryBlobExists => {
+            MetadataError::NotFound
+            | MetadataError::RecoveryBlobExists
+            | MetadataError::DeviceRevoked => {
                 SignedRejection::Auth(AuthRejection::unauthenticated())
             }
         })?;

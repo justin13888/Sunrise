@@ -58,6 +58,11 @@ pub mod codes {
     /// in the same second as its revoke. Retryable: signed again, a genuine
     /// one carries a later `Date` and succeeds (ADR-0056 §5).
     pub const DEVICE_REINSTATE_PREDATES_REVOKE: &str = "DEVICE_REINSTATE_PREDATES_REVOKE";
+    /// A registration offered a `device_pub_s` or a `vault_device_id` that a
+    /// revoked device of the same account carries. Not retryable: the device
+    /// comes back only through its revoker's reinstatement (ADR-0056 §5), or
+    /// by pairing again under new keys (#1300).
+    pub const DEVICE_REVOKED_REGISTER: &str = "DEVICE_REVOKED_REGISTER";
     /// Malformed body or field.
     pub const VALIDATION_INVALID: &str = "VALIDATION_INVALID";
     /// A chunk's ciphertext BLAKE3 disagrees with the hash the client supplied.
@@ -437,6 +442,11 @@ impl From<crate::store::MetadataError> for ApiError {
             MetadataError::NotFound => Self::not_found(
                 codes::DEVICE_NOT_FOUND,
                 "no such record on this account".to_owned(),
+            ),
+            MetadataError::DeviceRevoked => Self::forbidden(
+                codes::DEVICE_REVOKED_REGISTER,
+                "a revoked device of this account carries that key or vault device id; \
+                 it comes back only when its revoker reinstates it, or by pairing again",
             ),
             MetadataError::Unavailable(_) => {
                 storage_failed(&e);

@@ -4,6 +4,7 @@
 
 use tokio_postgres::Row;
 
+use super::lifecycle::lock_account;
 use super::{signed, unavailable, unsigned, PgStore};
 use crate::auth::Subject;
 use crate::store::tx::op;
@@ -207,28 +208,48 @@ impl PgStore {
         let _op = op("store.register_device");
         let device_id = mint_id(now_ms);
         let now = signed(now_ms);
-        self.client()
-            .await?
-            .execute(
-                "INSERT INTO devices (device_id, account_id, device_pub_s, device_pub_d,
+        let mut c = self.client().await?;
+        let tx = c.transaction().await.map_err(unavailable)?;
+        // The account row is locked first, as every revoke here locks it, so
+        // a revoke is either committed before the check reads the rows or
+        // waits until this row is in and then revokes it too. Without it a
+        // revoke whose snapshot predates the insert would leave the new row
+        // active. SQLite gets the same from its single connection.
+        lock_account(&tx, account_id).await?;
+        let revoked: bool = tx
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM devices
+                 WHERE account_id = $1 AND revoked
+                 AND (device_pub_s = $2 OR vault_device_id = $3))",
+                &[&account_id, &new.device_pub_s, &new.vault_device_id],
+            )
+            .await
+            .map_err(unavailable)?
+            .get(0);
+        if revoked {
+            return Err(MetadataError::DeviceRevoked);
+        }
+        tx.execute(
+            "INSERT INTO devices (device_id, account_id, device_pub_s, device_pub_d,
                      device_cert, vault_device_id, nickname, platform, app_version,
                      created_at_ms, last_seen_at_ms, revoked)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, FALSE)",
-                &[
-                    &device_id,
-                    &account_id,
-                    &new.device_pub_s,
-                    &new.device_pub_d,
-                    &new.device_cert,
-                    &new.vault_device_id,
-                    &new.nickname,
-                    &new.platform,
-                    &new.app_version,
-                    &now,
-                ],
-            )
-            .await
-            .map_err(unavailable)?;
+            &[
+                &device_id,
+                &account_id,
+                &new.device_pub_s,
+                &new.device_pub_d,
+                &new.device_cert,
+                &new.vault_device_id,
+                &new.nickname,
+                &new.platform,
+                &new.app_version,
+                &now,
+            ],
+        )
+        .await
+        .map_err(unavailable)?;
+        tx.commit().await.map_err(unavailable)?;
         Ok(Device {
             device_id,
             account_id: account_id.to_owned(),
@@ -308,6 +329,9 @@ impl PgStore {
         let _op = op("store.revoke_device");
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(unavailable)?;
+        // Serialises against `register_device`, which checks for revoked rows
+        // under the same lock.
+        lock_account(&tx, account_id).await?;
         let changed = tx
             .execute(
                 "UPDATE devices SET revoked = TRUE, revoked_at_ms = $3
@@ -338,6 +362,10 @@ impl PgStore {
         let _op = op("store.revoke_devices_by_vault_id");
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(unavailable)?;
+        // Serialises against `register_device`: a row registered while this
+        // waited is committed before the update below reads, so it is revoked
+        // with the rest rather than left active beside them.
+        lock_account(&tx, account_id).await?;
         let ids: Vec<String> = tx
             .query(
                 "UPDATE devices SET revoked = TRUE, revoked_at_ms = $3, revoked_by_key = $4,

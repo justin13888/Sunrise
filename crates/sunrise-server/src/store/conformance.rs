@@ -321,6 +321,7 @@ pub(crate) async fn run(store: &dyn MetadataStore) {
     reinstatement::only_the_recorded_revoker_reinstates(store).await;
     reinstatement::an_unrecorded_revoke_cannot_be_reinstated(store).await;
     reinstatement::a_reinstatement_signed_before_the_revoke_changes_nothing(store).await;
+    reinstatement::a_revoked_device_cannot_register_again(store).await;
     relay_log_is_ordered_and_deduplicated(store).await;
     the_size_bound_evicts_oldest_first(store).await;
     the_blob_ledger_sums_what_is_readable(store).await;

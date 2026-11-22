@@ -270,6 +270,20 @@ withdrawal reverses the relay's half too:
   relay revoked with no recorded device: an unsigned `DELETE`, or a row
   revoked before the column existed. The client reports that the relay still
   refuses the device, and the remedy is to pair it again.
+- **A revoked device cannot register its way back.** `POST /api/v1/devices`
+  rides the bootstrap exemption and asks only for a bearer, so a revoked
+  device still holding one could otherwise register its own key again and
+  sign under the fresh row. The relay refuses a `device_pub_s` or a
+  `vault_device_id` that a revoked row of the same account carries, with
+  `403 DEVICE_REVOKED_REGISTER`
+  ([#1300](https://github.com/justin13888/Sunrise/issues/1300)). That makes
+  this section's reinstatement the only way back for that key and vault id.
+  It does not bind a fresh one: the relay never verifies `device_cert`, so
+  a revoked device still holding a bearer can register a freshly generated
+  key under a fresh vault id and sign under that active row, for as long as
+  it can present a bearer the relay accepts. To the relay that is a new
+  device, and whether peers believe it is the cert's question, not this
+  section's.
 
 That is §3's authority rule restated where the relay can check it. A relay
 that let any account device reinstate any other would be the third-party
