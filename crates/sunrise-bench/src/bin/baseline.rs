@@ -15,7 +15,10 @@
 //! `bench_function` or `benchmark_group` name in a bench source must head a
 //! row, and every row must name one. Without that, renaming a bench left its
 //! row reading a directory nothing writes any more, and the `None` arm skipped
-//! it without a word (#366).
+//! it without a word (#366). Where a source spells a group's function names
+//! out, as a literal or a `BenchmarkId::from_parameter` over an array literal,
+//! each full `<group>/<function>` must be a row too; a `format!` name, which
+//! carries a size, must start one (#1309).
 //!
 //! The platform key is derived from the build target (`linux-x86_64`,
 //! `darwin-aarch64`, …). Other platforms and the schema fields in
@@ -289,6 +292,12 @@ const BENCHES: &[Bench] = &[
         p99: "plan_preview_auto_place_p99_ms",
         unit: Unit::Ms,
     },
+    Bench {
+        dir: "plan_preview/occurrence",
+        p50: None,
+        p99: "plan_preview_occurrence_p99_ms",
+        unit: Unit::Ms,
+    },
     // Vault open through the first Today result, over 10k tasks
     // (`performance-budgets.md` §Cold start, which budgets a p50 too).
     Bench {
@@ -555,11 +564,88 @@ mod tests {
             .unwrap_or_else(|| panic!("no BENCHES row for {dir}"))
     }
 
-    /// Every string-literal `bench_function` and `benchmark_group` name in
-    /// `benches/*.rs`, with the file it came from.
-    fn bench_source_names() -> Vec<(String, String)> {
+    /// The names `benches/*.rs` give Criterion, read from the source, each
+    /// with the file it came from.
+    #[derive(Debug, Default)]
+    struct SourceNames {
+        /// Every `benchmark_group` name and ungrouped `bench_function` name:
+        /// the first segment of every directory the file writes.
+        heads: Vec<(String, String)>,
+        /// Every directory the source spells out in full: an ungrouped
+        /// literal, or a group's literal name, or its
+        /// `BenchmarkId::from_parameter` over a loop's array literal.
+        dirs: Vec<(String, String)>,
+        /// The literal start of a `format!` name, as `<group>/<prefix>`: the
+        /// rest is a size, so only the start is known here.
+        prefixes: Vec<(String, String)>,
+    }
+
+    /// The text of the string literal `s` opens with, if it opens with one.
+    fn quoted(s: &str) -> Option<&str> {
+        let rest = s.strip_prefix('"')?;
+        rest.find('"').map(|end| &rest[..end])
+    }
+
+    /// The names a `for` loop over an array literal binds to `ident`, for a
+    /// `BenchmarkId::from_parameter(ident)` call in its body. `before` is the
+    /// source up to that call. The binding is `ident` or a tuple whose first
+    /// element is `ident`; each array element's first string literal is the
+    /// name it binds.
+    fn loop_names(file: &str, before: &str, ident: &str) -> Vec<String> {
+        let at = before
+            .rfind("for ")
+            .unwrap_or_else(|| panic!("{file}: from_parameter({ident}) is in no `for` loop"));
+        let (binding, rest) = before[at + 4..].split_once(" in [").unwrap_or_else(|| {
+            panic!("{file}: the loop binding `{ident}` is not over an array literal")
+        });
+        let first = binding.trim().trim_start_matches('(').split(',').next();
+        assert_eq!(
+            first.map(str::trim),
+            Some(ident),
+            "{file}: from_parameter({ident}) does not name the loop's first binding"
+        );
+        let mut names = Vec::new();
+        let (mut depth, mut start) = (0usize, 0usize);
+        for (i, ch) in rest.char_indices() {
+            let element_ends = match ch {
+                '(' | '[' => {
+                    depth += 1;
+                    false
+                }
+                ']' if depth == 0 => true,
+                ')' | ']' => {
+                    depth -= 1;
+                    false
+                }
+                ',' => depth == 0,
+                _ => false,
+            };
+            if element_ends {
+                let element = rest[start..i].trim().trim_start_matches('(').trim_start();
+                if !element.is_empty() {
+                    let name = quoted(element).unwrap_or_else(|| {
+                        panic!(
+                            "{file}: an element of `{ident}`'s array opens with no string literal"
+                        )
+                    });
+                    names.push(name.to_string());
+                }
+                if ch == ']' {
+                    return names;
+                }
+                start = i + 1;
+            }
+        }
+        panic!("{file}: `{ident}`'s array literal never closes")
+    }
+
+    /// Read every `benchmark_group` and `bench_function` name in
+    /// `benches/*.rs`. A file holds at most one group, and every
+    /// `bench_function` in a file with one belongs to it. A name built in a
+    /// way this does not read fails here rather than escaping the check.
+    fn bench_source_names() -> SourceNames {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("benches");
-        let mut out = Vec::new();
+        let mut out = SourceNames::default();
         let mut files: Vec<_> = std::fs::read_dir(&dir)
             .expect("read benches/")
             .map(|e| e.expect("dir entry").path())
@@ -574,20 +660,61 @@ mod tests {
         for path in files {
             let text = std::fs::read_to_string(&path).expect("read bench source");
             let file = path.file_name().unwrap().to_string_lossy().into_owned();
-            let mut found = 0;
-            for call in ["benchmark_group(\"", "bench_function(\""] {
-                for (at, _) in text.match_indices(call) {
-                    let rest = &text[at + call.len()..];
-                    let name = &rest[..rest.find('"').expect("closing quote")];
-                    out.push((file.clone(), name.to_string()));
-                    found += 1;
+            let groups: Vec<&str> = text
+                .match_indices("benchmark_group(")
+                .map(|(at, call)| {
+                    quoted(text[at + call.len()..].trim_start()).unwrap_or_else(|| {
+                        panic!("{file}: a benchmark_group name is not a string literal")
+                    })
+                })
+                .collect();
+            assert!(
+                groups.len() <= 1,
+                "{file} opens more than one benchmark_group"
+            );
+            let group = groups.first().copied();
+            if let Some(g) = group {
+                out.heads.push((file.clone(), g.to_string()));
+            }
+            for (at, call) in text.match_indices("bench_function(") {
+                let arg = text[at + call.len()..].trim_start();
+                // Criterion writes a function's own `/` as `_`.
+                let in_group = |name: &str| {
+                    let g = group.unwrap_or_else(|| {
+                        panic!("{file}: `{name}` is built, so it needs a benchmark_group")
+                    });
+                    format!("{g}/{}", name.replace('/', "_"))
+                };
+                if let Some(name) = quoted(arg) {
+                    if group.is_some() {
+                        out.dirs.push((file.clone(), in_group(name)));
+                    } else {
+                        out.heads.push((file.clone(), name.to_string()));
+                        out.dirs.push((file.clone(), name.to_string()));
+                    }
+                } else if let Some(inner) = arg.strip_prefix("format!(") {
+                    let template = quoted(inner.trim_start())
+                        .unwrap_or_else(|| panic!("{file}: a format! name with no literal"));
+                    let start = &template[..template.find('{').unwrap_or(template.len())];
+                    out.prefixes.push((file.clone(), in_group(start)));
+                } else if let Some(inner) = arg.strip_prefix("BenchmarkId::from_parameter(") {
+                    let ident = inner[..inner.find(')').expect("closing paren")].trim();
+                    for name in loop_names(&file, &text[..at], ident) {
+                        out.dirs.push((file.clone(), in_group(&name)));
+                    }
+                } else {
+                    let shown: String = arg.chars().take(40).collect();
+                    panic!(
+                        "{file}: bench_function({shown}…) is a name this test cannot read; \
+                         teach bench_source_names to read it"
+                    );
                 }
             }
-            // A bench whose every name is built with `format!` and sits in no
-            // literal group would escape both directions of the check below.
+            // A file that names no bench would escape both directions of the
+            // check below.
             assert!(
-                found > 0,
-                "{file} names no bench with a string literal; give it a benchmark_group"
+                out.heads.iter().any(|(f, _)| *f == file),
+                "{file} names no bench and opens no benchmark_group"
             );
         }
         out
@@ -596,20 +723,46 @@ mod tests {
     /// The defect #366 found: `sync_session` replaced `ws_handshake`, the
     /// table kept the old name, and nothing noticed. Each direction is a
     /// failure: a bench with no row is never compared, and a row with no bench
-    /// reads a directory nothing writes.
+    /// reads a directory nothing writes. #1309 found the same inside a group:
+    /// `plan_preview/occurrence` joined the loop of an existing group, so its
+    /// head already had rows and only the full directory was missing one.
     #[test]
     fn every_bench_has_a_row_and_every_row_a_bench() {
-        let names = bench_source_names();
+        let src = bench_source_names();
         let head = |b: &Bench| b.dir.split('/').next().unwrap_or(b.dir);
-        for (file, name) in &names {
+        for (file, name) in &src.heads {
             assert!(
                 BENCHES.iter().any(|b| head(b) == name),
                 "{file}: bench `{name}` has no row in BENCHES, so baseline.rs never reads it"
             );
         }
+        for (file, dir) in &src.dirs {
+            assert!(
+                BENCHES.iter().any(|b| b.dir == dir),
+                "{file}: bench `{dir}` has no row in BENCHES, so baseline.rs never reads it"
+            );
+        }
+        for (file, prefix) in &src.prefixes {
+            assert!(
+                BENCHES.iter().any(|b| b.dir.starts_with(prefix.as_str())),
+                "{file}: no BENCHES row starts `{prefix}`, so baseline.rs never reads that bench"
+            );
+        }
         for b in BENCHES {
             assert!(
-                names.iter().any(|(_, n)| n == head(b)),
+                src.heads.iter().any(|(_, n)| n == head(b)),
+                "BENCHES row `{}` names no bench in benches/*.rs",
+                b.dir
+            );
+            // A group the source names only in full must name each of its rows;
+            // one with a `format!` name writes directories by size, which
+            // only the prefixes above can hold.
+            let sized = src
+                .prefixes
+                .iter()
+                .any(|(_, p)| p.split('/').next() == Some(head(b)));
+            assert!(
+                sized || src.dirs.iter().any(|(_, d)| d == b.dir),
                 "BENCHES row `{}` names no bench in benches/*.rs",
                 b.dir
             );
