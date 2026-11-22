@@ -37,7 +37,10 @@ fn summary(r: &Row) -> AccountSummary {
 }
 
 /// Lock `account_id`'s row for the rest of `tx`, reporting whether it exists.
-async fn lock_account(tx: &Transaction<'_>, account_id: &str) -> Result<bool, MetadataError> {
+pub(super) async fn lock_account(
+    tx: &Transaction<'_>,
+    account_id: &str,
+) -> Result<bool, MetadataError> {
     Ok(tx
         .query_opt(
             "SELECT 1 FROM accounts WHERE account_id = $1 FOR UPDATE",

@@ -418,3 +418,76 @@ async fn an_unknown_or_malformed_vault_id_is_refused() {
     malformed.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(code_of(&malformed), codes::VALIDATION_INVALID);
 }
+
+/// `POST /api/v1/devices` for the device `seed` derives, unsigned, as the
+/// bootstrap sends it.
+async fn register_raw(client: &Client, seed: u8, vault_device_id: &str) -> Res {
+    use base64::Engine as _;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let body = serde_json::json!({
+        "device_pub_s": base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(key.verifying_key().as_bytes()),
+        "vault_device_id": vault_device_id,
+        "nickname": "phone",
+        "platform": "linux",
+    });
+    client
+        .send(Method::POST, "/api/v1/devices", Some(&body))
+        .await
+}
+
+/// A revoked device holding a bearer cannot register its way back (#1300):
+/// registration asks for nothing more than the bearer, so without the refusal
+/// the device would sign under a fresh active row. Its revoker's
+/// reinstatement is the way back.
+#[tokio::test]
+async fn a_revoked_device_cannot_register_again_until_reinstated() {
+    let (client, clock) = relay();
+    let (phone_id, phone_key) = register_device(&client, 90, "phone", Some(PHONE)).await;
+    let (laptop_id, laptop_key) = register_device(&client, 91, "laptop", Some(LAPTOP)).await;
+
+    send_signed(
+        &client,
+        "DELETE",
+        &revoke_path(PHONE),
+        &laptop_id,
+        &laptop_key,
+        None,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+
+    // Its own key, a fresh key under its vault id, and its own key under a
+    // vault id nothing carries.
+    for (seed, vault_id) in [(90, PHONE), (92, PHONE), (90, DESKTOP)] {
+        let refused = register_raw(&client, seed, vault_id).await;
+        refused.assert_status(StatusCode::FORBIDDEN);
+        assert_eq!(code_of(&refused), codes::DEVICE_REVOKED_REGISTER);
+    }
+    assert_eq!(client.metrics.get("sunrise_devices_register_total"), 2);
+    send_signed(
+        &client,
+        "GET",
+        "/api/v1/accounts/me",
+        &phone_id,
+        &phone_key,
+        None,
+    )
+    .await
+    .assert_status(StatusCode::UNAUTHORIZED);
+
+    clock.advance(1_000);
+    send_signed(
+        &client,
+        "POST",
+        &reinstate_path(PHONE),
+        &laptop_id,
+        &laptop_key,
+        None,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+    register_raw(&client, 90, PHONE)
+        .await
+        .assert_status(StatusCode::CREATED);
+}

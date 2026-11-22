@@ -30,6 +30,16 @@ pub enum StoreError {
     /// re-sending the *same* bytes is still idempotent and still succeeds.
     #[error("this account already holds a different recovery blob")]
     RecoveryBlobExists,
+    /// A registration offered a signing key or a vault device id that a
+    /// revoked row of the same account carries.
+    ///
+    /// Registration rides the bootstrap exemption and asks only for a bearer,
+    /// so without this a revoked device still holding one could register its
+    /// own key again and sign under a fresh active row, undoing the relay's
+    /// half of the revocation (#1300). The way back is the revoker's
+    /// reinstatement (ADR-0056 §5) or pairing again under new keys.
+    #[error("a revoked device of this account carries that key or vault device id")]
+    DeviceRevoked,
     /// The database's schema version is one this binary does not know.
     ///
     /// A newer release migrated the file, or something other than this relay

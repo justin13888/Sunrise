@@ -15,9 +15,10 @@
 //! single-binary deployment. [`PgStore`](super::postgres::PgStore) is the one
 //! several relay nodes share.
 //!
-//! Errors are typed. The three refusals a caller acts on —
-//! [`MetadataError::SignupDisabled`], [`MetadataError::NotFound`] and
-//! [`MetadataError::RecoveryBlobExists`] — are the ones [`StoreError`] already
+//! Errors are typed. The four refusals a caller acts on —
+//! [`MetadataError::SignupDisabled`], [`MetadataError::NotFound`],
+//! [`MetadataError::RecoveryBlobExists`] and
+//! [`MetadataError::DeviceRevoked`] — are the ones [`StoreError`] already
 //! carried; everything else a backend can fail with is
 //! [`MetadataError::Unavailable`], which a request path answers
 //! `503 RELAY_STORAGE_UNAVAILABLE` and the client retries.
@@ -47,6 +48,10 @@ pub enum MetadataError {
     /// different one. See [`StoreError::RecoveryBlobExists`].
     #[error("this account already holds a different recovery blob")]
     RecoveryBlobExists,
+    /// A registration offered a key or vault device id that a revoked row of
+    /// the same account carries. See [`StoreError::DeviceRevoked`].
+    #[error("a revoked device of this account carries that key or vault device id")]
+    DeviceRevoked,
     /// The backend did not answer, or failed the statement. Nothing the call
     /// would have written was committed. Retryable: a request path answers
     /// `503 RELAY_STORAGE_UNAVAILABLE`.
@@ -63,6 +68,7 @@ impl From<StoreError> for MetadataError {
             StoreError::SignupDisabled => Self::SignupDisabled,
             StoreError::NotFound => Self::NotFound,
             StoreError::RecoveryBlobExists => Self::RecoveryBlobExists,
+            StoreError::DeviceRevoked => Self::DeviceRevoked,
             other => Self::Unavailable(other.to_string()),
         }
     }
@@ -78,6 +84,10 @@ impl From<StoreError> for MetadataError {
 /// - **Revocation is atomic.** [`revoke_device`](Self::revoke_device) hides the
 ///   device from [`active_device`](Self::active_device) and drops its push
 ///   tokens in the same unit of work, and is scoped to the caller's account.
+/// - **A revoked device cannot register its way back.**
+///   [`register_device`](Self::register_device) refuses, with
+///   [`MetadataError::DeviceRevoked`], a key or vault device id that a revoked
+///   row of the same account carries, and writes nothing.
 /// - **The relay log is ordered and bounded per channel.** Replay returns
 ///   frames in append order; retention evicts oldest first and reports what a
 ///   cursor can no longer recover as a [`CursorGap`](crate::relay::CursorGap).

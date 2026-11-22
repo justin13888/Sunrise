@@ -2536,7 +2536,7 @@
       },
       "post": {
         "summary": "Register a device.",
-        "description": "Bootstrap route: a device cannot sign before it exists, so an absent binding\nis accepted here even where the server demands one elsewhere. A binding that\n*is* supplied is still verified in full.",
+        "description": "Bootstrap route: a device cannot sign before it exists, so an absent binding\nis accepted here even where the server demands one elsewhere. A binding that\n*is* supplied is still verified in full.\n\nBecause a bearer alone reaches it, a key or vault device id that a revoked\ndevice of this account carries is refused with `403\nDEVICE_REVOKED_REGISTER`: otherwise a revoked device still holding a bearer\nwould register its own key again and sign under the fresh row. Registering\nthe same key again while no row carrying it is revoked is still a second\nrow rather than an error. The way back for a revoked device is its\nrevoker's reinstatement (ADR-0056 §5), or pairing again under new keys.",
         "operationId": "registerDevice",
         "parameters": [
           {
