@@ -11,7 +11,8 @@
 //! Both are idempotent at the server: `resolve_account` mints an account on
 //! first sight of a `(iss, sub)` and returns the existing one afterwards, and a
 //! device re-registering with the same key is a second row rather than an
-//! error. So a client that crashes between the two, or repeats the pair, is
+//! error, unless that device has been revoked (`register_device` below says
+//! how the relay refuses it). So a client that crashes between the two, or repeats the pair, is
 //! recoverable by running it again — which is the property that lets a caller
 //! do this on every start rather than tracking whether it has run.
 //!

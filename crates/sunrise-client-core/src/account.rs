@@ -167,7 +167,10 @@ pub async fn bootstrap_account(
 /// by pairing needs, which holds no `ID_D_priv` to seal and has no business
 /// asserting a terms acceptance on the account holder's behalf, and what a
 /// founding device whose id was never recorded runs again. The relay treats a
-/// second registration of the same key as a second row rather than an error.
+/// second registration of the same key as a second row rather than an error,
+/// unless a revoked row of the account carries that key or vault device id:
+/// then it refuses with `403 DEVICE_REVOKED_REGISTER`
+/// ([#1300](https://github.com/justin13888/Sunrise/issues/1300)).
 ///
 /// # Errors
 /// [`BootstrapError::Device`] with what the relay said.
