@@ -22,6 +22,7 @@ use crate::commands::{CommandResult, Withdrawal, WithdrawalOutcome};
 use crate::control_op::{DeviceRevokeWithdrawByIdentityPayload, DeviceRevokeWithdrawPayload};
 use crate::feature::{REVOKE_WITHDRAW_AUTHORITY_FEATURE, REVOKE_WITHDRAW_FEATURE};
 use crate::inner_op::{encode_inner_op, InnerOp};
+use crate::relay_intents::queue_relay_reinstatement;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_cbor::hlc::Hlc;
@@ -382,10 +383,11 @@ impl Engine {
     ///    is deleted (§5), unless the relay is still owed it: the register
     ///    still names the device, or a live claim of this device's own does
     ///    (its identity-signed revocation, which shares the row). Then the row
-    ///    stays and `relay_intent_cancelled` is `false`. One already sent
-    ///    cannot be taken back: the relay
-    ///    has no reinstatement yet, and [`Withdrawal::relay_intent_cancelled`]
-    ///    is how a caller says so.
+    ///    stays and `relay_intent_cancelled` is `false`. Where there was no
+    ///    unsent row to cancel, the relay may already have been told, so a
+    ///    `relay_reinstatement_intents` row is queued instead, unless a live
+    ///    claim of this device's own still stands; the sync driver drains it
+    ///    and `Core::relay_reinstatement_pending` reports it.
     /// 4. When the bound is released, every epoch this device holds is sealed
     ///    to the device through [`Self::backfill_key_envelopes`] (§4). The
     ///    epochs minted while it was revoked stay minted; the device reads them
@@ -538,13 +540,22 @@ impl Engine {
             // A claim of this device's that the walk gates keeps the row too,
             // so the relay is told should the gate lift; the drain sends only
             // what the register names, so a kept row is never sent early.
-            let still_owed = self.is_revoked(tx, &target)?
-                || live_revocation_names(tx, &head, &target, Some(&me[..]))?;
+            let own_claim_live = live_revocation_names(tx, &head, &target, Some(&me[..]))?;
+            let still_owed = own_claim_live || self.is_revoked(tx, &target)?;
             let relay_intent_cancelled = !still_owed
                 && tx.execute(
                     "DELETE FROM relay_revocation_intents WHERE device_id = ?",
                     params![&target[..]],
                 )? > 0;
+            // Nothing unsent to cancel means the relay may already have been
+            // told, so the reverse telling is queued (ADR-0056 §5). Not while
+            // a claim of this device's own stands: the relay is still owed the
+            // revocation, not its reversal. A device another device still
+            // revokes gets the row too, which the drain holds until the
+            // register lets the device go.
+            if !relay_intent_cancelled && !own_claim_live {
+                queue_relay_reinstatement(tx, &target, now_ms)?;
+            }
 
             let bounded_after = self.is_read_bounded(tx, &target)?;
             let member: Option<CertColumns> = tx

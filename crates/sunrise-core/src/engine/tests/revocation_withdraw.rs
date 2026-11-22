@@ -59,6 +59,28 @@ fn ledger_len(db: &Db) -> i64 {
         .unwrap()
 }
 
+/// The devices `relay_reinstatement_intents` holds a row for, owed or not.
+fn reinstatements_queued(db: &Db) -> Vec<Vec<u8>> {
+    db.conn()
+        .prepare("SELECT device_id FROM relay_reinstatement_intents ORDER BY device_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+/// The devices the reinstatement drain would send.
+fn reinstatements_owed(db: &Db) -> Vec<Vec<u8>> {
+    db.conn()
+        .prepare(crate::relay_intents::OWED_RELAY_REINSTATEMENTS_SQL)
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
 fn emitted(db: &Db, kind: &str) -> i64 {
     db.conn()
         .query_row(
@@ -325,6 +347,10 @@ fn the_command_reinstates_and_resends_keys() {
         })
         .unwrap();
     assert_eq!(intents, 0);
+    assert!(
+        reinstatements_queued(&db).is_empty(),
+        "an unsent telling was cancelled, so the relay has nothing to reverse"
+    );
     let row = device_list_row(eh, &db, &x_id);
     assert!(!row.withdrawable && !row.revoked && !row.read_bounded);
 
@@ -423,6 +449,61 @@ fn a_claim_that_remains_keeps_the_relay_intent() {
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(owed, vec![x_id.to_vec()], "the drain still sends it");
+    assert!(
+        reinstatements_queued(&db).is_empty(),
+        "the relay is owed the revocation, not its reversal"
+    );
+}
+
+/// **A withdrawal after the relay was told queues the reverse telling**
+/// (ADR-0056 §5): with no unsent row to cancel, the command writes a
+/// `relay_reinstatement_intents` row in its own transaction, and the drain
+/// owes it at once because the register lets the device go.
+#[test]
+fn a_withdrawal_after_the_relay_was_told_queues_a_reinstatement() {
+    let e = engines(3);
+    let (eh, ex, eother) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    for d in [ex, eother] {
+        trust(eh, &mut db, d);
+        advertise(eh, &mut db, d);
+    }
+    let x_id = ex.keychain.device_id();
+    // The revocation's telling has been drained: no intent row is left.
+    revoke(eh, &mut db, eh, x_id, T0);
+
+    let w = withdraw_cmd(eh, &mut db, x_id).unwrap().withdrawal.unwrap();
+    assert_eq!(w.outcome, WithdrawalOutcome::Reinstated);
+    assert!(!w.relay_intent_cancelled);
+    assert_eq!(reinstatements_queued(&db), vec![x_id.to_vec()]);
+    assert_eq!(reinstatements_owed(&db), vec![x_id.to_vec()]);
+}
+
+/// **Another device's revocation holds the reinstatement back** (ADR-0056
+/// §5): this device's claim is gone, so its reversal is queued, but the
+/// register still names the device, so the drain does not owe it until that
+/// claim is withdrawn too.
+#[test]
+fn a_reinstatement_waits_for_the_other_claimant() {
+    let e = engines(3);
+    let (eh, ep, ex) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    for d in [ex, ep] {
+        trust(eh, &mut db, d);
+        advertise(eh, &mut db, d);
+    }
+    let x_id = ex.keychain.device_id();
+    revoke(eh, &mut db, eh, x_id, T0);
+    revoke(eh, &mut db, ep, x_id, T0 + 1_000);
+
+    let w = withdraw_cmd(eh, &mut db, x_id).unwrap().withdrawal.unwrap();
+    assert_eq!(w.outcome, WithdrawalOutcome::StillClaimed);
+    assert_eq!(reinstatements_queued(&db), vec![x_id.to_vec()]);
+    assert!(reinstatements_owed(&db).is_empty(), "held while revoked");
+
+    withdraw(eh, &mut db, ep, x_id, T0 + 2_000);
+    assert!(!eh.is_revoked(db.conn(), &x_id).unwrap());
+    assert_eq!(reinstatements_owed(&db), vec![x_id.to_vec()]);
 }
 
 /// **A revocation that rotated the identity away cannot be undone by a

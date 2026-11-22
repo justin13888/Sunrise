@@ -18,6 +18,7 @@
 mod blob_uploads;
 mod credential;
 mod frames;
+mod relay_reinstatements;
 mod relay_revocations;
 mod replay_ledger;
 mod scheduling;

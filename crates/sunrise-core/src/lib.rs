@@ -133,6 +133,7 @@ pub use queries::{
     PlannerDay, Query, QueryResult, SavedViewResult, SearchGroup, SearchHit, SearchNotice,
     SearchResults, StreamRow, TaskLateness, TodayRow, TriageRow,
 };
+pub use relay_intents::RelayReinstatement;
 /// What [`CoreError::Db`] carries, and the copies of a vault kept beside it
 /// ([`Core::vault_backups`]): named here so a client that branches on why a
 /// vault would not open needs no dependency on the storage crate.
