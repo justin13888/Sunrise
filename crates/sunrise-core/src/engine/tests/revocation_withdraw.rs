@@ -479,6 +479,36 @@ fn a_withdrawal_after_the_relay_was_told_queues_a_reinstatement() {
     assert_eq!(reinstatements_owed(&db), vec![x_id.to_vec()]);
 }
 
+/// **A new revocation supersedes a queued reinstatement** (ADR-0056 §5):
+/// left queued, it would be sent by a later unwind of the new revocation,
+/// and an unwind must not reach the relay.
+#[test]
+fn a_new_revocation_drops_a_queued_reinstatement() {
+    let e = engines(3);
+    let (eh, ex, eother) = (&e[0], &e[1], &e[2]);
+    let mut db = db_root(ROOT);
+    for d in [ex, eother] {
+        trust(eh, &mut db, d);
+        advertise(eh, &mut db, d);
+    }
+    let x_id = ex.keychain.device_id();
+    revoke(eh, &mut db, eh, x_id, T0);
+    withdraw_cmd(eh, &mut db, x_id).unwrap();
+    assert_eq!(reinstatements_queued(&db), vec![x_id.to_vec()]);
+
+    eh.apply(
+        &mut db,
+        Command::RevokeDevice {
+            device_id: EntityRef::new(EntityKind::Device, x_id),
+            reason: RevokeReason::Lost,
+        },
+    )
+    .unwrap();
+    assert!(eh.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(reinstatements_queued(&db).is_empty());
+    assert_eq!(pending_relay_revocations(&db), vec![x_id]);
+}
+
 /// **Another device's revocation holds the reinstatement back** (ADR-0056
 /// §5): this device's claim is gone, so its reversal is queued, but the
 /// register still names the device, so the drain does not owe it until that

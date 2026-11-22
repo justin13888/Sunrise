@@ -57,7 +57,9 @@
 //! ([`OWED_RELAY_REINSTATEMENTS_SQL`]), asked again before each send. So a
 //! device another device still revokes, or this one revoked again, is not
 //! reinstated at the relay, and the row is sent once the register lets it go.
-//! The two queues are therefore never owed for one device at once.
+//! The two queues are therefore never owed for one device at once. A new
+//! `RevokeDevice` of the device deletes its row outright, so an unwind of
+//! that revocation cannot send a reversal queued before it.
 //!
 //! The relay's `403 DEVICE_NOT_REVOKER` is terminal: another device revoked
 //! it at the relay, or this device lost the key it revoked under. The row

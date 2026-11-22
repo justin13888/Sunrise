@@ -432,6 +432,14 @@ impl Engine {
                      ON CONFLICT(device_id) DO NOTHING",
                     params![&revoked[..], now_ms],
                 )?;
+                // A reinstatement an earlier withdrawal queued and the relay
+                // has not answered is superseded: left queued, a later unwind
+                // of this revocation would send it, and an unwind must not
+                // reach the relay (ADR-0056 §5, `relay_intents`).
+                tx.execute(
+                    "DELETE FROM relay_reinstatement_intents WHERE device_id = ?",
+                    params![&revoked[..]],
+                )?;
             }
 
             // 2 + 3. Rotate everything, and seal each new epoch to every
