@@ -541,10 +541,11 @@ impl<'a> Run<'a> {
         prefix: bool,
     ) -> Result<Self, EngineError> {
         let tz = engine.device_zone();
-        let today = jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap_or(i64::MAX))
-            .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
-            .to_zoned(tz.clone())
-            .date();
+        let today =
+            sunrise_domain::time::timestamp_at_ms(i64::try_from(now_ms).unwrap_or(i64::MAX))
+                .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+                .to_zoned(tz.clone())
+                .date();
         let week_start = engine.week_start(db)?;
         let mut streams = names(
             db.conn(),
@@ -959,8 +960,7 @@ impl<'a> Run<'a> {
                     return Ok(false);
                 };
                 let day = match field {
-                    DateField::Created => jiff::Timestamp::from_millisecond(a.created_ms)
-                        .ok()
+                    DateField::Created => sunrise_domain::time::timestamp_at_ms(a.created_ms)
                         .map(|t| t.to_zoned(self.tz.clone()).date()),
                     DateField::Planned if task => {
                         a.planned.as_ref().and_then(|t| t.day_in(&self.tz))
