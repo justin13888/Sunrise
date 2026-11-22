@@ -308,6 +308,39 @@ fn a_short_cjk_term_finds_at_most_the_cap() {
     assert_eq!(grouped(&e, &db, "猫"), r, "a rebuild finds the same");
 }
 
+/// `created:` reads the clock and the created stamp through the whole
+/// jiff range, so a task made in the last second of year 9999 is read
+/// (#1280): `Timestamp::from_millisecond` refuses that second, and the
+/// fallback to the epoch would have put "today" in 1970.
+#[test]
+fn created_today_holds_in_the_last_second_of_the_range() {
+    const LAST: u64 = 253_402_207_200_500;
+    // The last planner days have no end in range, so the query reads from noon
+    // the day before (UTC), and the stamp made in the last second is tomorrow's.
+    const NOON: u64 = 253_402_084_800_000;
+    let clock = Arc::new(FakeClock(PLMutex::new(LAST)));
+    let e = engine_clocked(clock.clone());
+    let mut db = db();
+    new_task(&e, &mut db, "last second");
+    set_clock(&clock, NOON);
+    let r = match e
+        .query(
+            &db,
+            Query::SearchGrouped {
+                text: "created:tomorrow".into(),
+                now_ms: NOON,
+                prefix: false,
+                per_group: None,
+            },
+        )
+        .unwrap()
+    {
+        QueryResult::Search(r) => *r,
+        other => panic!("expected Search, got {other:?}"),
+    };
+    assert_eq!(group(&r, SearchKind::Task).map(|g| g.hits.len()), Some(1));
+}
+
 /// A query with no text lists the newest first, and two made in the same
 /// millisecond by id, whatever their titles.
 #[test]

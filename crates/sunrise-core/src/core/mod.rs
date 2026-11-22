@@ -435,8 +435,9 @@ impl Core {
         let previous = self.reader_clock.report(zone);
         let from = jiff::tz::TimeZone::get(&previous).unwrap_or(reading_in);
         let now_ms = self.now_ms();
-        let around = jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap_or(i64::MAX))
-            .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+        let around =
+            sunrise_domain::time::timestamp_at_ms(i64::try_from(now_ms).unwrap_or(i64::MAX))
+                .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
         // The zones, not their names: an alias, or UTC under another
         // spelling, resolves every time the same way, so nothing moved.
         let changed = !sunrise_domain::time::same_zone(&from, &to, around);
@@ -960,7 +961,7 @@ impl Core {
                 name: c.name.as_str(),
             })
             .collect();
-        let now = jiff::Timestamp::from_millisecond(
+        let now = sunrise_domain::time::timestamp_at_ms(
             i64::try_from(self.cfg.clock.now_ms()).unwrap_or(i64::MAX),
         )
         .unwrap_or(jiff::Timestamp::UNIX_EPOCH);

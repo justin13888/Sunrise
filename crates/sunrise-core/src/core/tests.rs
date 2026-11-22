@@ -1088,6 +1088,30 @@ async fn routine_timer_materializes_past_the_launch_horizon() {
     core.shutdown().await;
 }
 
+/// A capture reads the clock through the whole range: in the last second of
+/// year 9999 "today" is that day, not 1970 (#1280).
+#[tokio::test]
+async fn capture_reads_the_last_second_of_the_range() {
+    const LAST: u64 = 253_402_207_200_500;
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FakeClock(PLMutex::new(LAST)));
+    let core = Core::open(
+        CoreConfig::with_clock(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            clock as Arc<dyn crate::config::Clock>,
+            seeded_rng(),
+        ),
+        unlock(),
+    )
+    .await
+    .unwrap();
+    let tz = jiff::tz::TimeZone::UTC;
+    let c = core.capture("Ship it ^today", &tz).await.unwrap();
+    let planned = c.draft.planned_at.expect("today resolves");
+    assert_eq!(planned.day_in(&tz), Some(jiff::civil::date(9999, 12, 30)));
+}
+
 /// `Core::capture` must resolve `#stream` against the vault's real streams,
 /// which is the whole reason it exists rather than callers invoking the
 /// domain parser directly.
