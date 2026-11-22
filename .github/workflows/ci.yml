@@ -1142,14 +1142,16 @@ jobs:
           save-if: false
       - name: Choose the base
         id: base
-        # On a push: the newest of the last 20 completed push runs on master
-        # whose `Bench A/B` job succeeded and whose head is an ancestor of
+        # On a push: the newest of the last 20 completed, uncancelled push runs
+        # on master whose `Bench A/B` job succeeded and whose head is an ancestor of
         # this one. A queued run the concurrency group cancelled never ran
-        # this job, so it is passed over, and the commits it carried are
+        # this job, so it is left out of the 20 and cannot push an earlier run out
+        # of the window, and the commits it carried are
         # compared here instead of nowhere. A failed comparison is passed over
         # too, so a range that failed stays under comparison until a run
         # passes. With no such run in the window (the first run, or twenty
-        # failures in a row) it falls back to the commit master moved from,
+        # uncancelled runs in a row that failed or were not ancestors of this
+        # head) it falls back to the commit master moved from,
         # and says so.
         env:
           EVENT: ${{ github.event_name }}
@@ -1163,7 +1165,7 @@ jobs:
           if [ "$EVENT" = push ]; then
             base=""
             runs=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=master&event=push&status=completed&per_page=20" \
-              --jq ".workflow_runs[] | select(.id != $RUN_ID) | \"\(.id) \(.head_sha)\"")
+              --jq ".workflow_runs[] | select(.id != $RUN_ID and .conclusion != \"cancelled\") | \"\(.id) \(.head_sha)\"")
             while read -r id sha; do
               [ -n "$id" ] || continue
               git merge-base --is-ancestor "$sha" HEAD 2>/dev/null || continue
