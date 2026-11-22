@@ -123,10 +123,12 @@ in for external events and 20 dependencies. External events are not stored
 until [#930](https://github.com/justin13888/Sunrise/issues/930) and are always fixed, so their
 stand-ins are written through `ImportBlock` as an `.ics` import writes them, marked
 `source = import:ics`, which reads as `fixed`. Each iteration is one `Engine::plan_preview`, the input gather and the
-solve, for three gestures: `ripple` (a 90-minute block dropped onto a busy afternoon, so the
-ripple chains), `cross_day` (a task dragged onto a busy hour of the next day) and `auto_place` (20
-unplanned tasks into one day). The rows `plan_preview/{ripple,cross_day,auto_place}` join
-`bench/baseline.json`, recorded as `null` until a nightly run reports them.
+solve, for four gestures: `ripple` (a 90-minute block dropped onto a busy afternoon, so the
+ripple chains), `cross_day` (a task dragged onto a busy hour of the next day), `auto_place` (20
+unplanned tasks into one day) and `occurrence` (one event of a daily recurring stand-in dragged onto
+the day's blocks, with four more series expanded into every day's inputs). The rows
+`plan_preview/{ripple,cross_day,auto_place,occurrence}` join `bench/baseline.json`, recorded as
+`null` until a nightly run reports them.
 
 Measured on an Apple M3 Pro under load from other work (not Baseline A), release build, rustc
 1.91.1, at the revision that built [#343](https://github.com/justin13888/Sunrise/issues/343):
@@ -137,7 +139,8 @@ Measured on an Apple M3 Pro under load from other work (not Baseline A), release
 | `cross_day` | 2.3 ms | 2.3 ms | 2.3 ms |
 | `auto_place` | 2.4 ms | 2.5 ms | 2.6 ms |
 
-All three are inside the budget. The ripple's search is most of its cost: about 5 ms of it is the
+All three are inside the budget. `occurrence` joined the bench after these figures were taken
+([#1292](https://github.com/justin13888/Sunrise/pull/1292)) and has no measurement here yet. The ripple's search is most of its cost: about 5 ms of it is the
 bounded search the other two gestures do not run.
 
 ## Search

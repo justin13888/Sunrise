@@ -15,7 +15,13 @@
 //! `bench_function` or `benchmark_group` name in a bench source must head a
 //! row, and every row must name one. Without that, renaming a bench left its
 //! row reading a directory nothing writes any more, and the `None` arm skipped
-//! it without a word (#366).
+//! it without a word (#366). Where a source spells a group's function names
+//! out, as a literal or a `BenchmarkId::from_parameter` over an array literal,
+//! each full `<group>/<function>` must be a row too; a `format!` name, which
+//! carries a size, must start one, and every row must be one of those or
+//! start with one (#1309). A `format!` name that opens with a binding, such
+//! as `prime_hlc`'s `{arm}/{rows}`, starts with each string literal that
+//! binding's `let` holds.
 //!
 //! The platform key is derived from the build target (`linux-x86_64`,
 //! `darwin-aarch64`, …). Other platforms and the schema fields in
@@ -70,6 +76,12 @@ use serde_json::Value;
 #[path = "baseline/compare.rs"]
 mod compare;
 use compare::{check_against, compare_main};
+
+// The check that `BENCHES` and `benches/*.rs` name the same benches, with
+// the readers it parses those sources by.
+#[cfg(test)]
+#[path = "baseline/registry.rs"]
+mod registry;
 
 /// Default regression tolerance, per `testing.md`.
 const DEFAULT_TOLERANCE_PCT: f64 = 5.0;
@@ -287,6 +299,12 @@ const BENCHES: &[Bench] = &[
         dir: "plan_preview/auto_place",
         p50: None,
         p99: "plan_preview_auto_place_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "plan_preview/occurrence",
+        p50: None,
+        p99: "plan_preview_occurrence_p99_ms",
         unit: Unit::Ms,
     },
     // Vault open through the first Today result, over 10k tasks
@@ -553,67 +571,6 @@ mod tests {
             .iter()
             .find(|b| b.dir == dir)
             .unwrap_or_else(|| panic!("no BENCHES row for {dir}"))
-    }
-
-    /// Every string-literal `bench_function` and `benchmark_group` name in
-    /// `benches/*.rs`, with the file it came from.
-    fn bench_source_names() -> Vec<(String, String)> {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("benches");
-        let mut out = Vec::new();
-        let mut files: Vec<_> = std::fs::read_dir(&dir)
-            .expect("read benches/")
-            .map(|e| e.expect("dir entry").path())
-            .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-            .collect();
-        files.sort();
-        assert!(
-            !files.is_empty(),
-            "no bench sources under {}",
-            dir.display()
-        );
-        for path in files {
-            let text = std::fs::read_to_string(&path).expect("read bench source");
-            let file = path.file_name().unwrap().to_string_lossy().into_owned();
-            let mut found = 0;
-            for call in ["benchmark_group(\"", "bench_function(\""] {
-                for (at, _) in text.match_indices(call) {
-                    let rest = &text[at + call.len()..];
-                    let name = &rest[..rest.find('"').expect("closing quote")];
-                    out.push((file.clone(), name.to_string()));
-                    found += 1;
-                }
-            }
-            // A bench whose every name is built with `format!` and sits in no
-            // literal group would escape both directions of the check below.
-            assert!(
-                found > 0,
-                "{file} names no bench with a string literal; give it a benchmark_group"
-            );
-        }
-        out
-    }
-
-    /// The defect #366 found: `sync_session` replaced `ws_handshake`, the
-    /// table kept the old name, and nothing noticed. Each direction is a
-    /// failure: a bench with no row is never compared, and a row with no bench
-    /// reads a directory nothing writes.
-    #[test]
-    fn every_bench_has_a_row_and_every_row_a_bench() {
-        let names = bench_source_names();
-        let head = |b: &Bench| b.dir.split('/').next().unwrap_or(b.dir);
-        for (file, name) in &names {
-            assert!(
-                BENCHES.iter().any(|b| head(b) == name),
-                "{file}: bench `{name}` has no row in BENCHES, so baseline.rs never reads it"
-            );
-        }
-        for b in BENCHES {
-            assert!(
-                names.iter().any(|(_, n)| n == head(b)),
-                "BENCHES row `{}` names no bench in benches/*.rs",
-                b.dir
-            );
-        }
     }
 
     /// The keys are the schema of `bench/baseline.json`, so two rows must never
