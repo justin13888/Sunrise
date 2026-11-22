@@ -122,6 +122,17 @@ pub(super) const ROWS: &[SeedRow] = &[
         ],
     },
     SeedRow {
+        // 0055: a reinstatement the relay refused, kept as its trace.
+        table: "relay_reinstatement_intents",
+        values: &[
+            ("device_id", B(&DEVICE_RETIRED)),
+            ("created_at_ms", I(193)),
+            ("attempts", I(1)),
+            ("last_attempt_ms", I(194)),
+            ("refused_at_ms", I(195)),
+        ],
+    },
+    SeedRow {
         table: "identity_transitions",
         values: &[
             ("to_identity_id", B(&NEXT_IDENTITY)),

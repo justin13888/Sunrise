@@ -598,3 +598,32 @@ fn a_v53_vault_gains_an_empty_shifts_table_and_paused_routines() {
         .unwrap();
     assert_eq!(index, 1);
 }
+
+/// Migration 0055 (#1299, ADR-0056 §5) over a real v54 vault: the
+/// `relay_reinstatement_intents` queue exists and starts empty, the
+/// revocation queue it inverts keeps the row the fixture queued, and a new
+/// row reads as not refused.
+#[test]
+fn a_v54_vault_gains_an_empty_reinstatement_queue_beside_its_revocation_queue() {
+    let (_dir, db) = open_migrated(&fixture_name(54));
+    assert_eq!(row_count(&db, "relay_reinstatement_intents"), 0);
+    assert!(
+        row_count(&db, "relay_revocation_intents") > 0,
+        "the fixture's queued revocation survives"
+    );
+    db.conn()
+        .execute(
+            "INSERT INTO relay_reinstatement_intents (device_id, created_at_ms) VALUES (X'01', 1)",
+            [],
+        )
+        .unwrap();
+    let (attempts, refused): (i64, Option<i64>) = db
+        .conn()
+        .query_row(
+            "SELECT attempts, refused_at_ms FROM relay_reinstatement_intents",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((attempts, refused), (0, None));
+}
