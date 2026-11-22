@@ -303,7 +303,11 @@ trying again. The way back is the revoker's reinstatement (below), which leaves
 no revoked row behind, or pairing again, which mints a new key and vault id. A
 row revoked by the relay-id route or by an unsigned request has no recorded
 revoker, so for that device pairing again is the only way back. Another
-account's rows are not consulted.
+account's rows are not consulted. The refusal binds the revoked key and vault
+id, not the bearer: the relay never verifies `device_cert`, so a revoked device
+still holding a bearer can register a freshly generated key under a fresh vault
+id and sign under that active row, for as long as it can present a bearer the
+relay accepts.
 
 #### Two names for one device, and why the second exists
 
