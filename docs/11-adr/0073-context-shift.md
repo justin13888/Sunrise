@@ -103,7 +103,7 @@ skips first: `Routine::occurrences_in`), at the instant it would fire:
 |---|---|
 | `pause` | Not generated, and not missed. The horizon resumes at the shift's end with no backfill: a covered key never becomes a catch-up. |
 | `shift_tz` | Generated at its key's wall-clock time in the shift's `zone`, by the one DST rule (time.md §3), and planned `zoned` there. The key is unchanged, so the task id, a skip and the streak still agree. |
-| `skip` | Generated as skipped, with cause `context_shift`. The streak excuses it. |
+| `skip` | Not generated, like `pause`: no task row is written for it. The streak excuses it. *(Amended 2026-11: this row first read "Generated as skipped, with cause `context_shift`"; generation drops it instead, so a covered key writes nothing and a shift's end or deletion gives the occurrence back with no stale skip to undo. See [routines-and-recurrence.md §Context shifts](../02-domain/routines-and-recurrence.md).)* |
 | `unchanged` | Generated as if there were no shift. |
 
 - **Which shift covers a `shift_tz` occurrence** is decided on the
