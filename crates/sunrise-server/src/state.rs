@@ -98,8 +98,10 @@ pub struct ServerState {
     /// Disabled unless `[push]` configures a provider.
     pub push: crate::push::Dispatcher,
     /// The pairing rendezvous: live sessions keyed by `pair_id`, and the
-    /// pair-attempt ledgers. In memory only; a session lives five minutes.
-    pub pairing: crate::api::pairing::Rendezvous,
+    /// pair-attempt ledgers. In memory unless [`ServerState::on_postgres`]
+    /// shared it through the database, so either half of a pairing may reach
+    /// any node; a session lives five minutes.
+    pub pairing: Arc<dyn crate::api::pairing::Rendezvous>,
     /// Trace export. Disabled unless `[observability]` is configured, and
     /// then the root of every traced operation; `docs/06-server/observability.md`
     /// §Tracing.
@@ -205,9 +207,10 @@ impl ServerState {
     }
 
     /// A node of a relay running over the shared database `store` is: its
-    /// metadata, sync sessions and rate cells there, and its hub fed by a
-    /// listener on the cluster's relay notices (ADR-0062). Returns the
-    /// listener too, so a test can stop a node's feed as a crash would.
+    /// metadata, sync sessions, pairing rendezvous and rate cells there, and
+    /// its hub fed by a listener on the cluster's relay notices (ADR-0062).
+    /// Returns the listener too, so a test can stop a node's feed as a crash
+    /// would.
     ///
     /// Needs the runtime: the listener is a task on it.
     ///
@@ -218,7 +221,7 @@ impl ServerState {
         store: crate::store::postgres::PgStore,
         clock: Arc<dyn Clock>,
     ) -> Result<(Self, crate::store::postgres::PgFanout), StartError> {
-        use crate::store::postgres::{PgFanout, PgLimiter, PgSessions};
+        use crate::store::postgres::{PgFanout, PgLimiter, PgRendezvous, PgSessions};
         let push = crate::push::from_config(&config.push, Arc::clone(&clock))?;
         let mut state = Self::assemble(config, clock, Arc::new(store.clone()), push)?;
         let feed = PgFanout::spawn(store.clone(), state.relay.clone());
@@ -226,6 +229,7 @@ impl ServerState {
         state.sessions = crate::sync_session::SessionStore::with_backend(Arc::new(
             PgSessions::new(store.clone()),
         ));
+        state.pairing = Arc::new(PgRendezvous::new(store.clone()));
         state.limiter = crate::api::ratelimit::Limiter::new(Arc::new(PgLimiter::new(store)));
         Ok((state, feed))
     }
@@ -282,7 +286,7 @@ impl ServerState {
             drain: crate::drain::Drain::new(),
             limiter: crate::api::ratelimit::Limiter::default(),
             push,
-            pairing: crate::api::pairing::Rendezvous::new(),
+            pairing: Arc::new(crate::api::pairing::MemoryRendezvous::new()),
             telemetry: sunrise_telemetry::Telemetry::disabled(),
             _blob_scratch: blob_scratch,
         })
