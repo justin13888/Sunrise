@@ -260,15 +260,18 @@ pub async fn send(
         .into());
     }
     let limits = state.config.limits.enabled.then(|| address_key(client));
-    let outcome = state.pairing.send(
-        &caller.principal.account.account_id,
-        limits.as_deref(),
-        pair_id,
-        body.role,
-        usize::try_from(body.index).unwrap_or(usize::MAX),
-        message,
-        state.clock.now_ms(),
-    );
+    let outcome = state
+        .pairing
+        .send(
+            &caller.principal.account.account_id,
+            limits.as_deref(),
+            pair_id,
+            body.role,
+            usize::try_from(body.index).unwrap_or(usize::MAX),
+            message,
+            state.clock.now_ms(),
+        )
+        .await;
     record(&state, &outcome);
     match outcome {
         Ok(sent) => Ok(Json(PairSendResponse {
@@ -290,13 +293,16 @@ pub async fn receive(
     }: SignedBootstrap<PairReceiveRequest>,
 ) -> Result<Json<PairReceiveResponse>, Throttled> {
     let pair_id = pair_id_of(&body.pair_id)?;
-    let outcome = state.pairing.receive(
-        &caller.principal.account.account_id,
-        pair_id,
-        body.role,
-        usize::try_from(body.after).unwrap_or(usize::MAX),
-        state.clock.now_ms(),
-    );
+    let outcome = state
+        .pairing
+        .receive(
+            &caller.principal.account.account_id,
+            pair_id,
+            body.role,
+            usize::try_from(body.after).unwrap_or(usize::MAX),
+            state.clock.now_ms(),
+        )
+        .await;
     record_expiries(&state, outcome.expired);
     match outcome.result {
         Ok((messages, expires_at_ms)) => Ok(Json(PairReceiveResponse {
@@ -304,9 +310,11 @@ pub async fn receive(
             expires_at_ms,
         })),
         Err(refusal) => {
-            state
-                .metrics
-                .incr_with("sunrise_pairing_total", &[("result", refusal.label())]);
+            if let Some(label) = refusal.label() {
+                state
+                    .metrics
+                    .incr_with("sunrise_pairing_total", &[("result", label)]);
+            }
             Err(refused(refusal))
         }
     }
@@ -328,11 +336,16 @@ pub async fn abort(
 ) -> Result<NoContent, ApiError> {
     let pair_id = pair_id_of(&body.pair_id)?;
     let _ = body.role;
-    if state.pairing.abort(
-        &caller.principal.account.account_id,
-        pair_id,
-        state.clock.now_ms(),
-    ) {
+    let dropped = state
+        .pairing
+        .abort(
+            &caller.principal.account.account_id,
+            pair_id,
+            state.clock.now_ms(),
+        )
+        .await
+        .map_err(|_| unavailable())?;
+    if dropped {
         state
             .metrics
             .incr_with("sunrise_pairing_total", &[("result", "aborted")]);
@@ -357,12 +370,15 @@ pub async fn resolve(
 ) -> Result<Json<PairResolveResponse>, Throttled> {
     let code = code_of(&body.code)?;
     let limits = state.config.limits.enabled.then(|| address_key(client));
-    let outcome = state.pairing.resolve(
-        &caller.principal.account.account_id,
-        limits.as_deref(),
-        code,
-        state.clock.now_ms(),
-    );
+    let outcome = state
+        .pairing
+        .resolve(
+            &caller.principal.account.account_id,
+            limits.as_deref(),
+            code,
+            state.clock.now_ms(),
+        )
+        .await;
     record_expiries(&state, outcome.expired);
     match outcome.result {
         Ok((pair_id, expires_at_ms)) => Ok(Json(PairResolveResponse {
@@ -407,24 +423,29 @@ fn refused(refusal: Refusal) -> Throttled {
         Refusal::Limited { retry_after_ms } => {
             RateLimited::after_secs(retry_after_ms.div_ceil(1000)).into()
         }
+        Refusal::Unavailable => unavailable().into(),
     }
 }
 
+/// `503 RELAY_STORAGE_UNAVAILABLE`: the shared rendezvous did not answer, and
+/// the client retries.
+fn unavailable() -> ApiError {
+    ApiError::unavailable("the relay's pairing store is unavailable")
+}
+
 fn record(state: &ServerState, outcome: &Result<Sent, Refusal>) {
-    let result = match outcome {
+    let Some(result) = (match outcome {
         Ok(sent) => {
             record_expiries(state, sent.expired);
             if sent.replayed {
                 // Counted when it was first accepted.
                 return;
             }
-            if sent.opened {
-                "opened"
-            } else {
-                "relayed"
-            }
+            Some(if sent.opened { "opened" } else { "relayed" })
         }
         Err(refusal) => refusal.label(),
+    }) else {
+        return;
     };
     state
         .metrics
@@ -470,7 +491,12 @@ impl Describe for ClientAddress {
 
 #[path = "pairing_rendezvous.rs"]
 mod rendezvous;
-pub use rendezvous::{Received, Refusal, Rendezvous, Resolved, Sent};
+#[cfg(test)]
+pub(crate) use rendezvous::conformance::run as rendezvous_conformance;
+pub use rendezvous::{
+    admit_both, free_code, MemoryRendezvous, Received, Refusal, Rendezvous, Resolved, Sent,
+    Session, MAX_SESSIONS,
+};
 
 #[cfg(test)]
 #[path = "pairing_tests.rs"]

@@ -700,7 +700,11 @@ decoded. The relay never reads it.
 - **At most 4096 live sessions per relay.** Past that, opening one is `429`
   until the oldest expires.
 - **300 s from the opening message**, then the session is dropped whatever its
-  state. Sessions live in memory and do not survive a restart.
+  state. On a single-binary relay sessions live in memory and do not survive
+  a restart. On a relay running as several nodes over Postgres they are shared
+  rows, so the two devices may reach different nodes, and a database that does
+  not answer is `503 RELAY_STORAGE_UNAVAILABLE`, which the client retries
+  ([`self-hosting.md`](self-hosting.md) §Several nodes over Postgres).
 - A session that is not live **for the caller's account** — never opened,
   expired, aborted, overflowed, or another account's — is `404
   RELAY_PAIR_SESSION_GONE`. The answer is the same in every case, so the route

@@ -65,6 +65,23 @@ pub struct AttemptWindow {
 }
 
 impl AttemptWindow {
+    /// A window holding the attempts in `admitted_ms`, in any order: one a
+    /// shared store kept for a key, rebuilt to decide the next attempt.
+    #[must_use]
+    pub fn from_admitted(admitted_ms: impl IntoIterator<Item = u64>) -> Self {
+        let mut admitted: Vec<u64> = admitted_ms.into_iter().collect();
+        admitted.sort_unstable();
+        Self {
+            admitted_ms: admitted.into(),
+        }
+    }
+
+    /// The attempts the window holds, oldest first: what a shared store keeps
+    /// for the key, and [`Self::from_admitted`] takes back.
+    pub fn admitted(&self) -> impl Iterator<Item = u64> + '_ {
+        self.admitted_ms.iter().copied()
+    }
+
     /// Admit one attempt at `now_ms` and record it, or refuse it with the
     /// milliseconds until the earliest moment a retry would be admitted.
     ///
@@ -203,6 +220,30 @@ mod tests {
             w.try_admit(AttemptLimit::PER_ACCOUNT, stepped_back + HOUR_MS),
             Ok(())
         );
+    }
+
+    /// A window rebuilt from what [`AttemptWindow::admitted`] gave out, in
+    /// whatever order a store hands it back, decides exactly as the original:
+    /// a step-back attempt included.
+    #[test]
+    fn a_window_rebuilt_from_its_attempts_decides_as_the_original() {
+        let mut w = AttemptWindow::default();
+        for t in [T0, T0 + 1000, T0 - 5_000, T0 + 2000] {
+            w.try_admit(AttemptLimit::PER_ACCOUNT, t).unwrap();
+        }
+        let mut stored: Vec<u64> = w.admitted().collect();
+        assert!(stored.is_sorted(), "oldest first");
+        stored.reverse();
+        let mut rebuilt = AttemptWindow::from_admitted(stored);
+        assert_eq!(rebuilt, w);
+        for i in 0..8 {
+            let now = T0 + 10_000 + i;
+            assert_eq!(
+                rebuilt.try_admit(AttemptLimit::PER_ACCOUNT, now),
+                w.try_admit(AttemptLimit::PER_ACCOUNT, now),
+                "attempt {i}"
+            );
+        }
     }
 
     #[test]

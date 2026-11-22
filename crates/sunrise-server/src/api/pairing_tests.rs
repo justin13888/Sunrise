@@ -446,9 +446,10 @@ async fn malformed_requests_are_refused_without_opening_anything() {
 
 /// The rendezvous unit, below the router: the session table is bounded, and a
 /// full table refuses with the wait until its first session expires.
-#[test]
-fn a_full_session_table_refuses_until_a_session_expires() {
-    let r = super::Rendezvous::new();
+#[tokio::test]
+async fn a_full_session_table_refuses_until_a_session_expires() {
+    use super::Rendezvous as _;
+    let r = super::MemoryRendezvous::new();
     let open = |id: [u8; 16], now_ms: u64| {
         r.send(
             "acct",
@@ -460,21 +461,28 @@ fn a_full_session_table_refuses_until_a_session_expires() {
             now_ms,
         )
     };
-    for i in 0..super::rendezvous::MAX_SESSIONS {
+    for i in 0..super::MAX_SESSIONS {
         let mut id = [0u8; 16];
         id[..8].copy_from_slice(&u64::try_from(i).unwrap().to_be_bytes());
-        open(id, T0_MS).unwrap();
+        open(id, T0_MS).await.unwrap();
     }
-    assert_eq!(r.len(), super::rendezvous::MAX_SESSIONS);
+    assert_eq!(r.len(), super::MAX_SESSIONS);
     assert_eq!(
-        open([0xff; 16], T0_MS + 1000),
+        open([0xff; 16], T0_MS + 1000).await,
         Err(super::Refusal::Limited {
             retry_after_ms: SESSION_TTL_MS - 1000
         })
     );
-    let admitted = open([0xff; 16], T0_MS + SESSION_TTL_MS).unwrap();
-    assert_eq!(admitted.expired, super::rendezvous::MAX_SESSIONS);
+    let admitted = open([0xff; 16], T0_MS + SESSION_TTL_MS).await.unwrap();
+    assert_eq!(admitted.expired, super::MAX_SESSIONS);
     assert_eq!(r.len(), 1);
+}
+
+/// The in-memory rendezvous keeps the contract every backend owes.
+#[tokio::test]
+async fn the_memory_rendezvous_passes_the_rendezvous_conformance_suite() {
+    let r = super::MemoryRendezvous::new();
+    super::rendezvous::conformance::run(&r, &r).await;
 }
 
 // --- The typed code --------------------------------------------------------
@@ -646,6 +654,82 @@ async fn the_eleventh_code_lookup_in_an_hour_is_refused() {
     send(&client, &pair_id(44), NEW, 0, b"noise-1")
         .await
         .assert_status(StatusCode::OK);
+}
+
+/// A rendezvous whose store never answers.
+#[derive(Debug)]
+struct Down;
+
+#[async_trait::async_trait]
+impl super::Rendezvous for Down {
+    async fn send(
+        &self,
+        _: &str,
+        _: Option<&str>,
+        _: [u8; 16],
+        _: super::PairRole,
+        _: usize,
+        _: Vec<u8>,
+        _: u64,
+    ) -> Result<super::Sent, super::Refusal> {
+        Err(super::Refusal::Unavailable)
+    }
+
+    async fn resolve(&self, _: &str, _: Option<&str>, _: u32, _: u64) -> super::Resolved {
+        super::Resolved {
+            result: Err(super::Refusal::Unavailable),
+            expired: 0,
+        }
+    }
+
+    async fn receive(
+        &self,
+        _: &str,
+        _: [u8; 16],
+        _: super::PairRole,
+        _: usize,
+        _: u64,
+    ) -> super::Received {
+        super::Received {
+            result: Err(super::Refusal::Unavailable),
+            expired: 0,
+        }
+    }
+
+    async fn abort(&self, _: &str, _: [u8; 16], _: u64) -> Result<bool, super::Refusal> {
+        Err(super::Refusal::Unavailable)
+    }
+}
+
+/// A shared rendezvous that does not answer is `503
+/// RELAY_STORAGE_UNAVAILABLE` on every route, which the client retries, and is
+/// counted as no pairing outcome.
+#[tokio::test]
+async fn a_rendezvous_store_that_does_not_answer_is_a_retryable_503() {
+    let clock = Arc::new(TestClock(AtomicU64::new(T0_MS)));
+    let mut state = ServerState::with_clock(ServerConfig::default(), clock);
+    state.pairing = Arc::new(Down);
+    let client = Client::from_state(state);
+    let pair = pair_id(9);
+    let answers = [
+        send(&client, &pair, NEW, 0, b"noise-1").await,
+        receive_as(&client, BEARER, &pair, EXISTING, 0).await,
+        resolve_as(&client, BEARER, "123456").await,
+        client
+            .send(
+                Method::POST,
+                "/api/v1/pairing/abort",
+                Some(&serde_json::json!({ "pair_id": pair, "role": NEW })),
+            )
+            .await,
+    ];
+    for res in answers {
+        res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(code_of(&res), codes::RELAY_STORAGE_UNAVAILABLE);
+    }
+    for result in ["gone", "rate_limited", "opened", "aborted"] {
+        assert_eq!(outcomes(&client, result), 0, "{result}");
+    }
 }
 
 /// A code that is not six ASCII digits is refused before anything is looked
