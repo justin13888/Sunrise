@@ -3,6 +3,11 @@
 
 use super::*;
 
+/// The relay's ack for batch 7 on stream `ab…ab`, carrying every field
+/// `OpsResponse` requires.
+const OPS_OK: &str =
+    r#"{"batch_id":7,"stream_id":"abababababababababababababababab","server_first_seen_ms":1234}"#;
+
 /// A relay that refuses an operation is reported as a refusal, with its own
 /// code. Reading a refusal as a success is the failure mode worth pinning:
 /// the driver would then wait on a session that was never opened.
@@ -211,7 +216,7 @@ async fn a_subscribe_drops_the_open_stream_and_its_resume_point() {
 async fn an_op_batch_is_published_and_acked_against_the_batch_that_sent_it() {
     let relay = relay::start(vec![
         relay::Canned::json(200, SESSION_OK),
-        relay::Canned::json(200, r#"{"server_first_seen_ms":1234}"#),
+        relay::Canned::json(200, OPS_OK),
     ])
     .await;
     let mut t = open_session(&relay).await;
@@ -294,19 +299,19 @@ async fn a_token_refresh_is_acked_with_the_new_deadline() {
 //
 // `Subscribe`, `OpBatch` and `RefreshToken` each guard their reply with
 // `if !reply.status.is_success()`. Each guard is separate code and each
-// survives separately: replacing any one of them with `false` turns a
-// refusal into a success made out of a problem document, and the reply
-// readers are total — `field_u64` answers `0` for a field that is not
-// there — so nothing downstream notices.
+// survives separately: replacing any one of them with `false` reads a
+// problem document as the reply. The typed decode now refuses that document
+// too (#1264), but as a protocol error that loses the relay's own code, so
+// the assertions below pin the code rather than only the failure.
 
 /// A batch the relay refused is a refusal, never an ack.
 ///
-/// The load-bearing one of the three, and therefore written first. Without
-/// the guard, the problem document is parsed as an ack: `field_u64` reads
-/// the missing `server_first_seen_ms` as `0`, an `Ack` naming this batch
-/// reaches the driver, and the outbox retires ops the relay never stored.
-/// That is data loss rather than a retry — after the ack the driver has
-/// nothing left to re-send.
+/// The load-bearing one of the three, and therefore written first. Before
+/// the replies were decoded into their typed models, a missing guard parsed
+/// the problem document as an ack: the missing `server_first_seen_ms` read
+/// as `0`, an `Ack` naming this batch reached the driver, and the outbox
+/// retired ops the relay never stored. That is data loss rather than a
+/// retry — after the ack the driver has nothing left to re-send.
 #[tokio::test]
 async fn an_op_batch_the_relay_refused_is_never_acked() {
     let relay = relay::start(vec![
@@ -376,8 +381,8 @@ async fn a_subscribe_the_relay_refused_discards_no_resume_point() {
 /// A refused refresh is reported rather than acked with a deadline the
 /// relay never set.
 ///
-/// Without the guard, `field_u64` reads the absent `expires_at_ms` as `0`,
-/// which this protocol spells *no deadline* — so a client whose refresh was
+/// Before the typed decode, a missing guard read the absent `expires_at_ms`
+/// as `0`, which this protocol spells *no deadline* — so a client whose refresh was
 /// rejected would be told its credential never expires, and would stop
 /// refreshing until the relay closed the stream under it.
 #[tokio::test]
@@ -403,6 +408,117 @@ async fn a_token_refresh_the_relay_refused_is_never_acked() {
     assert!(
         t.inbound.is_empty(),
         "a refused refresh names no new deadline"
+    );
+}
+
+// ---- the success replies that used to read a missing field as zero ----
+//
+// #1264: a `200` whose body lacks a field the relay's description requires
+// is malformed, and is refused as one rather than read as `0`.
+
+/// An ack missing a field `OpsResponse` requires is a protocol error, never
+/// an `Ack`: read as `0`, a missing `server_first_seen_ms` would retire the
+/// batch from the outbox with a first-seen time the relay never stated.
+#[tokio::test]
+async fn an_op_batch_ack_missing_a_required_field_is_never_acked() {
+    let good: serde_json::Value = serde_json::from_str(OPS_OK).expect("a JSON fixture");
+    for field in ["batch_id", "stream_id", "server_first_seen_ms"] {
+        let mut body = good.clone();
+        body.as_object_mut()
+            .expect("an object")
+            .remove(field)
+            .expect("the fixture carries every required field");
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(200, &body.to_string()),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let payload = super::OpBatchPayload {
+            ops: vec![b"one".to_vec()],
+            batch_id: 7,
+            stream_id: [0xabu8; 16],
+        }
+        .encode()
+        .expect("an encodable batch");
+        let err = t
+            .send_frame(frame_of(super::MsgKind::OpBatch, &payload))
+            .await
+            .expect_err("an ack missing a required field is malformed");
+
+        assert!(matches!(err, TransportError::Protocol(_)), "{field}: {err}");
+        assert!(
+            t.inbound.is_empty(),
+            "a malformed ack synthesizes no Ack, so the outbox keeps its ops: {field}"
+        );
+    }
+}
+
+/// An ack whose echo names another batch or another stream is no ack of the
+/// batch sent, so it reaches the driver as a protocol error rather than as an
+/// `Ack` that would retire this batch from the outbox.
+#[tokio::test]
+async fn an_op_batch_ack_naming_another_batch_is_never_acked() {
+    let good: serde_json::Value = serde_json::from_str(OPS_OK).expect("a JSON fixture");
+    for (field, value) in [
+        ("batch_id", serde_json::json!(8)),
+        ("stream_id", serde_json::json!("cd".repeat(16))),
+    ] {
+        let mut body = good.clone();
+        body[field] = value;
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(200, &body.to_string()),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let payload = super::OpBatchPayload {
+            ops: vec![b"one".to_vec()],
+            batch_id: 7,
+            stream_id: [0xabu8; 16],
+        }
+        .encode()
+        .expect("an encodable batch");
+        let err = t
+            .send_frame(frame_of(super::MsgKind::OpBatch, &payload))
+            .await
+            .expect_err("an ack of another batch is not an ack of this one");
+
+        assert!(
+            matches!(&err, TransportError::Protocol(m) if m.contains("not the batch sent")),
+            "{field}: {err}"
+        );
+        assert!(t.inbound.is_empty(), "the outbox keeps its ops: {field}");
+    }
+}
+
+/// A refresh reply with no `expires_at_ms` is a protocol error rather than a
+/// deadline of `0`, which this protocol spells *no deadline*.
+#[tokio::test]
+async fn a_token_refresh_reply_missing_its_deadline_is_never_acked() {
+    let relay = relay::start(vec![
+        relay::Canned::json(200, SESSION_OK),
+        relay::Canned::json(200, r#"{"refresh_after_ms":1788137000000}"#),
+    ])
+    .await;
+    let mut t = open_session(&relay).await;
+
+    let payload = super::RefreshTokenPayload {
+        token: "the-new-bearer".to_owned(),
+    }
+    .encode()
+    .expect("an encodable refresh");
+    let err = t
+        .send_frame(frame_of(super::MsgKind::RefreshToken, &payload))
+        .await
+        .expect_err("a reply naming no deadline is malformed");
+
+    assert!(matches!(err, TransportError::Protocol(_)), "{err}");
+    assert!(
+        t.inbound.is_empty(),
+        "a malformed refresh reply names no new deadline"
     );
 }
 

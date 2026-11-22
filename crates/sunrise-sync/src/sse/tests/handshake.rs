@@ -56,28 +56,82 @@ async fn hello_opens_a_session_and_its_reply_becomes_a_hello_ack() {
 /// own contract. Both shapes now fail where they are read, and neither
 /// leaves an ack behind: the driver's reconnect is what decides what
 /// happens next, which is what it does for every other failed handshake.
+///
+/// The rest are the fields the reply used to read totally (#1264): each one
+/// `SessionResponse` requires, removed from an otherwise good reply, was read
+/// as `""` or `0` — so a relay that omitted `wire_proto` reached negotiation
+/// as version 0 and one that omitted `server_time_ms` reported the epoch. A
+/// value of the wrong type, and a negotiated version too large for a `u32`,
+/// are malformed the same way: a truncated version is a number neither side
+/// said.
 #[tokio::test]
 async fn a_hello_reply_this_build_cannot_read_is_refused_rather_than_acked() {
-    for body in [
-        "not json at all",
-        r#"{"server_app_v":"9.9.9","wire_proto":1,"crypto_suite":1,"doc_schema_floor":3}"#,
+    let good: serde_json::Value = serde_json::from_str(SESSION_OK).expect("a JSON fixture");
+    let mut bodies = vec![
+        "not json at all".to_owned(),
+        r#"{"server_app_v":"9.9.9","wire_proto":1,"crypto_suite":1,"doc_schema_floor":3}"#
+            .to_owned(),
+    ];
+    for field in [
+        "session_id",
+        "server_app_v",
+        "wire_proto",
+        "crypto_suite",
+        "doc_schema_floor",
+        "capabilities",
+        "server_time_ms",
     ] {
+        let mut missing = good.clone();
+        missing
+            .as_object_mut()
+            .expect("an object")
+            .remove(field)
+            .expect("the fixture carries every required field");
+        bodies.push(missing.to_string());
+    }
+    for (field, value) in [
+        ("wire_proto", serde_json::json!(u64::from(u32::MAX) + 1)),
+        ("capabilities", serde_json::json!("not a number")),
+        ("server_app_v", serde_json::json!(9)),
+    ] {
+        let mut wrong = good.clone();
+        wrong[field] = value;
+        bodies.push(wrong.to_string());
+    }
+    for body in &bodies {
         let relay = relay::start(vec![relay::Canned::json(200, body)]).await;
         let mut t = dial(&relay);
         let err = t
             .send_frame(hello_frame())
             .await
             .expect_err("a reply this build cannot read is not a session");
-        assert!(matches!(err, TransportError::Protocol(_)), "{err}");
+        assert!(matches!(err, TransportError::Protocol(_)), "{body}: {err}");
         assert!(
             t.session.is_none(),
-            "and nothing is remembered from a handshake that failed"
+            "and nothing is remembered from a handshake that failed: {body}"
         );
         assert!(
             t.inbound.is_empty(),
-            "no HelloAck reaches the driver for a handshake that did not happen"
+            "no HelloAck reaches the driver for a handshake that did not happen: {body}"
         );
     }
+}
+
+/// The strictness is for missing fields only. A field a newer relay adds is
+/// ignored, as `docs/10-cross-cutting/protocol-versioning.md` §6 requires of
+/// every sync body, so the refusals above are not a decode that refuses
+/// anything it does not recognise.
+#[tokio::test]
+async fn a_hello_reply_with_a_field_this_build_does_not_know_still_opens_a_session() {
+    let mut body: serde_json::Value = serde_json::from_str(SESSION_OK).expect("a JSON fixture");
+    body["schema_fingerprint"] = serde_json::json!("b3:0123456789abcdef");
+    let relay = relay::start(vec![relay::Canned::json(200, &body.to_string())]).await;
+    let mut t = dial(&relay);
+    t.send_frame(hello_frame())
+        .await
+        .expect("an unknown field is ignored");
+    assert_eq!(t.session.as_deref(), Some("sess-1"));
+    assert_eq!(t.inbound.len(), 1, "and the HelloAck reaches the driver");
 }
 
 /// A handshake whose reply body never finishes arriving is reported rather

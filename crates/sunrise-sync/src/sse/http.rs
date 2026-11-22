@@ -493,26 +493,3 @@ pub(super) fn binding_advice(server_date: Option<&str>, now_ms: Option<u64>) -> 
 pub(super) fn protocol<E: std::fmt::Display>(e: &E) -> TransportError {
     TransportError::Protocol(e.to_string())
 }
-
-pub(super) fn field_str(v: &serde_json::Value, key: &str) -> String {
-    v.get(key)
-        .and_then(|f| f.as_str())
-        .unwrap_or_default()
-        .to_owned()
-}
-
-pub(super) fn field_u64(v: &serde_json::Value, key: &str) -> u64 {
-    v.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0)
-}
-
-/// A negotiated version that does not fit a `u32` is a malformed reply rather
-/// than a number to quietly truncate: the whole point of negotiation is that
-/// both sides agree on the value.
-///
-/// Only an out-of-range value is refused. An absent or non-integer key reads
-/// as 0, as [`field_u64`] reads it, so this reader is total over a missing
-/// field; negotiation then sees a 0 rather than an error.
-pub(super) fn field_u32(v: &serde_json::Value, key: &str) -> Result<u32, TransportError> {
-    u32::try_from(field_u64(v, key))
-        .map_err(|_| TransportError::Protocol(format!("{key} does not fit a u32")))
-}

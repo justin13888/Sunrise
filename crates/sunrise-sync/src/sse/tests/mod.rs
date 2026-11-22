@@ -20,12 +20,11 @@ mod session;
 mod stream;
 
 use super::{
-    await_head, binding_advice, cursor_json, decode_frame, field_str, field_u32, field_u64,
-    parse_id, read_body, retry_after, server_date, AckPayload, BacklogPayload, CaughtUpPayload,
-    ClosePayload, CursorEntry, ErrorPayload, HelloAck, MsgKind, OpBatchPayload,
-    RefreshTokenAckPayload, RefreshTokenPayload, Reply, SseTransport, SubscribePayload,
-    BLOB_IDLE_TIMEOUT, BODY_IDLE_TIMEOUT, CHUNK_HEAD_TIMEOUT, HEAD_TIMEOUT, MAX_BLOB_BYTES,
-    MAX_EVENT_BYTES,
+    await_head, binding_advice, cursor_json, decode_frame, parse_id, read_body, retry_after,
+    server_date, AckPayload, BacklogPayload, CaughtUpPayload, ClosePayload, CursorEntry,
+    ErrorPayload, HelloAck, MsgKind, OpBatchPayload, RefreshTokenAckPayload, RefreshTokenPayload,
+    Reply, SseTransport, SubscribePayload, BLOB_IDLE_TIMEOUT, BODY_IDLE_TIMEOUT,
+    CHUNK_HEAD_TIMEOUT, HEAD_TIMEOUT, MAX_BLOB_BYTES, MAX_EVENT_BYTES,
 };
 use crate::signer::DeviceSigner;
 use crate::transport::{Transport, TransportError};

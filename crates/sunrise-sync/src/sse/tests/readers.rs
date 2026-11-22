@@ -46,43 +46,6 @@ fn retry_after_reads_delta_seconds_and_nothing_else() {
     assert!(super::retry_after(&hyper::HeaderMap::new()).is_none());
 }
 
-/// The advisory reply fields are total: absent or wrongly typed reads as
-/// the type's zero, because a relay that omits a capability bitfield should
-/// not sink a session that does not use it.
-#[test]
-fn the_reply_field_readers_return_the_value_or_a_zero() {
-    let reply = serde_json::json!({
-        "server_app_v": "1.2.3",
-        "capabilities": 9,
-        "wire_proto": 7,
-        "text": "not a number",
-    });
-    assert_eq!(super::field_str(&reply, "server_app_v"), "1.2.3");
-    assert_eq!(super::field_str(&reply, "absent"), "");
-    assert_eq!(
-        super::field_str(&reply, "capabilities"),
-        "",
-        "a number is not a string"
-    );
-    assert_eq!(super::field_u64(&reply, "capabilities"), 9);
-    assert_eq!(super::field_u64(&reply, "absent"), 0);
-    assert_eq!(super::field_u64(&reply, "text"), 0);
-    assert_eq!(super::field_u32(&reply, "wire_proto").expect("a u32"), 7);
-}
-
-/// A negotiated version that does not fit a `u32` is refused rather than
-/// truncated. The whole point of the handshake is that both sides agree on
-/// the value, and a wrapped one is a number neither of them said.
-#[test]
-fn a_negotiated_version_too_large_for_a_u32_is_refused() {
-    let reply = serde_json::json!({"wire_proto": u64::from(u32::MAX) + 1});
-    let err = super::field_u32(&reply, "wire_proto").expect_err("it does not fit");
-    assert!(
-        matches!(&err, TransportError::Protocol(m) if m.contains("wire_proto")),
-        "{err}"
-    );
-}
-
 /// A cursor goes up as the hex device id and the sequence already applied.
 #[test]
 fn a_cursor_is_sent_as_a_hex_device_id_and_its_applied_sequence() {

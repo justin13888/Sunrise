@@ -1,7 +1,7 @@
 //! The [`Transport`] impl: the frame-to-operation table, the read loop, and the
 //! one place a trait method reaches the blob and account surfaces.
 
-use super::http::{field_str, field_u32, field_u64, protocol, MAX_EVENT_BYTES};
+use super::http::{protocol, MAX_EVENT_BYTES};
 use super::SseTransport;
 use crate::transport::{
     BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, ReinstateOutcome,
@@ -14,6 +14,49 @@ use sunrise_wire_protocol::{
     decode_frame, encode_frame, AckPayload, CursorEntry, FrameFlags, Hello, HelloAck, MsgKind,
     OpBatchPayload, RefreshTokenAckPayload, RefreshTokenPayload, SubscribePayload,
 };
+
+// The three `/sync` replies this transport reads, each with exactly the
+// fields the relay's description requires
+// (`crates/sunrise-server/src/api/sync/credential.rs#SessionResponse`,
+// `#RefreshResponse`, `crates/sunrise-server/src/api/sync/publish.rs#OpsResponse`).
+// A reply missing one, or carrying it as the wrong type, fails the decode and
+// is a `TransportError::Protocol` rather than a field read as `""` or `0`
+// (#1264). Unknown fields are ignored, as
+// `docs/10-cross-cutting/protocol-versioning.md` §6 requires of every sync
+// body.
+//
+// Local rather than `sunrise_relay_client::api::types`: spargen models every
+// integer as `i64`, `format: uint64` included, so the generated
+// `SessionResponse` would refuse a `capabilities` bitfield with bit 63 set
+// and would take a `u32` version as an `i64` to narrow by hand. These carry
+// the server's own widths, so serde refuses an out-of-range value in the same
+// decode that refuses a missing one.
+
+/// `POST /api/v1/sync/session`'s reply: `HelloAck` plus the session id.
+#[derive(serde::Deserialize)]
+struct SessionReply {
+    session_id: String,
+    server_app_v: String,
+    wire_proto: u32,
+    crypto_suite: u32,
+    doc_schema_floor: u32,
+    capabilities: u64,
+    server_time_ms: u64,
+}
+
+/// `POST /api/v1/sync/ops`'s reply: the `Ack`, echoing the batch it acks.
+#[derive(serde::Deserialize)]
+struct OpsReply {
+    batch_id: u64,
+    stream_id: String,
+    server_first_seen_ms: u64,
+}
+
+/// `POST /api/v1/sync/session/refresh`'s reply.
+#[derive(serde::Deserialize)]
+struct RefreshReply {
+    expires_at_ms: u64,
+}
 
 #[async_trait]
 impl Transport for SseTransport {
@@ -54,34 +97,31 @@ impl Transport for SseTransport {
                 if !reply.status.is_success() {
                     return Err(self.refuse(&reply));
                 }
-                let parsed: serde_json::Value =
+                // A reply missing any field `SessionReply` requires is a failed
+                // handshake (#1264). A missing `wire_proto` used to reach
+                // negotiation as 0, and a missing `server_time_ms` reached the
+                // driver as the epoch. A negotiated version that does not fit a
+                // `u32` is refused by the same decode rather than truncated.
+                //
+                // `session_id` is the one whose absence was once quiet:
+                // accepting a reply without it left `self.session` `None` while
+                // a `HelloAck` went to the driver as though the handshake had
+                // succeeded, so every later `call` went up with no
+                // `x-sunrise-session` and the next stream open reported "no
+                // sync session: send Hello first" — the wrong cause, because
+                // `Hello` *was* sent and *was* acked. The decode refuses the
+                // whole reply before anything is remembered from it.
+                let parsed: SessionReply =
                     serde_json::from_slice(&reply.bytes).map_err(|e| protocol(&e))?;
-                // A reply naming no session is a failed handshake, not a
-                // quiet one.
-                // `crates/sunrise-server/src/api/sync/credential.rs:59#SessionResponse`
-                // declares `session_id` as a `String` rather than an
-                // `Option<String>`, so a `200` without it is malformed by the
-                // server's own contract. Accepting it used to leave
-                // `self.session` `None` while a `HelloAck` went to the driver
-                // as though the handshake had succeeded: every later `call`
-                // then went up with no `x-sunrise-session` for the relay to
-                // refuse, and the next stream open reported "no sync session:
-                // send Hello first" — naming the wrong cause to whoever read
-                // the log, because `Hello` *was* sent and *was* acked.
-                let Some(session) = parsed.get("session_id").and_then(|s| s.as_str()) else {
-                    return Err(TransportError::Protocol(
-                        "handshake reply carries no session_id".to_owned(),
-                    ));
-                };
-                self.session = Some(session.to_owned());
+                self.session = Some(parsed.session_id);
 
                 let ack = HelloAck {
-                    server_app_v: field_str(&parsed, "server_app_v"),
-                    wire_proto: field_u32(&parsed, "wire_proto")?,
-                    crypto_suite: field_u32(&parsed, "crypto_suite")?,
-                    doc_schema_floor: field_u32(&parsed, "doc_schema_floor")?,
-                    capabilities: field_u64(&parsed, "capabilities"),
-                    server_time_ms: field_u64(&parsed, "server_time_ms"),
+                    server_app_v: parsed.server_app_v,
+                    wire_proto: parsed.wire_proto,
+                    crypto_suite: parsed.crypto_suite,
+                    doc_schema_floor: parsed.doc_schema_floor,
+                    capabilities: parsed.capabilities,
+                    server_time_ms: parsed.server_time_ms,
                 };
                 let mut payload = Vec::new();
                 ciborium::ser::into_writer(&ack, &mut payload).map_err(|e| protocol(&e))?;
@@ -152,12 +192,25 @@ impl Transport for SseTransport {
                 if !reply.status.is_success() {
                     return Err(self.refuse(&reply));
                 }
-                let parsed: serde_json::Value =
+                // An ack with no `server_first_seen_ms` is malformed, not first
+                // seen at the epoch (#1264). And an ack whose echo names
+                // another batch is no ack of this one: handing it to the driver
+                // would retire this batch from the outbox on the strength of a
+                // reply about something else.
+                let parsed: OpsReply =
                     serde_json::from_slice(&reply.bytes).map_err(|e| protocol(&e))?;
+                if parsed.batch_id != batch.batch_id
+                    || parsed.stream_id != hex::encode(batch.stream_id)
+                {
+                    return Err(TransportError::Protocol(format!(
+                        "the ack names batch {} on stream {}, not the batch sent",
+                        parsed.batch_id, parsed.stream_id
+                    )));
+                }
                 let ack = AckPayload {
                     batch_id: batch.batch_id,
                     stream_id: batch.stream_id,
-                    server_first_seen_ms: field_u64(&parsed, "server_first_seen_ms"),
+                    server_first_seen_ms: parsed.server_first_seen_ms,
                 };
                 let payload = ack.encode().map_err(|e| protocol(&e))?;
                 self.inbound.push_back(
@@ -178,10 +231,12 @@ impl Transport for SseTransport {
                 if !reply.status.is_success() {
                     return Err(self.refuse(&reply));
                 }
-                let parsed: serde_json::Value =
+                // A missing `expires_at_ms` is malformed rather than 0, which
+                // this protocol spells *no deadline* (#1264).
+                let parsed: RefreshReply =
                     serde_json::from_slice(&reply.bytes).map_err(|e| protocol(&e))?;
                 let ack = RefreshTokenAckPayload {
-                    expires_at_ms: field_u64(&parsed, "expires_at_ms"),
+                    expires_at_ms: parsed.expires_at_ms,
                 };
                 let payload = ack.encode().map_err(|e| protocol(&e))?;
                 self.inbound.push_back(
