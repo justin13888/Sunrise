@@ -1112,6 +1112,37 @@ async fn capture_reads_the_last_second_of_the_range() {
     assert_eq!(planned.day_in(&tz), Some(jiff::civil::date(9999, 12, 30)));
 }
 
+/// A zone report reads "now" through the whole range: at the last second of
+/// year 9999 two zones that differ in 1970 but agree in 9999 are the same
+/// zone. Read at the epoch instead (the old fallback), they would differ and
+/// `changed` would be true (#1280).
+#[tokio::test]
+async fn zone_report_compares_the_zones_at_the_last_second_of_the_range() {
+    const LAST: u64 = 253_402_207_200_500;
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FakeClock(PLMutex::new(LAST)));
+    let core = Core::open(
+        CoreConfig::with_clock(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            clock as Arc<dyn crate::config::Clock>,
+            seeded_rng(),
+        ),
+        unlock(),
+    )
+    .await
+    .unwrap();
+    core.on_time_zone_changed("America/Indiana/Indianapolis")
+        .unwrap();
+    let report = core.on_time_zone_changed("America/New_York").unwrap();
+    assert_eq!(report.previous, "America/Indiana/Indianapolis");
+    assert!(
+        !report.changed,
+        "Indianapolis and New York agree in 9999, though not in 1970"
+    );
+    core.shutdown().await;
+}
+
 /// `Core::capture` must resolve `#stream` against the vault's real streams,
 /// which is the whole reason it exists rather than callers invoking the
 /// domain parser directly.
