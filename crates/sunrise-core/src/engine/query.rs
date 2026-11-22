@@ -334,7 +334,8 @@ impl Engine {
             EntityKind::Routine => {
                 let rt = read_routine(db.conn(), r.bytes())?
                     .ok_or_else(|| EngineError::NotFound(format!("routine {r}")))?;
-                let rt = self.streak_now(rt, self.clock.now_ms());
+                let shifts = super::shift::keyed_shifts(db.conn())?;
+                let rt = self.streak_now(rt, &shifts, self.clock.now_ms());
                 Ok(QueryResult::Routine(Box::new(rt)))
             }
             EntityKind::Block => {
@@ -363,6 +364,12 @@ impl Engine {
                 let p = super::place::read_place(db.conn(), r.bytes())?
                     .ok_or_else(|| EngineError::NotFound(format!("place {r}")))?;
                 Ok(QueryResult::Places(vec![p]))
+            }
+            // The one shift, deleted or not, in the list shape.
+            EntityKind::Shift => {
+                let s = super::shift::read_shift(db.conn(), r.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("shift {r}")))?;
+                Ok(QueryResult::Shifts(vec![s]))
             }
             _ => Err(EngineError::Invalid(format!(
                 "EntityById not supported for kind {:?}",

@@ -2,11 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::search::{Highlighted, NoticeKind, SearchKind};
+use sunrise_domain::AwaySummary;
 use sunrise_domain::{
     ActivityEvent, Attachment, Block, Context, DailyReview, EffectiveTaskState, EndOfDayPlan,
     Energy, EnergyFit, ExportDataset, ExportFormat, FocusSession, FocusStats, MorningSummary,
     Place, ReminderIntent, ReminderSettings, ResolvedPref, ReviewSnapshot, Routine, SavedView,
-    SessionPlan, Stream, StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
+    SessionPlan, Shift, Stream, StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
 };
 use sunrise_id::EntityRef;
 
@@ -353,6 +354,15 @@ pub enum Query {
     /// Every live Place (ADR-0051), by name and then id. Holds no presence:
     /// whether the user is at one is `Core`'s, in memory only.
     Places,
+    /// Every live context shift (ADR-0073 §1), by start and then id: the
+    /// ones that ended and the ones still to come included.
+    Shifts,
+    /// The one shift in force now ([`sunrise_domain::active_shift`]), if any.
+    ActiveShift,
+    /// "While you were away" over a shift's window (ADR-0073 §6): the
+    /// routine occurrences missed, the deadlines that passed and the tasks
+    /// captured, read now in this device's zone.
+    AwaySummary(EntityRef),
     /// Today as ADR-0047 composes it (`docs/08-features/planning-views.md`
     /// §Today): each task in Today with its [`sunrise_domain::TodayGroup`]
     /// (planned, carried over, due today, late) and its lateness for the
@@ -493,6 +503,13 @@ pub enum QueryResult {
     /// `Places` returns the live places; `EntityById` of a `plc_` id returns
     /// the one place, deleted or not.
     Places(Vec<Place>),
+    /// `Shifts` returns the live shifts; `EntityById` of a `shf_` id returns
+    /// the one shift, deleted or not.
+    Shifts(Vec<Shift>),
+    /// `ActiveShift` returns the shift in force now, if any.
+    ActiveShift(Option<Shift>),
+    /// `AwaySummary` returns what accrued during the shift.
+    AwaySummary(AwaySummary),
 }
 
 /// One row of [`Query::Triage`].

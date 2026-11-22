@@ -167,7 +167,9 @@ pub struct ShiftDraft {
 }
 
 /// An edit of a shift: each `Some` writes its field, and `None` leaves it.
-/// `Some(None)` clears an optional field.
+/// `Some(None)` clears an optional field, and survives a round trip through
+/// the persisted undo history as a null, not as an absent field.
+#[allow(clippy::option_option)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShiftPatch {
     /// Rename it.
@@ -177,13 +179,25 @@ pub struct ShiftPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub starts_at: Option<Timestamp>,
     /// Set or clear its end.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::saved_view::double"
+    )]
     pub ends_at: Option<Option<Timestamp>>,
     /// Set or clear its zone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::saved_view::double"
+    )]
     pub zone: Option<Option<String>>,
     /// Set or clear its place.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::saved_view::double"
+    )]
     pub place: Option<Option<EntityRef>>,
     /// Replace the streams it keeps primary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -535,7 +549,7 @@ fn reanchor<K: Ord>(occ: &Occurrence, shifts: &[(K, Shift)]) -> Option<(String, 
 }
 
 /// One routine occurrence the user missed during a shift.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MissedOccurrence {
     /// The routine.
     pub routine: EntityRef,
@@ -545,8 +559,8 @@ pub struct MissedOccurrence {
     pub at: Timestamp,
 }
 
-/// The "While you were away" summary of a shift (ADR-0073 §5).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The "While you were away" summary of a shift (ADR-0073 §6).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AwaySummary {
     /// The window summarised: the shift's start to its end, or to the
     /// moment of the read when it has not ended.

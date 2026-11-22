@@ -394,9 +394,10 @@ impl Engine {
             .collect();
 
         let tasks = read_live_tasks(db.conn())?;
+        let shifts = super::shift::keyed_shifts(db.conn())?;
         let routines: Vec<_> = read_routines(db.conn())?
             .into_iter()
-            .map(|r| self.streak_now(r, now_ms))
+            .map(|r| self.streak_now(r, &shifts, now_ms))
             .collect();
         let drift_window = drift_window(window, DRIFT_WINDOW_WEEKS)?;
         let drift: Vec<RoutineDrift> = routines
@@ -532,10 +533,11 @@ impl Engine {
                 focus_table(&stats, &names)
             }
             ExportDataset::Streaks => {
+                let shifts = super::shift::keyed_shifts(db.conn())?;
                 let rows: Vec<StreakRow> = read_routines(db.conn())?
                     .into_iter()
                     .filter(|r| !r.deleted && !r.archived)
-                    .map(|r| self.streak_now(r, now_ms))
+                    .map(|r| self.streak_now(r, &shifts, now_ms))
                     .map(|r| StreakRow {
                         routine: r.id,
                         title: r.template.title,

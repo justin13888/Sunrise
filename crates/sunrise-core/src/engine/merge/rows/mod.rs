@@ -17,6 +17,7 @@ mod preferences;
 mod routine;
 mod saved_view;
 mod search;
+mod shift;
 mod stream;
 mod task;
 
@@ -29,6 +30,7 @@ pub(in crate::engine::merge) use place::upsert_place_row;
 pub(in crate::engine::merge) use preferences::upsert_preferences_row;
 pub(in crate::engine::merge) use routine::{insert_routine_row, update_routine_row};
 pub(in crate::engine::merge) use saved_view::upsert_saved_view_row;
+pub(in crate::engine::merge) use shift::upsert_shift_row;
 pub(in crate::engine::merge) use stream::{insert_stream_row, update_stream_row};
 // The full-text rows are written by the row writers above. `engine::search`,
 // which owns the indexes' layout, re-creates them and has every row written

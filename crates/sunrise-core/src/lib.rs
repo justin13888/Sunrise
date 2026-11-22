@@ -123,7 +123,10 @@ pub use engine::{
     SNAPSHOT_FORMAT_V,
 };
 pub use events::{AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus};
-pub use feature::{FeatureScope, MissingFeature, FIELD_OPS_FEATURE, PLACE_FEATURE};
+pub use feature::{
+    FeatureScope, MissingFeature, FIELD_OPS_FEATURE, PLACE_FEATURE, ROUTINE_SHIFT_POLICY_FEATURE,
+    SHIFT_FEATURE,
+};
 pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, ParkedOpCount,

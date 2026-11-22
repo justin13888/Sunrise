@@ -2,6 +2,7 @@
 
 use crate::control_op::RevokeReason;
 use crate::events::DomainEvent;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use sunrise_domain::rrule::RRule;
@@ -9,8 +10,8 @@ use sunrise_domain::{
     AttachmentDraft, BlockDraft, BlockException, BlockPatch, ContextDraft, ContextPatch,
     Disposition, EditScope, Energy, InterruptionReason, NoteBody, PlaceDraft, PlacePatch,
     PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft, RoutinePatch, SavedViewDraft,
-    SavedViewPatch, ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, SunriseTime,
-    TaskDraft, TaskPatch, TaskState,
+    SavedViewPatch, ScheduleConstraint, SessionLength, ShiftDraft, ShiftPatch, StreamDraft,
+    StreamPatch, SunriseTime, TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -677,6 +678,34 @@ pub enum Command {
     /// keeps the ref, which then evaluates `Unknown`. [`Self::Restore`]
     /// brings it back.
     DeletePlace(EntityRef),
+    /// Start a context shift (ADR-0073 §1): a new `shf_` entity, written as
+    /// one `Patch` on the vault-meta stream. Needs the vault to require
+    /// `shift.entity`: refused with `FeatureUnsupportedByDevices` while a
+    /// paired device lacks it, and with `Invalid` for a shift
+    /// [`sunrise_domain::Shift::validate`] refuses.
+    CreateShift(ShiftDraft),
+    /// Edit a shift: one `Patch` writing exactly the fields the patch names.
+    /// Refused with `NotFound` for a shift this replica does not hold or
+    /// holds deleted, and `Invalid` for an edit that changes nothing or
+    /// leaves a shift that does not validate.
+    UpdateShift {
+        /// The shift.
+        id: EntityRef,
+        /// The fields to write.
+        patch: ShiftPatch,
+    },
+    /// End a shift: a `Patch` of its `ends_at` and nothing else, so a rename
+    /// on another device survives it (ADR-0073 §6). Nothing else is
+    /// restored, because nothing the shift covered was rewritten.
+    EndShift {
+        /// The shift.
+        id: EntityRef,
+        /// When it ends; the moment of the command when `None`.
+        at: Option<Timestamp>,
+    },
+    /// Delete a shift: a tombstone, and nothing else. A deleted shift is in
+    /// force nowhere. [`Self::Restore`] brings it back.
+    DeleteShift(EntityRef),
 }
 
 /// What [`Command::ImportBlock`] writes beyond its [`BlockDraft`]: the fields

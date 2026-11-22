@@ -510,6 +510,52 @@ fn place_draft() -> impl Strategy<Value = PlaceDraft> {
         )
 }
 
+fn shift_draft() -> impl Strategy<Value = ShiftDraft> {
+    (
+        any::<String>(),
+        of(instant()),
+        of(instant()),
+        of(any::<String>()),
+        of(id()),
+        ids(),
+        ids(),
+    )
+        .prop_map(
+            |(name, starts_at, ends_at, zone, place, streams, contexts)| ShiftDraft {
+                name,
+                starts_at,
+                ends_at,
+                zone,
+                place,
+                primary_streams: streams.into_iter().collect(),
+                primary_contexts: contexts.into_iter().collect(),
+            },
+        )
+}
+
+fn shift_patch() -> impl Strategy<Value = ShiftPatch> {
+    (
+        of(any::<String>()),
+        of(instant()),
+        clearable(instant()),
+        clearable(any::<String>()),
+        clearable(id()),
+        of(ids()),
+        of(ids()),
+    )
+        .prop_map(
+            |(name, starts_at, ends_at, zone, place, streams, contexts)| ShiftPatch {
+                name,
+                starts_at,
+                ends_at,
+                zone,
+                place,
+                primary_streams: streams.map(|s| s.into_iter().collect()),
+                primary_contexts: contexts.map(|c| c.into_iter().collect()),
+            },
+        )
+}
+
 fn place_patch() -> impl Strategy<Value = PlacePatch> {
     (
         of(any::<String>()),
@@ -605,6 +651,14 @@ fn command_arms() -> Vec<BoxedStrategy<Command>> {
             .prop_map(|(id, patch)| Command::UpdatePlace { id, patch })
             .boxed(),
         id().prop_map(Command::DeletePlace).boxed(),
+        shift_draft().prop_map(Command::CreateShift).boxed(),
+        (id(), shift_patch())
+            .prop_map(|(id, patch)| Command::UpdateShift { id, patch })
+            .boxed(),
+        (id(), of(instant()))
+            .prop_map(|(id, at)| Command::EndShift { id, at })
+            .boxed(),
+        id().prop_map(Command::DeleteShift).boxed(),
     ]
 }
 
@@ -645,6 +699,10 @@ fn cmd_index(cmd: &Cmd) -> usize {
         Cmd::CreatePlace(_) => 29,
         Cmd::UpdatePlace { .. } => 30,
         Cmd::DeletePlace(_) => 31,
+        Cmd::CreateShift(_) => 32,
+        Cmd::UpdateShift { .. } => 33,
+        Cmd::EndShift { .. } => 34,
+        Cmd::DeleteShift(_) => 35,
     }
 }
 
@@ -653,7 +711,7 @@ fn cmd_index(cmd: &Cmd) -> usize {
 #[test]
 fn every_persisted_command_has_a_strategy_that_draws_it() {
     let arms = command_arms();
-    assert_eq!(arms.len(), 32, "one arm per variant `cmd_index` names");
+    assert_eq!(arms.len(), 36, "one arm per variant `cmd_index` names");
     let mut runner = TestRunner::deterministic();
     for (index, arm) in arms.iter().enumerate() {
         let command = arm.new_tree(&mut runner).expect("draws").current();

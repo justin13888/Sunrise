@@ -37,8 +37,8 @@ use sunrise_core::{BulkTaskAction, BulkTaskItem, Command};
 use sunrise_domain::{
     BlockDraft, ContextDraft, ContextPatch, Disposition, EditScope, Energy, NoteBody, PlaceDraft,
     PlacePatch, RRule, RoutineCatchupPolicy, RoutineDraft, RoutinePatch, SavedViewDraft,
-    SavedViewPatch, ScheduleConstraint, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence,
-    SunriseTime, TaskDraft, TaskPatch, TaskState, TaskTemplate,
+    SavedViewPatch, ScheduleConstraint, ShiftDraft, ShiftPatch, StreamColor, StreamDraft,
+    StreamPatch, StreamReviewCadence, SunriseTime, TaskDraft, TaskPatch, TaskState, TaskTemplate,
 };
 use sunrise_id::EntityRef;
 
@@ -226,6 +226,17 @@ enum Cmd {
         patch: PlacePatch,
     },
     DeletePlace(EntityRef),
+    CreateShift(ShiftDraft),
+    UpdateShift {
+        id: EntityRef,
+        patch: ShiftPatch,
+    },
+    EndShift {
+        id: EntityRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<jiff::Timestamp>,
+    },
+    DeleteShift(EntityRef),
 }
 
 /// A value written as the hex of its canonical CBOR: a saved view's filter
@@ -308,6 +319,10 @@ impl Cmd {
             Command::CreatePlace(d) => Self::CreatePlace(d),
             Command::UpdatePlace { id, patch } => Self::UpdatePlace { id, patch },
             Command::DeletePlace(id) => Self::DeletePlace(id),
+            Command::CreateShift(d) => Self::CreateShift(d),
+            Command::UpdateShift { id, patch } => Self::UpdateShift { id, patch },
+            Command::EndShift { id, at } => Self::EndShift { id, at },
+            Command::DeleteShift(id) => Self::DeleteShift(id),
             _ => return None,
         })
     }
@@ -357,6 +372,10 @@ impl Cmd {
             Self::CreatePlace(d) => Command::CreatePlace(d),
             Self::UpdatePlace { id, patch } => Command::UpdatePlace { id, patch },
             Self::DeletePlace(id) => Command::DeletePlace(id),
+            Self::CreateShift(d) => Command::CreateShift(d),
+            Self::UpdateShift { id, patch } => Command::UpdateShift { id, patch },
+            Self::EndShift { id, at } => Command::EndShift { id, at },
+            Self::DeleteShift(id) => Command::DeleteShift(id),
         }
     }
 }

@@ -398,6 +398,34 @@ pub enum CoreCommand {
         /// The device, as the row's `deviceRef`.
         device_id: EntityRef,
     },
+    /// Start a context shift (ADR-0073). See
+    /// [`sunrise_core::Command::CreateShift`].
+    CreateShift {
+        /// The shift.
+        draft: crate::shifts::ShiftDraftIn,
+    },
+    /// Edit a shift: only the fields set are written. See
+    /// [`sunrise_core::Command::UpdateShift`].
+    UpdateShift {
+        /// The shift.
+        id: EntityRef,
+        /// The fields to write.
+        edit: crate::shifts::ShiftEdit,
+    },
+    /// End a shift, now unless `at` names another moment. Nothing else is
+    /// written: what the shift held back comes back by itself. See
+    /// [`sunrise_core::Command::EndShift`].
+    EndShift {
+        /// The shift.
+        id: EntityRef,
+        /// When it ends.
+        at: Option<jiff::Timestamp>,
+    },
+    /// Delete a shift; `Restore` brings it back.
+    DeleteShift {
+        /// The shift.
+        id: EntityRef,
+    },
 }
 
 /// One item of [`CoreCommand::BulkTasks`].
@@ -602,6 +630,13 @@ impl CoreCommand {
             },
             Self::DeletePlace { id } => Command::DeletePlace(id),
             Self::WithdrawRevocation { device_id } => Command::WithdrawRevocation { device_id },
+            Self::CreateShift { draft } => Command::CreateShift(draft.into()),
+            Self::UpdateShift { id, edit } => Command::UpdateShift {
+                id,
+                patch: edit.into(),
+            },
+            Self::EndShift { id, at } => Command::EndShift { id, at },
+            Self::DeleteShift { id } => Command::DeleteShift(id),
         })
     }
 }

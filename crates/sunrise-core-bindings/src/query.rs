@@ -265,6 +265,15 @@ pub enum CoreQuery {
     Triage,
     /// Every live Place, by name. Holds no presence.
     Places,
+    /// Every live context shift, by start (ADR-0073).
+    Shifts,
+    /// The shift in force now, if any.
+    ActiveShift,
+    /// "While you were away" over a shift's window (ADR-0073 §6).
+    AwaySummary {
+        /// The shift.
+        id: EntityRef,
+    },
 }
 
 impl CoreQuery {
@@ -380,6 +389,9 @@ impl CoreQuery {
             Self::Lateness { ids } => Query::Lateness { ids },
             Self::Triage => Query::Triage,
             Self::Places => Query::Places,
+            Self::Shifts => Query::Shifts,
+            Self::ActiveShift => Query::ActiveShift,
+            Self::AwaySummary { id } => Query::AwaySummary(id),
         }
     }
 }
@@ -608,6 +620,22 @@ pub enum CoreQueryResult {
         /// The places.
         places: Vec<crate::places::PlaceItem>,
     },
+    /// Shifts: the live ones for `Shifts`, the one for an `EntityById` of a
+    /// `shf_` id.
+    Shifts {
+        /// The shifts.
+        shifts: Vec<crate::shifts::ShiftItem>,
+    },
+    /// The shift in force now, if any.
+    ActiveShift {
+        /// The shift.
+        shift: Option<crate::shifts::ShiftItem>,
+    },
+    /// What accrued during a shift.
+    AwaySummary {
+        /// The summary.
+        summary: crate::shifts::AwaySummaryItem,
+    },
 }
 
 impl CoreQueryResult {
@@ -751,6 +779,13 @@ impl CoreQueryResult {
             QueryResult::Places(p) => Self::Places {
                 places: p.iter().map(crate::places::PlaceItem::from).collect(),
             },
+            QueryResult::Shifts(s) => Self::Shifts {
+                shifts: s.iter().map(crate::shifts::ShiftItem::from).collect(),
+            },
+            QueryResult::ActiveShift(s) => Self::ActiveShift {
+                shift: s.as_ref().map(crate::shifts::ShiftItem::from),
+            },
+            QueryResult::AwaySummary(s) => Self::AwaySummary { summary: s.into() },
         }
     }
 }

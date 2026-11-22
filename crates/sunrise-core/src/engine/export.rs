@@ -53,6 +53,9 @@ impl Engine {
         let mut places = super::place::read_places(conn)?;
         places.sort_by_key(|p| p.id);
         out.places = places;
+        let mut shifts = super::shift::read_shifts(conn)?;
+        shifts.sort_by_key(|s| s.id);
+        out.shifts = shifts;
         for id in ids(
             conn,
             "SELECT stream_id FROM streams WHERE deleted = 0 ORDER BY stream_id ASC",

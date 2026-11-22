@@ -91,6 +91,7 @@ mod revocation_withdraw;
 mod routine;
 mod saved_view;
 mod search;
+mod shift;
 mod snapshot;
 mod stream;
 mod sync;
@@ -549,12 +550,29 @@ impl Engine {
                 self.write_preference(db, &key, None, target)
             }
             Command::MoveTasks { ids, after, before } => self.move_tasks(db, ids, after, before),
+            other => self.dispatch_patch_only(db, other),
+        }
+    }
+
+    /// The commands of the entities written only by `Patch` on the
+    /// vault-meta stream: saved views, places and shifts. Split out of
+    /// [`Self::dispatch`] only to keep that table within the lint's bound.
+    fn dispatch_patch_only(&self, db: &mut Db, cmd: Command) -> Result<CommandResult, EngineError> {
+        match cmd {
             Command::CreateSavedView(d) => self.create_saved_view(db, &d),
             Command::UpdateSavedView { id, patch } => self.update_saved_view(db, id, &patch),
             Command::DeleteSavedView(id) => self.delete_saved_view(db, id),
             Command::CreatePlace(d) => self.create_place(db, &d),
             Command::UpdatePlace { id, patch } => self.update_place(db, id, &patch),
             Command::DeletePlace(id) => self.delete_place(db, id),
+            Command::CreateShift(d) => self.create_shift(db, &d),
+            Command::UpdateShift { id, patch } => self.update_shift(db, id, &patch),
+            Command::EndShift { id, at } => self.end_shift(db, id, at),
+            Command::DeleteShift(id) => self.delete_shift(db, id),
+            // `dispatch` hands over only the commands above.
+            _ => Err(EngineError::Invalid(
+                "a command reached the patch-only dispatch".into(),
+            )),
         }
     }
 
@@ -649,6 +667,9 @@ impl Engine {
             Query::SavedViews => Self::query_saved_views(db),
             Query::SavedView(id) => self.evaluate_saved_view(db, id),
             Query::Places => Self::query_places(db),
+            Query::Shifts => Self::query_shifts(db),
+            Query::ActiveShift => self.query_active_shift(db),
+            Query::AwaySummary(id) => self.query_away_summary(db, id),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
             Query::SyncStatus => Err(EngineError::Invalid(

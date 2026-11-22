@@ -961,10 +961,21 @@ impl Engine {
             ms_to_ts(window_start_ms.cast_signed()),
             ms_to_ts(window_end_ms.cast_signed()),
         );
-        let occ = routine
-            .occurrences_in(window, &reader)
-            .map_err(|e| EngineError::Invalid(format!("routine expand: {e}")))?;
         let now_ts = ms_to_ts(now_ms.cast_signed());
+        let shifts = super::shift::keyed_shifts(db.conn())?;
+        let ShiftedWindow {
+            occ,
+            reanchored,
+            held_from,
+        } = shifted_window(routine, window, &reader, &shifts, now_ts)?;
+        // A future occurrence a shift holds back is held only while the
+        // shift stays as it is: ending it early, or deleting it, gives the
+        // occurrence back. The watermark stops short of it, so a later scan
+        // sees it again (ADR-0073 §4: nothing is rewritten, generation is
+        // re-derived).
+        let watermark_ms = held_from.map_or(window_end_ms, |at| {
+            window_end_ms.min(u64::try_from(at.as_millisecond().max(0)).unwrap_or(0))
+        });
         let first_scan = ms_to_ts(i64::try_from(mat_until).unwrap_or(i64::MAX));
 
         // Partition into missed (<= now) and future (> now). A missed one in
@@ -1007,8 +1018,14 @@ impl Engine {
         let routine = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             for (occ, title_override) in &jobs {
-                let task =
+                let mut task =
                     build_routine_task(&routine, occ, title_override.clone(), now_ms, &reader);
+                // A `shift_tz` shift moved it: planned `zoned` in the shift's
+                // zone at the key's wall clock (ADR-0073 §4).
+                if let Some(planned) = reanchored.get(&occ.key) {
+                    task.planned_at = Some(planned.clone());
+                    task.hard_constraint_violated = hard_violated(&task, &reader);
+                }
                 // An occurrence is generated once: its id is a function of the
                 // routine and the key, so one this replica already holds,
                 // whoever generated it, is not generated again. Each one it
@@ -1019,7 +1036,7 @@ impl Engine {
                 let stream = domain_bytes(task.stream_id);
                 self.append_and_fold(tx, &InnerOp::TaskCreate(task), &stream, now_ms)?;
             }
-            set_materialized_until(tx, routine.id.bytes(), window_end_ms)?;
+            set_materialized_until(tx, routine.id.bytes(), watermark_ms)?;
             Ok(())
         })?;
         Ok(())
@@ -1098,10 +1115,11 @@ impl Engine {
 
     pub(super) fn query_routines(&self, db: &Db) -> Result<QueryResult, EngineError> {
         let now_ms = self.clock.now_ms();
+        let shifts = super::shift::keyed_shifts(db.conn())?;
         Ok(QueryResult::Routines(
             read_routines(db.conn())?
                 .into_iter()
-                .map(|r| self.streak_now(r, now_ms))
+                .map(|r| self.streak_now(r, &shifts, now_ms))
                 .collect(),
         ))
     }
@@ -1112,10 +1130,27 @@ impl Engine {
     /// are as of the newest key, a function of the data; "as of now" is a
     /// function of the clock, so it is applied here, at read time, and never
     /// written (ADR-0065 §5).
-    pub(super) fn streak_now(&self, mut routine: Routine, now_ms: u64) -> Routine {
+    ///
+    /// `shifts` are the vault's live shifts ([`super::shift::keyed_shifts`]):
+    /// an occurrence the routine's policy held back while one covered it is
+    /// neither counted nor missed, in the stored streak and as of now alike
+    /// (ADR-0073 §4). The stored fields are derived with no shift, so with
+    /// any shift they are derived again here, from the same keys.
+    pub(super) fn streak_now(
+        &self,
+        mut routine: Routine,
+        shifts: &[(EntityRef, sunrise_domain::Shift)],
+        now_ms: u64,
+    ) -> Routine {
         let now = ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX));
+        let policy = routine.shift_policy.clone();
+        if !shifts.is_empty() {
+            routine
+                .derived_streak_across(shifts, &policy)
+                .apply_to(&mut routine);
+        }
         routine
-            .streak_as_of(now, &self.device_zone())
+            .streak_as_of_across(now, &self.device_zone(), shifts, &policy)
             .apply_to(&mut routine);
         routine
     }
@@ -1212,6 +1247,70 @@ fn build_routine_task(
     // same, and flagged (§Scheduling constraints on occurrences).
     task.hard_constraint_violated = hard_violated(&task, reader);
     task
+}
+
+/// What a routine generates in a window once the shifts are applied
+/// ([`shifted_window`]).
+struct ShiftedWindow {
+    /// The occurrences to generate, by instant.
+    occ: Vec<sunrise_domain::Occurrence>,
+    /// The plan of each occurrence a `shift_tz` shift moved, by key.
+    reanchored: BTreeMap<String, SunriseTime>,
+    /// The earliest occurrence after now that a shift held back, which the
+    /// watermark must not pass.
+    held_from: Option<Timestamp>,
+}
+
+/// `routine`'s occurrences in `window` for a reader in `reader`, under its
+/// shift policy while one of `shifts` is in force
+/// ([`Routine::occurrences_under_shifts`], ADR-0073 §4).
+///
+/// With no shift this is [`Routine::occurrences_in`]. An occurrence a `pause`
+/// or `skip` shift holds back is not generated, so it is never missed and
+/// never becomes a catch-up; one after `now` is reported in `held_from`.
+fn shifted_window(
+    routine: &Routine,
+    window: (Timestamp, Timestamp),
+    reader: &jiff::tz::TimeZone,
+    shifts: &[(EntityRef, sunrise_domain::Shift)],
+    now: Timestamp,
+) -> Result<ShiftedWindow, EngineError> {
+    let expand =
+        |e: sunrise_domain::ExpandError| EngineError::Invalid(format!("routine expand: {e}"));
+    let base = routine.occurrences_in(window, reader).map_err(expand)?;
+    if shifts.is_empty() {
+        return Ok(ShiftedWindow {
+            occ: base,
+            reanchored: BTreeMap::new(),
+            held_from: None,
+        });
+    }
+    let shifted = routine
+        .occurrences_under_shifts(window, reader, shifts, &routine.shift_policy)
+        .map_err(expand)?;
+    let generated: BTreeSet<&str> = shifted
+        .generate
+        .iter()
+        .map(|o| o.occurrence.key.as_str())
+        .collect();
+    let held_from = base
+        .iter()
+        .filter(|o| o.at > now && !generated.contains(o.key.as_str()))
+        .map(|o| o.at)
+        .min();
+    let mut reanchored = BTreeMap::new();
+    let mut occ = Vec::with_capacity(shifted.generate.len());
+    for g in shifted.generate {
+        if g.reanchored {
+            reanchored.insert(g.occurrence.key.clone(), g.planned_at);
+        }
+        occ.push(g.occurrence);
+    }
+    Ok(ShiftedWindow {
+        occ,
+        reanchored,
+        held_from,
+    })
 }
 
 /// The SQL predicate, over `tasks`, of an occurrence nobody has edited: every

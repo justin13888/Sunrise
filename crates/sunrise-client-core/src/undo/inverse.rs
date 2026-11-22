@@ -6,7 +6,8 @@ use super::{invert, invert_create};
 use super::{EntityLookup, NotUndoable};
 use sunrise_core::{BulkTaskItem, Command};
 use sunrise_domain::{
-    ContextPatch, PlacePatch, RoutinePatch, SavedViewPatch, StreamPatch, Task, TaskPatch, TaskState,
+    ContextPatch, PlacePatch, RoutinePatch, SavedViewPatch, ShiftPatch, StreamPatch, Task,
+    TaskPatch, TaskState,
 };
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -109,7 +110,8 @@ pub(super) fn invert_one<S: EntityLookup + ?Sized>(
         | Command::DeleteContext(id)
         | Command::DeleteRoutine(id)
         | Command::DeleteSavedView(id)
-        | Command::DeletePlace(id) => Ok(Command::Restore(*id)),
+        | Command::DeletePlace(id)
+        | Command::DeleteShift(id) => Ok(Command::Restore(*id)),
         // Only the whole block's: a delete of some occurrences edits the
         // series, whose prior exceptions and rule no row here holds.
         Command::DeleteBlock { id, scope } if scope.key().is_none() => Ok(Command::Restore(*id)),
@@ -117,6 +119,8 @@ pub(super) fn invert_one<S: EntityLookup + ?Sized>(
         Command::ReturnToInbox { ids } => invert_triage(state, ids, false),
         Command::UpdateSavedView { id, patch } => invert_view_edit(state, *id, patch),
         Command::UpdatePlace { id, patch } => invert_place_edit(state, *id, patch),
+        Command::UpdateShift { id, patch } => invert_shift_edit(state, *id, patch),
+        Command::EndShift { id, .. } => invert_shift_end(state, *id),
         Command::Restore(id) => delete_of(*id).ok_or(NotUndoable::Unsupported),
         // A bulk command is undone by one bulk command, so the undo is as
         // atomic as the write: each item's inverse, in reverse.
@@ -265,6 +269,47 @@ fn invert_place_edit<S: EntityLookup + ?Sized>(
     })
 }
 
+/// The inverse of a shift edit, or of an end: the fields it writes, as the
+/// shift held them before it.
+fn invert_shift_edit<S: EntityLookup + ?Sized>(
+    state: &S,
+    id: EntityRef,
+    patch: &ShiftPatch,
+) -> Result<Command, NotUndoable> {
+    let s = state.shift(id).ok_or(NotUndoable::Unsupported)?;
+    Ok(Command::UpdateShift {
+        id,
+        patch: ShiftPatch {
+            name: patch.name.as_ref().map(|_| s.name.clone()),
+            starts_at: patch.starts_at.map(|_| s.starts_at),
+            ends_at: patch.ends_at.map(|_| s.ends_at),
+            zone: patch.zone.as_ref().map(|_| s.zone.clone()),
+            place: patch.place.map(|_| s.place),
+            primary_streams: patch
+                .primary_streams
+                .as_ref()
+                .map(|_| s.primary_streams.clone()),
+            primary_contexts: patch
+                .primary_contexts
+                .as_ref()
+                .map(|_| s.primary_contexts.clone()),
+        },
+    })
+}
+
+/// The inverse of a shift's end: writing back the end the shift held before
+/// it, none for a shift that ran until ended.
+fn invert_shift_end<S: EntityLookup + ?Sized>(
+    state: &S,
+    id: EntityRef,
+) -> Result<Command, NotUndoable> {
+    let ends = ShiftPatch {
+        ends_at: Some(None),
+        ..ShiftPatch::default()
+    };
+    invert_shift_edit(state, id, &ends)
+}
+
 /// The inverse of a triage (`triaged`) or of its undo: the opposite command,
 /// over the tasks it changed, the ones that did not already hold the value it
 /// writes.
@@ -306,6 +351,7 @@ pub(super) const fn delete_of(id: EntityRef) -> Option<Command> {
         },
         EntityKind::SavedView => Command::DeleteSavedView(id),
         EntityKind::Place => Command::DeletePlace(id),
+        EntityKind::Shift => Command::DeleteShift(id),
         _ => return None,
     })
 }
