@@ -200,11 +200,21 @@ it is still running):
   (`Shift::keeps_task_primary`) and the summary (`away_summary`), with tests
   for each policy across a zone change and across a DST change inside the
   shift, the streak across a `skip` window, and concurrent shifts converging.
-- **Not yet built**: the `shf_` kind and its registry entry, the
-  `Routine.shift_policy` field, storage, the engine commands and queries,
-  generation wired to the policy, the bindings, `sunrise shift` and the macOS
-  surfaces. They are tracked in
-  [#1244](https://github.com/justin13888/Sunrise/issues/1244).
+- **Built** (#1244): the `shf_` kind and its registry entry behind
+  `shift.entity`, and `Routine.shift_policy` behind `routine.shift_policy`
+  (`DOC_SCHEMA_V` 31); the `shifts` table and `routines.shift_policy`
+  (migration 0054); `CreateShift`, `UpdateShift`, `EndShift` and
+  `DeleteShift` with undo and export, and `Query::Shifts`,
+  `Query::ActiveShift` and `Query::AwaySummary`
+  (`crates/sunrise-core/src/engine/shift.rs`); generation and catch-up under
+  each routine's policy, and the streak a read shows across the shifts
+  (`crates/sunrise-core/src/engine/routine.rs`); the bindings. A future
+  occurrence a shift holds back stops the generation watermark, so ending
+  the shift early gives it back.
+- **Not yet built**: `sunrise shift`, the macOS surfaces, focus applied in
+  the views (§5), and views reading an occurrence generated before the shift
+  through the policy (§4). They are tracked in
+  [#1308](https://github.com/justin13888/Sunrise/issues/1308).
 
 ## What would force revisiting this
 

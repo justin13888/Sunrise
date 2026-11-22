@@ -48,6 +48,7 @@ The domain is small on purpose. Every entity below earns its keep against [`../0
 | FocusSession | 1–20/day; append-only, never edited | [`../08-features/focus-mode.md`](../08-features/focus-mode.md), [ADR-0013](../11-adr/0013-focus-session-op-representation.md) |
 | ReviewSnapshot | 1/week; append-only, never edited | [`../08-features/reviews-and-stats.md`](../08-features/reviews-and-stats.md) |
 | Place | 0–30; written only by `Patch` | [`places.md`](./places.md), [ADR-0051](../11-adr/0051-places.md) |
+| Shift | a few per year; written only by `Patch` | [ADR-0073](../11-adr/0073-context-shift.md), [`routines-and-recurrence.md`](./routines-and-recurrence.md) §Context shifts |
 
 ## Common CDDL types
 
@@ -215,9 +216,10 @@ catalogue per-field merge reads
 5. Write its `UniFFI` mirror and `From` conversion in its domain area's
    module under `crates/sunrise-core-bindings/src/dto/`, and add its
    `Mirrored` impl in `crates/sunrise-core-bindings/src/dto/registry.rs`. The
-   saved view and the place are the exceptions: their mirrors and `Mirrored`
-   impls live in `crates/sunrise-core-bindings/src/saved_views.rs` and
-   `crates/sunrise-core-bindings/src/places.rs`, beside the rest of each
+   saved view, the place and the shift are the exceptions: their mirrors and
+   `Mirrored` impls live in `crates/sunrise-core-bindings/src/saved_views.rs`,
+   `crates/sunrise-core-bindings/src/places.rs` and
+   `crates/sunrise-core-bindings/src/shifts.rs`, beside the rest of each
    seam.
 6. Add the commands, queries and undo rules the feature needs. These are
    product surfaces rather than wiring, so the registry does not require them:
