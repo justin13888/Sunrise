@@ -679,3 +679,46 @@ fn a_past_item_is_fixed() {
         .iter()
         .any(|v| v.item == bid(1) && v.rule == PlanRule::OverlapsFixed));
 }
+
+#[test]
+fn violations_order_by_severity_desc_then_item_rule_with() {
+    let v = |item, rule, severity, with| PlanViolation {
+        item,
+        rule,
+        severity,
+        introduced: false,
+        with,
+    };
+    let low = v(tid(1), PlanRule::Overlaps, PlanSeverity::Soft, None);
+    let high = v(tid(9), PlanRule::Invalid, PlanSeverity::Blocking, None);
+    let item_a = v(tid(1), PlanRule::Overlaps, PlanSeverity::Hard, None);
+    let item_b = v(tid(2), PlanRule::OverlapsFixed, PlanSeverity::Hard, None);
+    let rule_a = v(tid(3), PlanRule::OverlapsFixed, PlanSeverity::Hard, None);
+    let rule_b = v(tid(3), PlanRule::Overlaps, PlanSeverity::Hard, None);
+    let with_none = v(tid(4), PlanRule::Overlaps, PlanSeverity::Hard, None);
+    let with_some = v(tid(4), PlanRule::Overlaps, PlanSeverity::Hard, Some(tid(1)));
+    let mut got = vec![
+        low.clone(),
+        with_some.clone(),
+        rule_b.clone(),
+        item_b.clone(),
+        high.clone(),
+        with_none.clone(),
+        rule_a.clone(),
+        item_a.clone(),
+    ];
+    got.sort_by(PlanViolation::order);
+    let mut by_rule = [rule_a, rule_b];
+    by_rule.sort_by(|a, b| a.rule.cmp(&b.rule));
+    let expected = vec![
+        high,
+        item_a,
+        item_b,
+        by_rule[0].clone(),
+        by_rule[1].clone(),
+        with_none,
+        with_some,
+        low,
+    ];
+    assert_eq!(got, expected);
+}

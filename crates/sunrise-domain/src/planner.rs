@@ -365,6 +365,19 @@ pub struct PlanViolation {
     pub with: Option<EntityRef>,
 }
 
+impl PlanViolation {
+    /// The order a diff lists violations in: severity descending, then item,
+    /// rule, and the other party.
+    #[must_use]
+    pub fn order(a: &Self, b: &Self) -> std::cmp::Ordering {
+        b.severity
+            .cmp(&a.severity)
+            .then(a.item.cmp(&b.item))
+            .then(a.rule.cmp(&b.rule))
+            .then(a.with.cmp(&b.with))
+    }
+}
+
 /// What a gesture would do. See `docs/08-features/planner.md` §`PlanDiff`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanDiff {
@@ -414,13 +427,7 @@ impl PlanDiff {
                 introduced: true,
                 with: None,
             });
-            self.violations.sort_by(|a, b| {
-                b.severity
-                    .cmp(&a.severity)
-                    .then(a.item.cmp(&b.item))
-                    .then(a.rule.cmp(&b.rule))
-                    .then(a.with.cmp(&b.with))
-            });
+            self.violations.sort_by(PlanViolation::order);
         }
         self.committable = false;
         self.id = encode::diff_id(self);

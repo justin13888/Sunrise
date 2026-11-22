@@ -342,13 +342,7 @@ impl<'a> World<'a> {
                 v
             })
             .collect();
-        violations.sort_by(|a, b| {
-            b.severity
-                .cmp(&a.severity)
-                .then(a.item.cmp(&b.item))
-                .then(a.rule.cmp(&b.rule))
-                .then(a.with.cmp(&b.with))
-        });
+        violations.sort_by(PlanViolation::order);
         // Two occurrences of one block break a rule the same way once each.
         violations.dedup();
         let mut moves = Vec::new();
