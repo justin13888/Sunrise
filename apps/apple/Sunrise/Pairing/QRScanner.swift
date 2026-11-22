@@ -38,6 +38,11 @@ enum QRDecoder {
     /// it has been tried on (#1144), and only revision 1 reads. `usesCPUOnly`
     /// does not rescue the newer ones: the request then succeeds and finds
     /// nothing. Every revision reads the same ISO 18004 symbol.
+    ///
+    /// A device can also run a newer detector and have it find nothing in a
+    /// frame that holds a code. CI's iOS simulator, on a GPU-less virtualized
+    /// runner, is one (#1255): there the default read came back empty while
+    /// the oldest detector, pinned, read the same drawn code.
     static var oldestRevision: Int? {
         VNDetectBarcodesRequest.supportedRevisions.first
     }
@@ -45,35 +50,47 @@ enum QRDecoder {
     /// The first non-empty QR payload Vision finds through the handler
     /// `handler` makes.
     ///
-    /// `revision` pins a detector. `nil` asks for the newest one Vision
-    /// supports, and where that one cannot run here, for each older one in
-    /// turn until one runs; the answer is the first detector that ran, so a
-    /// frame with no code is read once, not once per revision. Each attempt
-    /// gets a handler of its own: one whose `perform` has failed fails every
-    /// later request with the same error, whatever its revision.
+    /// `revision` pins a detector. `nil` asks every detector Vision supports,
+    /// newest first, until one finds a code: see ``firstFound(newestFirst:read:)``.
+    /// Each attempt gets a handler of its own: one whose `perform` has failed
+    /// fails every later request with the same error, whatever its revision.
     static func firstPayload(
         _ handler: () -> VNImageRequestHandler,
         revision: Int? = nil
     ) -> String? {
-        if let revision { return read(handler, revision: revision).flatMap(\.self) }
-        for newestFirst in VNDetectBarcodesRequest.supportedRevisions.reversed() {
-            if let ran = read(handler, revision: newestFirst) { return ran }
+        if let revision { return read(handler, revision: revision) }
+        return firstFound(newestFirst: VNDetectBarcodesRequest.supportedRevisions.reversed()) {
+            read(handler, revision: $0)
+        }
+    }
+
+    /// The first payload `read` returns for `revisions`, asked in order.
+    ///
+    /// A detector that cannot run here and one that ran and found nothing
+    /// both answer `nil`, and both pass the frame to the next: a detector
+    /// that runs is not thereby one that reads (#1255). The price is that a
+    /// frame with no code is read once per detector, which a scanner that
+    /// samples every few camera frames can afford.
+    static func firstFound(
+        newestFirst revisions: some Sequence<Int>,
+        read: (Int) -> String?
+    ) -> String? {
+        for revision in revisions {
+            if let payload = read(revision) { return payload }
         }
         return nil
     }
 
-    /// One attempt with one detector: `nil` when it cannot run here,
-    /// `.some(nil)` when it ran and found no code.
-    private static func read(_ handler: () -> VNImageRequestHandler, revision: Int) -> String?? {
+    /// One attempt with one detector: `nil` when it cannot run here or found
+    /// no code.
+    private static func read(_ handler: () -> VNImageRequestHandler, revision: Int) -> String? {
         let request = VNDetectBarcodesRequest()
         request.symbologies = [.qr]
         request.revision = revision
         guard (try? handler().perform([request])) != nil else { return nil }
-        return .some(
-            request.results?.lazy
-                .compactMap(\.payloadStringValue)
-                .first { !$0.isEmpty }
-        )
+        return request.results?.lazy
+            .compactMap(\.payloadStringValue)
+            .first { !$0.isEmpty }
     }
 
     static func firstPayload(in image: CGImage, revision: Int? = nil) -> String? {

@@ -61,6 +61,29 @@ struct QRScannerTests {
         #expect(QRDecoder.firstPayload(in: try blankFrame(), revision: oldest) == nil)
     }
 
+    /// A newer detector that runs and finds nothing does not end the search:
+    /// the next one down is asked, which is what reads on CI's simulator
+    /// (#1255). Driven by a stand-in reader, so the order and the fall-through
+    /// are proved on every device, whichever of its detectors run.
+    @Test
+    func aDetectorThatRunsAndFindsNothingPassesTheFrameToTheNextOne() {
+        var asked: [Int] = []
+        let found = QRDecoder.firstFound(newestFirst: [4, 3, 2, 1]) { revision in
+            asked.append(revision)
+            return revision == 2 ? "payload" : nil
+        }
+        #expect(found == "payload")
+        #expect(asked == [4, 3, 2], "newest first, stopping at the first that reads")
+
+        asked = []
+        let nothing = QRDecoder.firstFound(newestFirst: [4, 3, 2, 1]) { revision in
+            asked.append(revision)
+            return nil
+        }
+        #expect(nothing == nil)
+        #expect(asked == [4, 3, 2, 1], "a frame no detector reads is asked of every one")
+    }
+
     /// A frame with no code in it is nothing, not an error and not a guess.
     @Test
     func aFrameWithNoCodeReadsAsNothing() throws {
