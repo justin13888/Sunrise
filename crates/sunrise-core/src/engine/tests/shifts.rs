@@ -313,7 +313,37 @@ fn a_routines_policy_is_set_and_read_back() {
         Err(EngineError::Validation(_))
     ));
     assert_eq!(op_count(&db), ops);
+    // Back to the default, which is written as the field's absence.
+    set_policy(&e, &mut db, rid, ShiftPolicy::Pause);
+    assert_eq!(routine_of(&e, &db, rid).shift_policy, ShiftPolicy::Pause);
     e.assert_rebuild_identity(&db);
+}
+
+/// The same, on the two replicas of a field-ops vault: a policy set on one
+/// and put back to `pause` there reads the same on the other.
+#[test]
+fn a_policy_and_its_return_to_pause_cross_to_the_other_replica() {
+    let mut p = synced_pair(ROOT, true);
+    let rid = daily(&p.ea, &mut p.dba);
+    sync(&mut p);
+    set_policy(&p.ea, &mut p.dba, rid, ShiftPolicy::Skip);
+    sync(&mut p);
+    assert_eq!(
+        routine_of(&p.eb, &p.dbb, rid).shift_policy,
+        ShiftPolicy::Skip
+    );
+    set_policy(&p.ea, &mut p.dba, rid, ShiftPolicy::Pause);
+    sync(&mut p);
+    assert_eq!(
+        routine_of(&p.eb, &p.dbb, rid).shift_policy,
+        ShiftPolicy::Pause
+    );
+    assert_eq!(
+        routine_of(&p.ea, &p.dba, rid).shift_policy,
+        ShiftPolicy::Pause
+    );
+    p.ea.assert_rebuild_identity(&p.dba);
+    p.eb.assert_rebuild_identity(&p.dbb);
 }
 
 /// Two devices that start shifts apart, at the same instant, converge on the

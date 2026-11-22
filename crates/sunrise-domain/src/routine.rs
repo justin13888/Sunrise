@@ -129,6 +129,12 @@ const fn is_true(b: &bool) -> bool {
     *b
 }
 
+/// serde `deserialize_with` for [`Routine::shift_policy`]: a null is the
+/// field's absence, `pause`.
+fn null_as_pause<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ShiftPolicy, D::Error> {
+    Ok(Option::<ShiftPolicy>::deserialize(d)?.unwrap_or_default())
+}
+
 /// serde `skip_serializing_if` for counters that default to zero. Same
 /// by-reference signature requirement as [`is_true`].
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -267,7 +273,13 @@ pub struct Routine {
     /// `DOC_SCHEMA_V` 31; an op carrying another value uses the feature
     /// `routine.shift_policy`. An unknown value reads as `pause` and is
     /// written back verbatim.
-    #[serde(default, skip_serializing_if = "ShiftPolicy::is_default_pause")]
+    /// A null reads as `pause` too: it is what a `Patch` writes to put the
+    /// field back to its absence.
+    #[serde(
+        default,
+        skip_serializing_if = "ShiftPolicy::is_default_pause",
+        deserialize_with = "null_as_pause"
+    )]
     pub shift_policy: ShiftPolicy,
     /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
     /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and

@@ -144,6 +144,17 @@ fn a_routine_omits_pause_and_writes_every_other_policy() {
     assert!(!keys.iter().any(|k| k == "shift_policy"));
     let back: Routine = ciborium::de::from_reader(bytes.as_slice()).unwrap();
     assert_eq!(back.shift_policy, ShiftPolicy::Pause);
+    // A null, which a `Patch` writes to put the field back to its absence,
+    // reads as `pause` too.
+    let mut with_null: ciborium::Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+    if let ciborium::Value::Map(m) = &mut with_null {
+        m.push((
+            ciborium::Value::Text("shift_policy".into()),
+            ciborium::Value::Null,
+        ));
+    }
+    let back: Routine = with_null.deserialized().unwrap();
+    assert_eq!(back.shift_policy, ShiftPolicy::Pause);
 
     for p in [
         ShiftPolicy::ShiftTz,
