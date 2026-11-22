@@ -10,13 +10,13 @@ revocation" (§6, [#1240](https://github.com/justin13888/Sunrise/issues/1240)),
 which that list words "Withdraw removal" because it calls a revocation a
 removal throughout. The relay's reinstatement route and the transport call that
 reaches it (§5) are built by
-[#1238](https://github.com/justin13888/Sunrise/issues/1238). The identity-signed
-withdrawal of an authority revocation (ADR-0058 §6) is built by
-[#1239](https://github.com/justin13888/Sunrise/issues/1239). One part is not
-built yet and is tracked on its own: the client intent that drives that call
-(§5, [#1299](https://github.com/justin13888/Sunrise/issues/1299); until then
-the command cancels only an unsent telling, and the CLI and the device list say
-the relay may still refuse the device).
+[#1238](https://github.com/justin13888/Sunrise/issues/1238), and the client
+intent that drives that call by
+[#1299](https://github.com/justin13888/Sunrise/issues/1299): the
+`relay_reinstatement_intents` queue (migration 0055, `STORAGE_V` 55), its
+drain in the sync driver, and `Core::relay_reinstatement_pending`. The
+identity-signed withdrawal of an authority revocation (ADR-0058 §6) is built by
+[#1239](https://github.com/justin13888/Sunrise/issues/1239).
 
 **Amends** [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) where it says an
 un-revoke op "is what would settle" the residuals of §"What a user sees" item 4.
@@ -280,7 +280,10 @@ them again on its next session, as it does after any reinstall.
 
 **The seam separates the two halves.** `Core::relay_revocation_pending` lets a
 client tell "revoked locally" from "the relay has stopped accepting it"
-(#160). The withdrawal gets the same pair of states.
+(#160). The withdrawal gets the same pair of states through
+`Core::relay_reinstatement_pending`, with a third for the relay's terminal
+refusal, which the queue keeps as a trace after the drain has run so the
+remedy can still be offered.
 
 ### 6. What the user is told, before and after
 
