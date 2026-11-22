@@ -343,9 +343,15 @@ proptest! {
     ) {
         begin_case();
         let mut p = pair();
+        // The setup every case shares is checked once, at its end; each
+        // step below is checked after every write it makes (#1279).
+        let setup = crate::engine::rebuild::check::pause();
         let t = tasks(&p.ea, &mut p.dba, 6);
         mv(&p.ea, &mut p.dba, &t, None, None).unwrap();
         sync(&mut p);
+        drop(setup);
+        p.ea.assert_rebuild_identity(&p.dba);
+        p.eb.assert_rebuild_identity(&p.dbb);
         let mut accepted = 0usize;
         for (i, s) in steps.into_iter().enumerate() {
             let tick = 1_000 * (i as u64 + 1);
