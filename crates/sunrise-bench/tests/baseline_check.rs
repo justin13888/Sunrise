@@ -91,6 +91,7 @@ fn expected_dirs() -> Vec<&'static str> {
         "plan_preview/ripple",
         "plan_preview/cross_day",
         "plan_preview/auto_place",
+        "plan_preview/occurrence",
         "cold_start/today_10000",
         "rss/steady_10000",
     ]
