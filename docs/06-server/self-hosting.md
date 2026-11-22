@@ -352,8 +352,8 @@ quietly downgraded. Each node holds up to 16 pooled connections plus one for
 its notice listener and, on the maintenance leader, one more.
 
 **What the nodes share.** Accounts, devices, push tokens, cursors, tombstones,
-the blob ledger, the pins, the durable relay log, sync sessions and rate
-limits all live in Postgres:
+the blob ledger, the pins, the durable relay log, sync sessions, the pairing
+rendezvous and rate limits all live in Postgres:
 
 - A session opened on one node is honoured on every other. Sessions are rows
   keyed by a hash of the id, so neither a read of the table nor a backup of it
@@ -369,6 +369,11 @@ limits all live in Postgres:
   `device_recheck_ms` (30 s by default): that is the bound, and lowering it
   costs one indexed read per open stream per interval.
 - Rate limits are one budget per client across the cluster.
+- The pairing rendezvous (`/api/v1/pairing/*`) needs no sticky routing: the
+  two devices of one pairing may reach different nodes, and the pair-attempt
+  and code-lookup limits are the cluster's, not each node's. Sessions are rows
+  keyed by a hash of the pair id, which a row holds only until the existing
+  device joins, and each is deleted when its 300 s are up.
 - The maintenance pass runs on one node at a time: whichever takes the
   maintenance lock for that pass. A node that dies releases it with its
   connection, and the next pass runs on another.
@@ -377,9 +382,6 @@ limits all live in Postgres:
 ceiling is the per-node value times the node count:
 
 - `[limits] streams` and `open_uploads`.
-- The pairing rendezvous (`/api/v1/pairing/*`): both devices of one pairing
-  must reach the same node, so route that prefix to one node or pin it with
-  sticky sessions. Moving it into Postgres is #1262.
 - Which devices are online, for push: a device streaming on one node can be
   sent a wake-up push by another. It wakes, finds its stream current, and
   sleeps again.

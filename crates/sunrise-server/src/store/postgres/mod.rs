@@ -2,10 +2,10 @@
 //!
 //! One database holds everything the single-binary relay keeps in its SQLite
 //! file — accounts, devices, push tokens, cursors, tombstones, the blob ledger,
-//! the pins and the durable relay log — and the two things a single process
-//! kept in memory: sync sessions ([`PgSessions`], §3) and rate cells
-//! ([`PgLimiter`], §5). Every node connects to it, and any node serves any
-//! account.
+//! the pins and the durable relay log — and the three things a single process
+//! keeps in memory: sync sessions ([`PgSessions`], §3), rate cells
+//! ([`PgLimiter`], §5) and the pairing rendezvous ([`PgRendezvous`], #1262).
+//! Every node connects to it, and any node serves any account.
 //!
 //! - **Metadata.** [`PgStore`] implements [`MetadataStore`]
 //!   (`metadata.rs`). Each method is one transaction at `READ COMMITTED`, so a
@@ -33,6 +33,7 @@ mod lifecycle;
 mod limiter;
 mod metadata;
 mod migrations;
+mod pairing;
 mod relay_log;
 mod sessions;
 mod tls;
@@ -54,6 +55,7 @@ use tokio_postgres::{AsyncMessage, Client, NoTls, Notification};
 
 pub use fanout::PgFanout;
 pub use limiter::PgLimiter;
+pub use pairing::PgRendezvous;
 pub use sessions::PgSessions;
 
 use super::MetadataError;

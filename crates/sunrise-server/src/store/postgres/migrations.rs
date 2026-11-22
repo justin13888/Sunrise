@@ -48,6 +48,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "devices_revoked_by_key",
         sql: DEVICES_REVOKED_BY_KEY,
     },
+    Migration {
+        id: 3,
+        name: "pairing_rendezvous",
+        sql: PAIRING_RENDEZVOUS,
+    },
 ];
 
 /// The version this binary migrates to, and the newest it will open.
@@ -241,6 +246,39 @@ CREATE INDEX rate_cells_by_idle ON rate_cells (idle_at_ms);
 /// §5). `NULL` on every row revoked before it.
 const DEVICES_REVOKED_BY_KEY: &str = "ALTER TABLE devices ADD COLUMN revoked_by_key TEXT;
 ALTER TABLE devices ADD COLUMN revoked_signed_at_ms BIGINT;";
+
+/// 0003: the pairing rendezvous, shared so either half of a pairing may reach
+/// any node and the attempt limits hold across the cluster (#1262); no SQLite
+/// counterpart, because a single process keeps it in memory.
+///
+/// `pairing_sessions.pair_h` is `BLAKE3(pair_id)`. `pair_id` is held beside it
+/// only while `code` is live, for the code lookup to hand back, and the check
+/// keeps the two together. `pairing_attempts` is one row per ledger and hashed
+/// key, holding that key's admitted attempts of the last day.
+const PAIRING_RENDEZVOUS: &str = r"
+CREATE TABLE pairing_sessions (
+    pair_h        BYTEA PRIMARY KEY,
+    account_id    TEXT NOT NULL,
+    expires_at_ms BIGINT NOT NULL,
+    code          INTEGER,
+    pair_id       BYTEA,
+    new_device    BYTEA[] NOT NULL DEFAULT '{}',
+    existing      BYTEA[] NOT NULL DEFAULT '{}',
+    CHECK ((code IS NULL) = (pair_id IS NULL))
+);
+CREATE INDEX pairing_sessions_by_expiry ON pairing_sessions (expires_at_ms);
+CREATE UNIQUE INDEX pairing_sessions_by_code ON pairing_sessions (account_id, code)
+    WHERE code IS NOT NULL;
+
+CREATE TABLE pairing_attempts (
+    ledger      SMALLINT NOT NULL,
+    key_h       BYTEA NOT NULL,
+    admitted_ms BIGINT[] NOT NULL,
+    idle_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (ledger, key_h)
+);
+CREATE INDEX pairing_attempts_by_idle ON pairing_attempts (idle_at_ms);
+";
 
 /// The table the version lives in. Created by the runner, outside the
 /// history, because the runner reads it before any step.

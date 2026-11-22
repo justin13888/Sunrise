@@ -198,6 +198,136 @@ async fn a_stream_resumes_on_another_node_with_no_gap_and_no_duplicate() {
     feed_two.shutdown();
 }
 
+/// One pairing message through `client`'s `/api/v1/pairing/{route}`.
+async fn pairing(
+    client: &Client,
+    route: &str,
+    body: &serde_json::Value,
+) -> crate::api::testing::Res {
+    client
+        .send_as(
+            Method::POST,
+            &format!("/api/v1/pairing/{route}"),
+            Some(BEARER),
+            Some(body),
+        )
+        .await
+}
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Send `message` as `role`'s message `index` of `pair` through `client`.
+async fn pair_send(
+    client: &Client,
+    pair: &str,
+    role: &str,
+    index: u32,
+    message: &[u8],
+) -> crate::api::testing::Res {
+    let body = serde_json::json!({
+        "pair_id": pair, "role": role, "index": index, "message": b64(message),
+    });
+    pairing(client, "send", &body).await
+}
+
+/// What the other side of `pair` sent from `after` on, read through `client`.
+async fn pair_receive(client: &Client, pair: &str, role: &str, after: u32) -> Vec<String> {
+    let body = serde_json::json!({ "pair_id": pair, "role": role, "after": after });
+    let res = pairing(client, "receive", &body).await;
+    res.assert_status(StatusCode::OK);
+    res.json()["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// A pairing whose new device reaches node 1 and whose existing device
+/// reaches node 2 completes: the existing device trades the code on node 2,
+/// and all six messages cross between the nodes in order.
+#[tokio::test]
+async fn a_pairing_completes_with_its_two_devices_on_different_nodes() {
+    let Some([(one, feed_one), (two, feed_two)]) = cluster(&ServerConfig::default()).await else {
+        return;
+    };
+    let pair = b64(&[0x5a; 16]);
+    let opened = pair_send(&one, &pair, "new_device", 0, b"noise-1").await;
+    opened.assert_status(StatusCode::OK);
+    let code = opened.json()["code"].as_str().unwrap().to_owned();
+
+    let resolved = pairing(&two, "resolve", &serde_json::json!({ "code": code })).await;
+    resolved.assert_status(StatusCode::OK);
+    assert_eq!(resolved.json()["pair_id"], pair.as_str());
+
+    // The exchange, each device on its own node: the new device writes the
+    // first, third and fifth messages, the existing device the rest.
+    for step in 0..6u32 {
+        let (writer, reader, from, to) = if step % 2 == 0 {
+            (&one, &two, "new_device", "existing_device")
+        } else {
+            (&two, &one, "existing_device", "new_device")
+        };
+        let message = format!("message-{step}");
+        if step > 0 {
+            pair_send(writer, &pair, from, step / 2, message.as_bytes())
+                .await
+                .assert_status(StatusCode::OK);
+        }
+        assert_eq!(
+            pair_receive(reader, &pair, to, step / 2).await,
+            vec![b64(if step == 0 {
+                b"noise-1"
+            } else {
+                message.as_bytes()
+            })],
+            "step {step} reached the other node"
+        );
+    }
+    let spent = pairing(&one, "resolve", &serde_json::json!({ "code": code })).await;
+    spent.assert_status(StatusCode::NOT_FOUND);
+
+    pairing(
+        &two,
+        "abort",
+        &serde_json::json!({ "pair_id": pair, "role": "existing_device" }),
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+    let body = serde_json::json!({ "pair_id": pair, "role": "new_device", "after": 0 });
+    pairing(&one, "receive", &body)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    feed_one.shutdown();
+    feed_two.shutdown();
+}
+
+/// The pair-attempt limit is the cluster's, not each node's: ten opens spread
+/// over two nodes spend the account's hour, and the eleventh is refused on
+/// either.
+#[tokio::test]
+async fn the_pair_attempt_limit_holds_across_nodes() {
+    let Some([(one, feed_one), (two, feed_two)]) = cluster(&ServerConfig::default()).await else {
+        return;
+    };
+    for seed in 0..10u8 {
+        let node = if seed % 2 == 0 { &one } else { &two };
+        pair_send(node, &b64(&[seed; 16]), "new_device", 0, b"noise-1")
+            .await
+            .assert_status(StatusCode::OK);
+    }
+    for node in [&one, &two] {
+        pair_send(node, &b64(&[0xee; 16]), "new_device", 0, b"noise-1")
+            .await
+            .assert_status(StatusCode::TOO_MANY_REQUESTS);
+    }
+    feed_one.shutdown();
+    feed_two.shutdown();
+}
+
 /// Revoking a device on node 1 ends the stream it holds on node 2 within the
 /// recheck interval: the recheck reads the shared table.
 #[tokio::test]
