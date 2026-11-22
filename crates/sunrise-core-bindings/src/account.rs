@@ -76,6 +76,36 @@ impl SunriseCore {
         Ok(self.inner.relay_revocation_pending(device.bytes())?)
     }
 
+    /// Where the relay's half of withdrawing `device`'s revocation stands
+    /// (ADR-0056 §5).
+    ///
+    /// The other half of what a client must say after `WithdrawRevocation`,
+    /// as [`Self::relay_revocation_pending`] is after `RevokeDevice`: the
+    /// vault half is committed when the command returns, while a relay that
+    /// was already told keeps refusing the device until a session sends the
+    /// reinstatement. `Refused` is the relay's terminal answer that this
+    /// device is not the one it recorded as the revoker; the device cannot
+    /// sync through that relay, and pairing it again is the remedy.
+    ///
+    /// # Errors
+    /// [`BindingError::BadId`] when `device` is not a `dev_` reference, and
+    /// [`BindingError::Core`] on a storage failure.
+    pub fn relay_reinstatement_pending(
+        &self,
+        device: sunrise_id::EntityRef,
+    ) -> Result<dto::RelayReinstatementKind, BindingError> {
+        if device.kind() != sunrise_id::EntityKind::Device {
+            return Err(BindingError::BadId {
+                id: device.to_str(),
+                cause: "expected a device reference".into(),
+            });
+        }
+        Ok(self
+            .inner
+            .relay_reinstatement_pending(device.bytes())?
+            .into())
+    }
+
     /// Seal this account's identity keys into a recovery blob under a
     /// caller-supplied 32-byte seed.
     ///

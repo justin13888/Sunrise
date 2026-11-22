@@ -409,6 +409,31 @@ impl From<sunrise_core::WithdrawalOutcome> for WithdrawalOutcomeKind {
     }
 }
 
+/// Where the relay's half of a withdrawn revocation stands for one device
+/// (ADR-0056 §5). See `sunrise_core::RelayReinstatement`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RelayReinstatementKind {
+    /// Nothing is owed to the relay: no reinstatement was queued, the relay
+    /// accepted it, or the device is revoked again.
+    Clear,
+    /// Queued for the next session; until then a relay that was told of the
+    /// revocation still refuses the device.
+    Pending,
+    /// The relay refused it for good: it recorded another device as the
+    /// revoker. The device must be paired again.
+    Refused,
+}
+
+impl From<sunrise_core::RelayReinstatement> for RelayReinstatementKind {
+    fn from(r: sunrise_core::RelayReinstatement) -> Self {
+        match r {
+            sunrise_core::RelayReinstatement::Clear => Self::Clear,
+            sunrise_core::RelayReinstatement::Pending => Self::Pending,
+            sunrise_core::RelayReinstatement::Refused => Self::Refused,
+        }
+    }
+}
+
 /// What `withdrawRevocation` did. See `sunrise_core::Withdrawal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct WithdrawalReport {
