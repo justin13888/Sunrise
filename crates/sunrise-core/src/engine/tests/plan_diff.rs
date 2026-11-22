@@ -678,6 +678,49 @@ mod recurring {
         assert!(grid(&e, &db, 11).is_empty());
     }
 
+    /// The same drag of a series with only a bound week (no exception): the
+    /// `BYDAY=WE` rule would not produce the binding's week once moved to
+    /// Thursday, so the preview flags a Blocking `Invalid` violation, the
+    /// commit is refused and the block is unchanged (#1275).
+    #[test]
+    fn a_planner_move_that_would_strand_a_binding_is_not_committable() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        e.require_features(&mut db, &[BLOCK_OCCURRENCE_TASKS_FEATURE], true)
+            .unwrap();
+        recur(&e, &mut db, id, "FREQ=WEEKLY;BYDAY=WE");
+        let task = new_task(&e, &mut db, "Demo");
+        e.apply(
+            &mut db,
+            Command::BindTask {
+                block: id,
+                task,
+                occurrence: Some(key(25)),
+            },
+        )
+        .unwrap();
+        let before = read_block_row(&db, id);
+        let ops = op_count(&db);
+
+        let diff = e.plan_preview(&db, &move_to_thursday(id), NOW_MS).unwrap();
+        assert!(!diff.committable, "{diff:#?}");
+        assert!(
+            diff.violations.iter().any(|v| v.item == id
+                && v.rule == PlanRule::Invalid
+                && v.severity == PlanSeverity::Blocking
+                && v.introduced),
+            "{diff:#?}"
+        );
+        assert!(matches!(
+            e.plan_apply(&mut db, &diff, NOW_MS),
+            Err(PlanError::NotCommittable)
+        ));
+        assert_eq!(read_block_row(&db, id), before);
+        assert_eq!(op_count(&db), ops, "a refused commit writes nothing");
+        assert_eq!(grid(&e, &db, 25), [row("Standup", &key(25), &["Demo"])]);
+    }
+
     /// A rule changed after the preview, in a way the diff's base does not
     /// digest, is still caught at commit: the move that now strands the
     /// cancelled week is refused as invalid and writes nothing.

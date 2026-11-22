@@ -235,9 +235,10 @@ impl Engine {
     /// (`docs/08-features/planner.md` §Recurring blocks).
     ///
     /// A block move the commit would refuse because it strands a recurring
-    /// block's exception (`move_anchor`), or a drag of every event from one
-    /// an exception already moved on its own, is flagged here, as a Blocking
-    /// `Invalid` violation on the block, and the diff is not committable.
+    /// block's exception or occurrence binding (`move_anchor`), or a drag of
+    /// every event from one an exception already moved on its own, is flagged
+    /// here, as a Blocking `Invalid` violation on the block, and the diff is
+    /// not committable.
     ///
     /// # Errors
     /// [`PlanError::Invalid`] for an intent naming nothing the vault holds,
@@ -1354,9 +1355,10 @@ fn occurrence_at(
 ///
 /// # Errors
 /// [`PlanError::Invalid`] for a write the block's invariants refuse that a
-/// solve cannot see: a move that would strand an exception, a drag of every
-/// event from one an exception already moved on its own, or an occurrence
-/// that is not there to move; [`PlanError::Engine`] for another invariant.
+/// solve cannot see: a move that would strand an exception or an occurrence
+/// binding, a drag of every event from one an exception already moved on its
+/// own, or an occurrence that is not there to move; [`PlanError::Engine`] for
+/// another invariant.
 fn place_block(
     block: &mut Block,
     occurrence: Option<&PlanOccurrence>,

@@ -1,5 +1,7 @@
 //! `BlockSeries::follow_anchor`: an edit that moves the anchor re-keys each
-//! exception onto the occurrence it applied to, or is refused (#1200).
+//! exception onto the occurrence it applied to, or is refused (#1200), and
+//! `Block::follow_bindings` re-keys each occurrence binding the same way
+//! (#1275).
 
 use super::*;
 
@@ -90,4 +92,89 @@ fn a_move_that_strands_an_exception_is_refused() {
         })
     );
     assert_eq!(moved.exceptions, was.exceptions);
+}
+
+/// `deep_work` as a block, its week 10 bound to one task and a key the rule
+/// does not produce bound to another.
+fn deep_work_with_bindings() -> (crate::Block, BlockSeries) {
+    use crate::OccurrenceBinding;
+    let s = deep_work();
+    let task = |n: u8| EntityRef::new(EntityKind::Task, [n; 16]);
+    let block = crate::Block {
+        id: EntityRef::new(EntityKind::Block, [1u8; 16]),
+        created_at: Timestamp::UNIX_EPOCH,
+        updated_at: Timestamp::UNIX_EPOCH,
+        stream_id: None,
+        starts_at: s.starts_at.clone(),
+        ends_at: s.ends_at.clone(),
+        title: Some("Deep work".into()),
+        title_track_task: false,
+        tasks: std::collections::BTreeSet::new(),
+        occurrence_tasks: std::collections::BTreeSet::from([
+            OccurrenceBinding::new("2026-03-10T09:00", task(2)),
+            OccurrenceBinding::new("2026-03-18T09:00", task(3)),
+        ]),
+        deleted: false,
+        kind: None,
+        rrule: Some(s.rrule.clone()),
+        exceptions: BTreeMap::new(),
+        split_from: None,
+        location: None,
+        notes: None,
+        source: None,
+        external_id: None,
+        unknown: Unknowns::new(),
+    };
+    (block, s)
+}
+
+/// The keys of a block's occurrence bindings, in order.
+fn binding_keys(block: &crate::Block) -> Vec<&str> {
+    block
+        .occurrence_tasks
+        .iter()
+        .map(crate::OccurrenceBinding::key)
+        .collect()
+}
+
+/// Moving the anchor an hour later moves each binding with its occurrence,
+/// and one that named no occurrence moves too (#1275).
+#[test]
+fn moving_the_anchor_moves_each_binding_with_its_occurrence() {
+    let (mut block, was) = deep_work_with_bindings();
+    block.starts_at = SunriseTime::floating(at(2026, 3, 3, 10, 0));
+    block.ends_at = SunriseTime::floating(at(2026, 3, 3, 12, 0));
+    block.follow_bindings(&was).unwrap();
+    assert_eq!(
+        binding_keys(&block),
+        ["2026-03-10T10:00", "2026-03-18T10:00"]
+    );
+}
+
+/// A rule whose `BYDAY` holds the weekday does not follow an anchor moved
+/// to another day, so a binding it produced cannot follow either: the move
+/// is refused and the bindings are left as they were (#1275).
+#[test]
+fn a_move_that_strands_a_binding_is_refused() {
+    let (mut block, was) = deep_work_with_bindings();
+    let bound = block.occurrence_tasks.clone();
+    block.starts_at = SunriseTime::floating(at(2026, 3, 4, 9, 0));
+    block.ends_at = SunriseTime::floating(at(2026, 3, 4, 11, 0));
+    assert_eq!(
+        block.follow_bindings(&was),
+        Err(crate::StrandedBinding {
+            key: "2026-03-10T09:00".into(),
+            task: EntityRef::new(EntityKind::Task, [2; 16]),
+        })
+    );
+    assert_eq!(block.occurrence_tasks, bound);
+
+    // With the rule dropped there is no occurrence to check against, so the
+    // bindings are only re-keyed.
+    block.rrule = None;
+    block.follow_bindings(&was).unwrap();
+    assert_eq!(
+        binding_keys(&block),
+        ["2026-03-11T09:00", "2026-03-19T09:00"]
+    );
 }

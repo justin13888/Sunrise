@@ -837,16 +837,23 @@ fn recurring_block(
 ///
 /// # Errors
 /// [`EngineError::Validation`] for a block whose invariants fail, and
-/// [`EngineError::Invalid`] for a move that would strand an exception
-/// ([`follow_anchor`]).
+/// [`EngineError::Invalid`] for a move that would strand an occurrence
+/// binding ([`Block::follow_bindings`]) or an exception ([`follow_anchor`]).
 pub(super) fn move_anchor(
     block: &mut Block,
     anchor: &SunriseTime,
     was: Option<BlockSeries>,
     tz: &jiff::tz::TimeZone,
 ) -> Result<(), EngineError> {
-    block.shift_bindings(anchor);
+    // The invariants do not read the bindings, so a bad anchor or end is
+    // reported as itself before a binding it would strand.
     block.validate_invariants(tz)?;
+    match &was {
+        Some(was) => block
+            .follow_bindings(was)
+            .map_err(|e| EngineError::Invalid(format!("block {}: {e}", block.id)))?,
+        None => block.shift_bindings(anchor),
+    }
     follow_anchor(block, was)
 }
 

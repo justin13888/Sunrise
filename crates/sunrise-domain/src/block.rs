@@ -28,7 +28,7 @@ mod binding;
 mod conflict;
 mod series;
 
-pub use binding::OccurrenceBinding;
+pub use binding::{OccurrenceBinding, StrandedBinding};
 pub use conflict::{merge_blocks, overlaps, BlockOverlap};
 pub use series::{
     expand_block, split_block_id, BlockException, BlockOccurrence, BlockSeries, BlockSeriesError,
