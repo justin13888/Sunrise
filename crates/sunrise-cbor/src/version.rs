@@ -304,7 +304,14 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// the op is emitted only into a vault that requires it, because a build that
 /// cannot read it parks it and would keep the device revoked. Every v1..v29
 /// payload shape is unchanged, so the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 30;
+///
+/// `31` adds the Shift entity (`shf_`, tag `shift`, #1244, ADR-0073), written
+/// only by `Patch` behind the new feature `shift.entity`, and the Routine's
+/// `shift_policy`, a lossless string enum behind the new feature
+/// `routine.shift_policy`. `pause` is never written, so a routine that keeps
+/// it encodes as it did at v30; a v30 build keeps any other value as an
+/// unknown field and writes it back verbatim. The floor does not move.
+pub const DOC_SCHEMA_V: u16 = 31;
 
 mod fingerprint;
 #[cfg(test)]
@@ -646,7 +653,11 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// column joins the row's unique identity, so a revocation and a withdrawal at
 /// one stamp are two rows. No row is otherwise rewritten, and no projection
 /// moves.
-pub const STORAGE_V: u16 = 53;
+///
+/// `54` is migration `0054_shift.sql` (#1244, ADR-0073): `shifts`, the Shift
+/// entity's projection, which starts empty, and `routines.shift_policy`,
+/// `pause` on every existing row. No row is otherwise rewritten.
+pub const STORAGE_V: u16 = 54;
 
 #[cfg(test)]
 mod tests;

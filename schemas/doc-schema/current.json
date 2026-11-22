@@ -850,7 +850,11 @@
             "tag": "review_snapshot"
         },
         {
-            "features": ["routine.civil_times", "routine.series"],
+            "features": [
+                "routine.civil_times",
+                "routine.series",
+                "routine.shift_policy"
+            ],
             "merge": "lww",
             "ops": [
                 {
@@ -963,6 +967,12 @@
                             "crdt": "register",
                             "name": "scheduling_constraints",
                             "type": "Vec<ScheduleConstraint>"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "shift_policy",
+                            "type": "ShiftPolicy"
                         },
                         {
                             "conflict": "tracked",
@@ -1148,6 +1158,88 @@
                 }
             ],
             "tag": "saved_view"
+        },
+        {
+            "features": ["shift.entity"],
+            "merge": "lww",
+            "ops": [],
+            "owner": "meta",
+            "prefix": "shf_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "conflict": "tombstone",
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "ends_at",
+                            "type": "Option<Timestamp>"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "name",
+                            "type": "String"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "place",
+                            "type": "Option<EntityRef>"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "primary_contexts",
+                            "type": "BTreeSet<EntityRef>"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "primary_streams",
+                            "type": "BTreeSet<EntityRef>"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "starts_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "zone",
+                            "type": "Option<String>"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Shift"
+                }
+            ],
+            "tag": "shift"
         },
         {
             "features": ["stream.civil_times"],
@@ -1560,6 +1652,11 @@
             "variants": ["merge", "queue", "skip"]
         },
         {
+            "fallback": "pause",
+            "name": "ShiftPolicy",
+            "variants": ["pause", "shift_tz", "skip", "unchanged"]
+        },
+        {
             "fallback": "slate",
             "name": "StreamColor",
             "variants": [
@@ -1766,6 +1863,17 @@
         },
         {
             "field_op_kinds": [],
+            "fields": ["shift_policy"],
+            "id": "routine.shift_policy",
+            "op_kinds": [],
+            "retyped": [],
+            "scope": {
+                "entity": "routine"
+            },
+            "since": 31
+        },
+        {
+            "field_op_kinds": [],
             "fields": [],
             "id": "saved_view.entity",
             "op_kinds": [],
@@ -1774,6 +1882,17 @@
                 "entity": "saved_view"
             },
             "since": 17
+        },
+        {
+            "field_op_kinds": [],
+            "fields": [],
+            "id": "shift.entity",
+            "op_kinds": [],
+            "retyped": [],
+            "scope": {
+                "entity": "shift"
+            },
+            "since": 31
         },
         {
             "field_op_kinds": [],

@@ -87,6 +87,13 @@ pub const STREAM_CIVIL_TIMES_FEATURE: &str = "stream.civil_times";
 /// The id of the feature every write of a Place uses (ADR-0051, #1128).
 pub const PLACE_FEATURE: &str = "place.entity";
 
+/// The id of the feature every write of a Shift uses (ADR-0073 §1, #1244).
+pub const SHIFT_FEATURE: &str = "shift.entity";
+
+/// The id of the feature a routine op uses when it carries a `shift_policy`
+/// other than `pause` (ADR-0073 §3, #1244).
+pub const ROUTINE_SHIFT_POLICY_FEATURE: &str = "routine.shift_policy";
+
 /// The id of the feature that carries identity-signed revocations
 /// (ADR-0058 §7): the holder of `ID_S_priv` signs a revocation only in a
 /// vault that requires it.
@@ -300,6 +307,28 @@ pub static FEATURES: &[Feature] = &[
         field_op_kinds: &[],
         retyped: &[],
         since: 30,
+    },
+    // Context shifts, a synced entity (issue #1244, ADR-0073 §1). Like
+    // `place.entity` it has no op kind or field of its own: every op on it is
+    // a `Patch` whose `ref` is a `shf_` id.
+    Feature {
+        id: SHIFT_FEATURE,
+        op_kinds: &[],
+        fields: &[],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 31,
+    },
+    // A routine's shift policy (issue #1244, ADR-0073 §3). `pause` is never
+    // written, so only an op carrying another policy uses this; a build
+    // without it keeps the field unknown and writes it back verbatim.
+    Feature {
+        id: ROUTINE_SHIFT_POLICY_FEATURE,
+        op_kinds: &[],
+        fields: &["shift_policy"],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 31,
     },
 ];
 

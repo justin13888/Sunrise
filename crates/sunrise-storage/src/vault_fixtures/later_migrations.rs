@@ -568,3 +568,33 @@ fn a_v52_vaults_ledger_rows_are_revocations_and_gain_a_kind_after_0053() {
     );
     assert!(neither.is_err(), "a kind that is neither is refused");
 }
+
+/// Migration 0054 (#1244, ADR-0073) over a real v53 vault: the `shifts`
+/// table exists, empty, with the index the list reads, and every routine the
+/// fixture held survives with the default policy, `pause`.
+#[test]
+fn a_v53_vault_gains_an_empty_shifts_table_and_paused_routines() {
+    let (_dir, db) = open_migrated(&fixture_name(53));
+    assert_eq!(row_count(&db, "shifts"), 0);
+    let routines = row_count(&db, "routines");
+    assert!(routines > 0, "the fixture's routines survive");
+    let paused: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM routines WHERE shift_policy = 'pause'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(paused, routines, "every existing routine reads as `pause`");
+    let index: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'shifts_live'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, 1);
+}

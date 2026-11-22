@@ -172,6 +172,93 @@ fn place_commands_invert() {
     );
 }
 
+/// A shift's start is undone by deleting it, a delete by a restore, an edit
+/// by writing back the fields it touched, and an end by writing back the end
+/// it had: none for a shift that ran until ended.
+#[test]
+fn shift_commands_invert() {
+    use sunrise_domain::{Shift, ShiftDraft, ShiftPatch};
+    struct Shifts(Shift);
+    impl EntityLookup for Shifts {
+        fn task(&self, _: EntityRef) -> Option<&Task> {
+            None
+        }
+        fn stream(&self, _: EntityRef) -> Option<&StreamRow> {
+            None
+        }
+        fn context(&self, _: EntityRef) -> Option<&ContextRow> {
+            None
+        }
+        fn routine(&self, _: EntityRef) -> Option<&RoutineRow> {
+            None
+        }
+        fn shift(&self, id: EntityRef) -> Option<&Shift> {
+            (id == self.0.id).then_some(&self.0)
+        }
+    }
+    let id = EntityRef::new(EntityKind::Shift, [9; 16]);
+    let held = Shifts(Shift {
+        id,
+        created_at: jiff::Timestamp::UNIX_EPOCH,
+        updated_at: jiff::Timestamp::UNIX_EPOCH,
+        name: "Trip".into(),
+        starts_at: jiff::Timestamp::UNIX_EPOCH,
+        ends_at: None,
+        zone: Some("Asia/Tokyo".into()),
+        place: None,
+        primary_streams: std::collections::BTreeSet::new(),
+        primary_contexts: std::collections::BTreeSet::new(),
+        deleted: false,
+        unknown: Unknowns::new(),
+    });
+    let create = Command::CreateShift(ShiftDraft {
+        name: "Trip".into(),
+        starts_at: None,
+        ends_at: None,
+        zone: None,
+        place: None,
+        primary_streams: std::collections::BTreeSet::new(),
+        primary_contexts: std::collections::BTreeSet::new(),
+    });
+    assert!(is_create(&create));
+    assert!(matches!(
+        invert_create(&create, id),
+        Ok(Command::DeleteShift(d)) if d == id
+    ));
+    assert!(matches!(
+        invert(&held, &[Command::DeleteShift(id)]).unwrap()[..],
+        [Command::Restore(r)] if r == id
+    ));
+    assert!(matches!(
+        invert(&held, &[Command::Restore(id)]).unwrap()[..],
+        [Command::DeleteShift(r)] if r == id
+    ));
+    let edit = Command::UpdateShift {
+        id,
+        patch: ShiftPatch {
+            name: Some("Tokyo".into()),
+            zone: Some(None),
+            ..ShiftPatch::default()
+        },
+    };
+    match &invert(&held, &[edit]).unwrap()[..] {
+        [Command::UpdateShift { patch, .. }] => {
+            assert_eq!(patch.name.as_deref(), Some("Trip"));
+            assert_eq!(patch.zone, Some(Some("Asia/Tokyo".into())));
+            assert!(patch.ends_at.is_none(), "only what the edit touched");
+        }
+        other => panic!("{other:?}"),
+    }
+    let end = Command::EndShift { id, at: None };
+    match &invert(&held, &[end]).unwrap()[..] {
+        [Command::UpdateShift { patch, .. }] => {
+            assert_eq!(patch.ends_at, Some(None), "it ran until ended");
+            assert!(patch.name.is_none());
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// A move is undone by putting back the keys it replaced: one task's as
 /// one update, several as one bulk command, and an unplaced task goes
 /// back to unplaced.

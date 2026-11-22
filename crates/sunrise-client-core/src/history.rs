@@ -124,6 +124,7 @@ pub struct VaultRows {
     tasks: BTreeMap<EntityRef, Task>,
     saved_views: BTreeMap<EntityRef, sunrise_domain::SavedView>,
     places: BTreeMap<EntityRef, sunrise_domain::Place>,
+    shifts: BTreeMap<EntityRef, sunrise_domain::Shift>,
     streams: Vec<StreamRow>,
     contexts: Vec<ContextRow>,
     routines: Vec<RoutineRow>,
@@ -148,6 +149,9 @@ impl EntityLookup for VaultRows {
     fn place(&self, id: EntityRef) -> Option<&sunrise_domain::Place> {
         self.places.get(&id)
     }
+    fn shift(&self, id: EntityRef) -> Option<&sunrise_domain::Shift> {
+        self.shifts.get(&id)
+    }
 }
 
 /// Which reads `cmds` will need before it is applied.
@@ -156,6 +160,7 @@ struct Wanted {
     tasks: Vec<EntityRef>,
     saved_views: Vec<EntityRef>,
     places: Vec<EntityRef>,
+    shifts: Vec<EntityRef>,
     streams: bool,
     contexts: bool,
     routines: bool,
@@ -182,6 +187,9 @@ fn wanted(cmds: &[Command]) -> Wanted {
             }
             Command::UpdateSavedView { id, .. } => wanted.saved_views.push(*id),
             Command::UpdatePlace { id, .. } => wanted.places.push(*id),
+            Command::UpdateShift { id, .. } | Command::EndShift { id, .. } => {
+                wanted.shifts.push(*id);
+            }
             Command::UpdateStream { .. } => wanted.streams = true,
             Command::UpdateContext { .. } => wanted.contexts = true,
             Command::UpdateRoutine { .. } => wanted.routines = true,
@@ -220,6 +228,13 @@ pub async fn snapshot_for(core: &Core, cmds: &[Command]) -> Result<VaultRows, Co
         if let QueryResult::Places(mut p) = core.query(Query::EntityById(id)).await? {
             if let Some(p) = p.pop() {
                 rows.places.insert(id, p);
+            }
+        }
+    }
+    for id in wanted.shifts {
+        if let QueryResult::Shifts(mut s) = core.query(Query::EntityById(id)).await? {
+            if let Some(s) = s.pop() {
+                rows.shifts.insert(id, s);
             }
         }
     }

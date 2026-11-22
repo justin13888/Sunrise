@@ -357,6 +357,7 @@ mod tests {
             streak_started_at: None,
             forgivenesses_in_window: 0,
             split_from: None,
+            shift_policy: sunrise_domain::ShiftPolicy::Pause,
             streak_keys: Vec::new(),
             paused: false,
             paused_until: None,

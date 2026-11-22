@@ -144,6 +144,7 @@ fn expected_routine() -> Routine {
         streak_started_at: None,
         forgivenesses_in_window: 0,
         split_from: None,
+        shift_policy: sunrise_domain::ShiftPolicy::Pause,
         streak_keys: Vec::new(),
         paused: true,
         paused_until: Some(ts(R_PAUSED_UNTIL).into()),

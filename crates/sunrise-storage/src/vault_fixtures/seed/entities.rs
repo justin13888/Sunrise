@@ -20,6 +20,7 @@ const NOTE: [u8; 16] = [0x08; 16];
 const PERSON: [u8; 16] = [0x0a; 16];
 const SAVED_VIEW: [u8; 16] = [0x2c; 16];
 const PLACE: [u8; 16] = [0x3d; 16];
+const SHIFT: [u8; 16] = [0x3e; 16];
 
 pub(super) const ROWS: &[SeedRow] = &[
     SeedRow {
@@ -119,6 +120,8 @@ pub(super) const ROWS: &[SeedRow] = &[
             ("last_completed_at_civil", T(b"2023-11-14T22:05:00")),
             ("archived", I(1)),
             ("deleted", I(0)),
+            // 0054: a policy other than the column's default.
+            ("shift_policy", T(b"skip")),
             ("scheduling_constraints", B(b"\xa1\x02\x03")),
             ("created_at_ms", I(31)),
             ("updated_at_ms", I(32)),
@@ -168,6 +171,27 @@ pub(super) const ROWS: &[SeedRow] = &[
             ("lww_seq", I(64)),
             ("lww_device", B(&DEVICE_LAPTOP)),
             ("extra", B(b"\xa1\x01\x41p")),
+        ],
+    },
+    SeedRow {
+        table: "shifts",
+        values: &[
+            ("id", B(&SHIFT)),
+            ("name", T(b"Travel: Tokyo")),
+            ("starts_at_ms", I(1_700_000_600_000)),
+            ("ends_at_ms", I(1_700_000_700_000)),
+            ("zone", T(b"Asia/Tokyo")),
+            ("place", B(&PLACE)),
+            ("primary_streams", B(b"\x81\x50alpha-stream-ref")),
+            ("primary_contexts", B(b"\x81\x50errands-ctx-refs")),
+            ("deleted", I(0)),
+            ("created_at_ms", I(71)),
+            ("updated_at_ms", I(72)),
+            ("lww_hlc_ms", I(HLC_MS + 11)),
+            ("lww_hlc_logical", I(73)),
+            ("lww_seq", I(74)),
+            ("lww_device", B(&DEVICE_LAPTOP)),
+            ("extra", B(b"\xa1\x01\x41s")),
         ],
     },
     SeedRow {

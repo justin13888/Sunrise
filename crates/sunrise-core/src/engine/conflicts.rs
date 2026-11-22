@@ -421,6 +421,9 @@ impl Engine {
         if kind == EntityKind::Place {
             return self.settle_place(db, entity, field, value, how == Settle::Restore);
         }
+        if kind == EntityKind::Shift {
+            return self.settle_shift(db, entity, field, value, how == Settle::Restore);
+        }
         let now_ms = self.clock.now_ms();
         in_tx(db, |tx| {
             let Some(Value::Map(mut entries)) = projected(tx, entity)? else {

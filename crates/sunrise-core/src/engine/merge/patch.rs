@@ -13,8 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::time::SunriseTime;
 use sunrise_domain::{
     Attachment, Block, Context, Frequency, Place, Preferences, RRule, Routine,
-    RoutineCatchupPolicy, SavedView, Stream, StreamColor, StreamReviewCadence, Task, TaskState,
-    TaskTemplate, Unknowns, ViewFilter, ViewKind, ViewSort,
+    RoutineCatchupPolicy, SavedView, Shift, Stream, StreamColor, StreamReviewCadence, Task,
+    TaskState, TaskTemplate, Unknowns, ViewFilter, ViewKind, ViewSort,
 };
 use sunrise_id::registry::{Crdt, EntitySpec, FieldSpec, Merge, RecordSpec};
 use sunrise_id::{EntityKind, EntityRef};
@@ -371,6 +371,7 @@ fn deserializes_as(kind: EntityKind, value: &Value) -> bool {
         EntityKind::Preferences => value.deserialized::<Preferences>().is_ok(),
         EntityKind::SavedView => value.deserialized::<SavedView>().is_ok(),
         EntityKind::Place => value.deserialized::<Place>().is_ok(),
+        EntityKind::Shift => value.deserialized::<Shift>().is_ok(),
         _ => true,
     }
 }
@@ -389,8 +390,8 @@ pub(in crate::engine) fn round_trip(kind: EntityKind, value: &Value) -> Option<V
         EntityKind::Routine => again::<Routine>(value),
         EntityKind::Block => again::<Block>(value),
         EntityKind::Attachment => again::<Attachment>(value),
-        // Preferences, saved views and places have no full-state op to
-        // round-trip.
+        // Preferences, saved views, places and shifts have no full-state op
+        // to round-trip.
         _ => None,
     }
 }
@@ -507,6 +508,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             streak_started_at: None,
             forgivenesses_in_window: 0,
             split_from: None,
+            shift_policy: sunrise_domain::ShiftPolicy::Pause,
             streak_keys: Vec::new(),
             paused: false,
             paused_until: None,
@@ -588,6 +590,20 @@ fn probe(kind: EntityKind) -> Option<Value> {
             lon_e7: 0,
             radius_m: sunrise_domain::place::DEFAULT_RADIUS_M,
             address_label: None,
+            deleted: false,
+            unknown: Unknowns::new(),
+        }),
+        EntityKind::Shift => Value::serialized(&Shift {
+            id: id(EntityKind::Shift),
+            created_at: at,
+            updated_at: at,
+            name: String::new(),
+            starts_at: at,
+            ends_at: None,
+            zone: None,
+            place: None,
+            primary_streams: BTreeSet::new(),
+            primary_contexts: BTreeSet::new(),
             deleted: false,
             unknown: Unknowns::new(),
         }),

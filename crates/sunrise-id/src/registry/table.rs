@@ -154,7 +154,7 @@ macro_rules! for_each_entity {
                 tag: "routine",
                 merge: Lww,
                 owner: Meta,
-                features: ["routine.civil_times", "routine.series"],
+                features: ["routine.civil_times", "routine.series", "routine.shift_policy"],
                 ops: [
                     /// Create a routine (full state). Boxed to keep the enum small.
                     RoutineCreate(Box<Routine>) = "routine.create", Create, id;
@@ -193,6 +193,9 @@ macro_rules! for_each_entity {
                         // #331: the series root a split routine continues,
                         // written once, at the split.
                         split_from: Option<EntityRef> => Register(Quiet);
+                        // ADR-0073 §3: what the routine does while a shift
+                        // is in force. Absent reads as `pause`.
+                        shift_policy: ShiftPolicy => Register(Quiet);
                         ..unknown
                     }
                     TaskTemplate @ none {
@@ -505,6 +508,37 @@ macro_rules! for_each_entity {
                         lon_e7: i32 => Register(Tracked);
                         radius_m: u32 => Register(Tracked);
                         address_label: Option<String> => Register(Tracked);
+                        deleted: bool => Register(Tombstone);
+                        ..unknown
+                    }
+                ],
+            }
+            /// `shf_` — a context shift, a stretch of time the user is away
+            /// from their usual routines (ADR-0073, issue #1244).
+            ///
+            /// Written only by `Patch`, as `Place` is: `ops` is empty, and
+            /// each field is its own register, so ending a shift on one
+            /// device while another renames it keeps both. Sealed under the
+            /// vault-meta key domain.
+            Shift {
+                prefix: "shf_",
+                tag: "shift",
+                merge: Lww,
+                owner: Meta,
+                features: ["shift.entity"],
+                ops: [],
+                records: [
+                    Shift @ ("shifts", "id", Extra) {
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
+                        name: String => Register(Tracked);
+                        starts_at: Timestamp => Register(Tracked);
+                        ends_at: Option<Timestamp> => Register(Tracked);
+                        zone: Option<String> => Register(Tracked);
+                        place: Option<EntityRef> => Register(Tracked);
+                        primary_streams: BTreeSet<EntityRef> => Register(Tracked);
+                        primary_contexts: BTreeSet<EntityRef> => Register(Tracked);
                         deleted: bool => Register(Tombstone);
                         ..unknown
                     }

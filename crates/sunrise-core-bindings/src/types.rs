@@ -18,8 +18,8 @@
 use sunrise_domain::{
     ConstraintSeverity, EffectiveTaskState, Energy, EnergyFit, ExportDataset, ExportFormat,
     FocusKind, Frequency, InterruptionReason, NoteBody, QuietHoursPolicy, ReminderKind,
-    RoutineCatchupPolicy, SessionLength, SnoozeSpan, StreamColor, StreamReviewCadence, TaskState,
-    UnknownVariant, Weekday,
+    RoutineCatchupPolicy, SessionLength, ShiftPolicy, SnoozeSpan, StreamColor, StreamReviewCadence,
+    TaskState, UnknownVariant, Weekday,
 };
 use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
@@ -182,6 +182,16 @@ pub enum RoutineCatchupPolicy {
     Skip,
     Merge,
     Queue,
+    Unknown(UnknownVariant),
+}
+
+/// See [`sunrise_domain::ShiftPolicy`].
+#[uniffi::remote(Enum)]
+pub enum ShiftPolicy {
+    Pause,
+    ShiftTz,
+    Skip,
+    Unchanged,
     Unknown(UnknownVariant),
 }
 

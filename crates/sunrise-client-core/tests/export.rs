@@ -147,6 +147,22 @@ async fn seed(core: &Core) {
     .await
     .unwrap();
     seed_place(core).await;
+    seed_shift(core).await;
+}
+
+/// One context shift, so `entities/shift.jsonl` has a row.
+async fn seed_shift(core: &Core) {
+    core.submit(Command::CreateShift(sunrise_domain::ShiftDraft {
+        name: "Travel: Tokyo".into(),
+        starts_at: None,
+        ends_at: None,
+        zone: Some("Asia/Tokyo".into()),
+        place: None,
+        primary_streams: std::collections::BTreeSet::new(),
+        primary_contexts: std::collections::BTreeSet::new(),
+    }))
+    .await
+    .unwrap();
 }
 
 /// One place, so `entities/place.jsonl` has a row.

@@ -98,6 +98,33 @@ fn rich_history(e: &Engine, db: &mut Db) {
         },
     )
     .unwrap();
+    // A context shift (#1244), written only by `Patch`, and ended.
+    let trip = e
+        .apply(
+            db,
+            Command::CreateShift(sunrise_domain::ShiftDraft {
+                name: "Travel: Tokyo".into(),
+                starts_at: None,
+                ends_at: None,
+                zone: Some("Asia/Tokyo".into()),
+                place: None,
+                primary_streams: std::collections::BTreeSet::new(),
+                primary_contexts: std::collections::BTreeSet::new(),
+            }),
+        )
+        .unwrap()
+        .entity;
+    e.apply(
+        db,
+        Command::UpdateShift {
+            id: trip,
+            patch: sunrise_domain::ShiftPatch {
+                name: Some("Tokyo".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
     // A place (#1128), also written only by `Patch`.
     let gym = e
         .apply(

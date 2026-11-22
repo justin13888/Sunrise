@@ -6,6 +6,7 @@ use crate::unknown::Unknowns;
 use jiff::civil::{date, DateTime};
 
 mod away;
+mod streak;
 
 fn utc(y: i16, m: i8, d: i8, h: i8, min: i8) -> Timestamp {
     date(y, m, d)
@@ -59,12 +60,16 @@ fn daily(tz: &str, anchor: DateTime, floating: bool) -> Routine {
         archived: false,
         deleted: false,
         split_from: None,
+        shift_policy: crate::ShiftPolicy::Pause,
         unknown: Unknowns::new(),
     }
 }
 
 fn shift(name: &str, start: Timestamp, end: Option<Timestamp>, zone: Option<&str>) -> Shift {
     Shift {
+        id: eref(EntityKind::Shift, 1),
+        created_at: start,
+        updated_at: start,
         name: name.into(),
         starts_at: start,
         ends_at: end,
@@ -72,6 +77,8 @@ fn shift(name: &str, start: Timestamp, end: Option<Timestamp>, zone: Option<&str
         place: None,
         primary_streams: BTreeSet::new(),
         primary_contexts: BTreeSet::new(),
+        deleted: false,
+        unknown: Unknowns::new(),
     }
 }
 
@@ -115,6 +122,121 @@ fn a_policy_reads_its_four_spellings_and_keeps_an_unknown_one() {
     assert!(ShiftPolicy::Pause.excuses_streak() && ShiftPolicy::Skip.excuses_streak());
     assert!(newer.excuses_streak());
     assert!(!ShiftPolicy::ShiftTz.excuses_streak() && !ShiftPolicy::Unchanged.excuses_streak());
+}
+
+/// A routine at `pause` encodes as it did before the field existed; any other
+/// policy, an unknown one included, is written and read back.
+#[test]
+fn a_routine_omits_pause_and_writes_every_other_policy() {
+    let encode = |r: &Routine| {
+        let mut v = Vec::new();
+        ciborium::ser::into_writer(r, &mut v).unwrap();
+        v
+    };
+    let base = daily("UTC", date(2026, 6, 1).at(9, 0, 0, 0), false);
+    let bytes = encode(&base);
+    let value: ciborium::Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+    let keys: Vec<String> = value
+        .into_map()
+        .unwrap()
+        .into_iter()
+        .filter_map(|(k, _)| k.into_text().ok())
+        .collect();
+    assert!(!keys.iter().any(|k| k == "shift_policy"));
+    let back: Routine = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+    assert_eq!(back.shift_policy, ShiftPolicy::Pause);
+    // A null, which a `Patch` writes to put the field back to its absence,
+    // reads as `pause` too.
+    let mut with_null: ciborium::Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+    if let ciborium::Value::Map(m) = &mut with_null {
+        m.push((
+            ciborium::Value::Text("shift_policy".into()),
+            ciborium::Value::Null,
+        ));
+    }
+    let back: Routine = with_null.deserialized().unwrap();
+    assert_eq!(back.shift_policy, ShiftPolicy::Pause);
+
+    for p in [
+        ShiftPolicy::ShiftTz,
+        ShiftPolicy::Skip,
+        ShiftPolicy::Unchanged,
+        ShiftPolicy::from_raw("follow_place"),
+    ] {
+        let r = Routine {
+            shift_policy: p.clone(),
+            ..base.clone()
+        };
+        let back: Routine = ciborium::de::from_reader(encode(&r).as_slice()).unwrap();
+        assert_eq!(back.shift_policy, p);
+    }
+}
+
+/// A patch writes only what it names, and an unknown policy cannot be set.
+#[test]
+fn a_shift_patch_applies_what_it_names() {
+    let start = utc(2026, 6, 10, 0, 0);
+    let s = shift("Trip", start, None, Some("Asia/Tokyo"));
+    assert!(ShiftPatch::default().is_empty());
+    let end = utc(2026, 6, 15, 0, 0);
+    let p = ShiftPatch {
+        name: Some("  Tokyo  ".into()),
+        ends_at: Some(Some(end)),
+        zone: Some(None),
+        ..ShiftPatch::default()
+    };
+    assert!(!p.is_empty());
+    let got = p.applied_to(&s);
+    assert_eq!(got.name, "Tokyo");
+    assert_eq!(got.ends_at, Some(end));
+    assert_eq!(got.zone, None);
+    assert_eq!(got.starts_at, start);
+
+    let bad = crate::RoutinePatch {
+        shift_policy: Some(ShiftPolicy::from_raw("follow_place")),
+        ..crate::RoutinePatch::default()
+    };
+    assert_eq!(
+        bad.validate(),
+        Err(field("routine.shift_policy", "known_policy"))
+    );
+}
+
+/// A draft becomes a live shift starting at its own start, or at `now`.
+#[test]
+fn a_draft_starts_now_unless_it_names_a_start() {
+    let now = utc(2026, 6, 10, 8, 0);
+    let id = eref(EntityKind::Shift, 9);
+    let d = ShiftDraft {
+        name: " Travel ".into(),
+        starts_at: None,
+        ends_at: None,
+        zone: None,
+        place: None,
+        primary_streams: BTreeSet::new(),
+        primary_contexts: BTreeSet::new(),
+    };
+    let s = d.clone().into_shift(id, now);
+    assert_eq!((s.id, s.starts_at, s.name.as_str()), (id, now, "Travel"));
+    assert!(!s.deleted);
+    let earlier = utc(2026, 6, 9, 0, 0);
+    let s = ShiftDraft {
+        starts_at: Some(earlier),
+        ..d
+    }
+    .into_shift(id, now);
+    assert_eq!(s.starts_at, earlier);
+}
+
+/// A deleted shift covers nothing, so it is never the one in force.
+#[test]
+fn a_deleted_shift_is_in_force_nowhere() {
+    let start = utc(2026, 6, 10, 0, 0);
+    let mut s = shift("Trip", start, None, None);
+    assert!(s.covers(start));
+    s.deleted = true;
+    assert!(!s.covers(start));
+    assert!(active_shift(&[(1u8, s)], start).is_none());
 }
 
 // --- the shift -------------------------------------------------------------
@@ -589,82 +711,4 @@ fn shift_tz_resolves_a_key_in_the_destinations_gap_by_the_one_dst_rule() {
     assert_eq!(find("2026-03-28T01:30"), utc(2026, 3, 28, 1, 30));
     assert_eq!(find("2026-03-29T01:30"), utc(2026, 3, 29, 1, 30));
     assert_eq!(find("2026-03-30T01:30"), utc(2026, 3, 30, 0, 30));
-}
-
-// --- the streak --------------------------------------------------------------
-
-/// "09:00 UTC" daily from August 1 2026, completed on the 1st to 5th and the
-/// 11th to 15th, with a shift covering the 6th to the 10th.
-fn streak_across_a_trip() -> (Routine, [(u8, Shift); 1]) {
-    let mut r = daily("UTC", date(2026, 8, 1).at(9, 0, 0, 0), false);
-    r.streak_keys = (1..=5)
-        .chain(11..=15)
-        .map(|d| format!("2026-08-{d:02}T09:00"))
-        .collect();
-    let trip = shift(
-        "Trip",
-        utc(2026, 8, 6, 0, 0),
-        Some(utc(2026, 8, 11, 0, 0)),
-        None,
-    );
-    (r, [(1, trip)])
-}
-
-/// Five missed days break the streak with no shift. A `skip` or `pause`
-/// shift over them excuses them, spending no forgiveness; `shift_tz` and
-/// `unchanged` do not.
-#[test]
-fn a_streak_holds_across_a_skip_window() {
-    let (r, shifts) = streak_across_a_trip();
-    assert_eq!(r.derived_streak().streak_counter, 5);
-
-    let skip = r.derived_streak_across(&shifts, &ShiftPolicy::Skip);
-    assert_eq!(skip.streak_counter, 10);
-    assert_eq!(skip.forgivenesses_in_window, 0);
-    assert_eq!(skip.streak_started_at, Some(utc(2026, 8, 1, 9, 0)));
-    assert_eq!(r.derived_streak_across(&shifts, &ShiftPolicy::Pause), skip);
-
-    for policy in [ShiftPolicy::ShiftTz, ShiftPolicy::Unchanged] {
-        assert_eq!(
-            r.derived_streak_across(&shifts, &policy),
-            r.derived_streak()
-        );
-    }
-    let none: [(u8, Shift); 0] = [];
-    assert_eq!(
-        r.derived_streak_across(&none, &ShiftPolicy::Skip),
-        r.derived_streak()
-    );
-}
-
-/// A miss the shift does not cover still spends the allowance as before.
-#[test]
-fn a_miss_outside_the_shift_still_counts() {
-    let (mut r, shifts) = streak_across_a_trip();
-    r.streak_keys.retain(|k| k != "2026-08-12T09:00");
-    let s = r.derived_streak_across(&shifts, &ShiftPolicy::Skip);
-    assert_eq!(s.streak_counter, 9);
-    assert_eq!(s.forgivenesses_in_window, 1);
-}
-
-/// A shift still running at the read: the days it covers do not lapse the
-/// streak under `skip`, and do under `unchanged`.
-#[test]
-fn a_running_skip_shift_keeps_the_streak_from_lapsing() {
-    let mut r = daily("UTC", date(2026, 8, 1).at(9, 0, 0, 0), false);
-    r.streak_keys = (1..=5).map(|d| format!("2026-08-{d:02}T09:00")).collect();
-    r.derived_streak().apply_to(&mut r);
-    assert_eq!(r.streak_counter, 5);
-    let shifts = [(1u8, shift("Trip", utc(2026, 8, 6, 0, 0), None, None))];
-    let now = utc(2026, 8, 10, 12, 0);
-    let utc_tz = TimeZone::UTC;
-    assert_eq!(r.streak_as_of(now, &utc_tz).streak_counter, 0);
-    let held = r.streak_as_of_across(now, &utc_tz, &shifts, &ShiftPolicy::Skip);
-    assert_eq!(held.streak_counter, 5);
-    assert_eq!(held.forgivenesses_in_window, 0);
-    assert_eq!(
-        r.streak_as_of_across(now, &utc_tz, &shifts, &ShiftPolicy::Unchanged)
-            .streak_counter,
-        0
-    );
 }

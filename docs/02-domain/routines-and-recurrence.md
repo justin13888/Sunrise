@@ -40,8 +40,18 @@ Routine = {
     scheduling_constraints?: [* SchedulingConstraint], ; copied to each occurrence; one register (max 16)
     archived:          bool,
     deleted:           bool,
+    shift_policy?:     ShiftPolicy,         ; absent = "pause"; see ADR-0073 §3
     unknown-fields,                         ; see overview.md
 }
+
+; What the routine does while a context shift is in force (ADR-0073 §4).
+; "pause" is never written, so a routine that keeps it encodes as it did
+; before DOC_SCHEMA_V 31; writing another value needs `routine.shift_policy`.
+ShiftPolicy = "pause"         ; covered occurrences are not generated, and never become catch-ups
+            / "shift_tz"      ; generated at the key's wall clock in the shift's zone
+            / "skip"          ; not generated; the streak excuses them
+            / "unchanged"     ; generated as if there were no shift
+            / tstr            ; unknown: preserved; generates as "pause"
 
 ; The intended civil start of an occurrence, minute precision, no zone.
 ; It is the single identity of an occurrence: task id, skip, streak and merge
@@ -443,6 +453,18 @@ streak. Nothing writes `paused = false` when the pause ends: the comparison
 simply stops holding. Already-generated occurrences are not deleted by a
 pause.
 
+### Context shifts
+
+A context shift ([ADR-0073](../11-adr/0073-context-shift.md)) is not a
+pause: nothing is written to the routine when one starts or ends. While a
+shift is in force, generation applies the routine's `shift_policy` to each
+occurrence the routine itself would generate (its own pause and skips first),
+as ADR-0073 §4 says. An occurrence `pause` or `skip` holds back is not
+generated, is never missed and never becomes a catch-up, and the streak
+excuses it. Because ending a shift early, or deleting it, gives back the
+occurrences after its new end, generation does not advance past the first
+future occurrence a shift holds back; it sees it again on the next pass.
+
 ## Adaptive cadence — convergence rule
 
 > **Not modelled.** Adaptive cadence has no field (see §Recurrence rule). This
@@ -462,7 +484,7 @@ To converge under concurrent completions on multiple devices:
 
 | Field | Merge |
 |---|---|
-| scalars (`anchor`, `ends_at`, `catchup_policy`, `grace_window_s`, `forgiveness_enabled`, `paused`, `paused_until`, `archived`, …) | per-field LWW register |
+| scalars (`anchor`, `ends_at`, `catchup_policy`, `grace_window_s`, `forgiveness_enabled`, `paused`, `paused_until`, `archived`, `shift_policy`, …) | per-field LWW register |
 | `template` fields, `rrule` | one register each for `template.*` field and for `rrule` as a whole (a rule is edited as a unit) |
 | `scheduling_constraints` | one register for the list |
 | `skipped_keys`, `streak_keys` | add/remove OR-sets |
@@ -501,6 +523,14 @@ tree stores differently, or does not do yet, is below:
   split rather than walking the chain (§Streak), and undo does not reverse a
   split or an edit of one occurrence.
 - There is no un-skip, and `skip_dates` is still read.
+- `shift_policy` is stored (`routines.shift_policy`, migration 0054) and
+  settable through `Command::UpdateRoutine`; generation and the streak a read
+  shows take the vault's shifts (§Context shifts,
+  `crates/sunrise-core/src/engine/routine.rs#shifted_window`,
+  `#streak_now`). The stored streak fields are derived with no shift, and a
+  read derives them again across the shifts. An occurrence generated before a
+  shift started is not yet read through the policy by the views, and undo of
+  an edit does not put a policy back.
 - Unknown enum values already follow §Fields: an unknown `Frequency` or
   `Weekday` no longer fails the op, the rule is kept and generates nothing, and
   its flag is the rule's summary rather than a field of its own

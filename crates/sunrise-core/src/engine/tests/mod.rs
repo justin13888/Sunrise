@@ -133,6 +133,9 @@ mod task_order;
 mod places;
 mod saved_views;
 
+/// Context shifts and each routine's shift policy (ADR-0073, #1244).
+mod shifts;
+
 /// The account's key bundle: what a replica publishes and absorbing one
 /// (ADR-0069, #580).
 mod key_bundle;

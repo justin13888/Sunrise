@@ -161,6 +161,7 @@ pub(super) const TABLE_CLASSES: &[(&str, TableClass)] = {
         ("preferences", Projection),
         ("saved_views", Projection),
         ("places", Projection),
+        ("shifts", Projection),
         ("focus_sessions", Projection),
         ("focus_session_ends", Projection),
         ("focus_interruptions", Projection),
