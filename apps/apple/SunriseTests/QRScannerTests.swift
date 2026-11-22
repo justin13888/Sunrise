@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import Testing
+import Vision
 
 @testable import Sunrise
 
@@ -82,6 +83,29 @@ struct QRScannerTests {
         }
         #expect(nothing == nil)
         #expect(asked == [4, 3, 2, 1], "a frame no detector reads is asked of every one")
+    }
+
+    /// The real decoder asks every detector Vision supports, newest first: a
+    /// device whose newest detector reads pays for one run, and an older one
+    /// is asked only when the newer ones read nothing.
+    @Test
+    func theDecoderAsksEverySupportedDetectorNewestFirst() throws {
+        var asked: [Int] = []
+        let found = QRDecoder.firstPayloadAsking { revision in
+            asked.append(revision)
+            return nil
+        }
+        #expect(found == nil)
+        try #require(asked.count > 1, "the order is only observable with more than one detector")
+        #expect(asked == VNDetectBarcodesRequest.supportedRevisions.sorted(by: >))
+
+        asked = []
+        let oldest = try #require(QRDecoder.oldestRevision)
+        _ = QRDecoder.firstPayloadAsking(revision: oldest) { revision in
+            asked.append(revision)
+            return nil
+        }
+        #expect(asked == [oldest], "a pinned revision is the only one asked")
     }
 
     /// A frame with no code in it is nothing, not an error and not a guess.

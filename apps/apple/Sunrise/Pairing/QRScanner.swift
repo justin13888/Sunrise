@@ -58,10 +58,17 @@ enum QRDecoder {
         _ handler: () -> VNImageRequestHandler,
         revision: Int? = nil
     ) -> String? {
-        if let revision { return read(handler, revision: revision) }
-        return firstFound(newestFirst: VNDetectBarcodesRequest.supportedRevisions.reversed()) {
-            read(handler, revision: $0)
-        }
+        firstPayloadAsking(revision: revision) { read(handler, revision: $0) }
+    }
+
+    /// The detectors ``firstPayload(_:revision:)`` asks, and in which order,
+    /// with the one-detector attempt left to `read`: the pinned `revision`
+    /// alone, or every revision Vision supports, newest first, so a device
+    /// whose newest detector reads pays for one run. Takes `read` so a test
+    /// can see the order the real decoder asks in.
+    static func firstPayloadAsking(revision: Int? = nil, read: (Int) -> String?) -> String? {
+        if let revision { return read(revision) }
+        return firstFound(newestFirst: VNDetectBarcodesRequest.supportedRevisions.reversed(), read: read)
     }
 
     /// The first payload `read` returns for `revisions`, asked in order.
