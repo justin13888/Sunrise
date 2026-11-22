@@ -8,9 +8,11 @@
 
 use super::series::{civil_distance, shift_key};
 use crate::time::SunriseTime;
+use crate::BlockSeries;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use sunrise_id::EntityRef;
+use thiserror::Error;
 
 /// A Task bound to one occurrence of a recurring Block: the occurrence key,
 /// then the Task.
@@ -91,4 +93,45 @@ impl crate::Block {
             })
             .collect();
     }
+
+    /// Re-key the occurrence bindings for an edit that moved the anchor from
+    /// series `was`'s to the block's `starts_at`, as
+    /// [`Self::shift_bindings`] does, refusing a move that would leave a
+    /// binding naming no occurrence, as [`crate::BlockSeries::follow_anchor`]
+    /// refuses one that would strand an exception. A binding `was` did not
+    /// produce moves with the rest and still names nothing; a block whose
+    /// edit dropped its rule is only re-keyed.
+    ///
+    /// # Errors
+    /// [`StrandedBinding`] when a binding to an occurrence `was` produced
+    /// would name one the moved rule does not produce (a rule whose `BYDAY`
+    /// holds the weekday while the anchor's date moves). The bindings are
+    /// left as they were.
+    pub fn follow_bindings(&mut self, was: &BlockSeries) -> Result<(), StrandedBinding> {
+        let moved = civil_distance(&was.starts_at, &self.starts_at).filter(|m| !m.is_zero());
+        if let (Some(moved), Some(now)) = (moved, self.series()) {
+            for b in &self.occurrence_tasks {
+                let follows = shift_key(b.key(), moved).is_some_and(|k| now.produces_key(&k));
+                if was.produces_key(b.key()) && !follows {
+                    return Err(StrandedBinding {
+                        key: b.key().to_owned(),
+                        task: b.task(),
+                    });
+                }
+            }
+        }
+        self.shift_bindings(&was.starts_at);
+        Ok(())
+    }
+}
+
+/// Why an edit that moves a series' anchor cannot carry its occurrence
+/// bindings along ([`crate::Block::follow_bindings`]).
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("the binding of {task} at {key} names no occurrence once the series moves")]
+pub struct StrandedBinding {
+    /// The key, before the move, of the binding that would name nothing.
+    pub key: String,
+    /// The bound Task.
+    pub task: EntityRef,
 }

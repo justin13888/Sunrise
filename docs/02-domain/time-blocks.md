@@ -273,7 +273,11 @@ A task is bound to one occurrence
   with the occurrences they named. An edit that moves the series' anchor,
   of the whole block, of a continuation or by a re-import, moves each
   binding's key by the same civil distance, so it keeps naming its
-  occurrence. A re-import otherwise keeps every occurrence binding.
+  occurrence. Where the rule would not produce a moved key that it
+  produced before, as for an exception, an edit is refused
+  (`Block::follow_bindings`, [#1275](https://github.com/justin13888/Sunrise/issues/1275));
+  a re-import moves the binding anyway, since the file states the series.
+  A re-import otherwise keeps every occurrence binding.
 - The move re-keys only the bindings the moving device holds. A binding
   another device makes concurrently keeps the key it named before the move,
   which no occurrence of the moved series has: no row lists the task, though

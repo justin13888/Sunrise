@@ -5,7 +5,7 @@
 //! 2026-03-04, whose occurrence keys are `key(4)`, `key(11)`, `key(18)` and
 //! so on.
 
-use super::block_recurrence::{at, key, march, scoped_update, weekly};
+use super::block_recurrence::{at, key, march, recur, scoped_update, weekly};
 use super::*;
 use crate::feature::{BLOCK_OCCURRENCE_TASKS_FEATURE, BLOCK_RECURRENCE_FEATURE};
 use sunrise_domain::{split_block_id, EditScope, OccurrenceBinding};
@@ -531,5 +531,57 @@ fn moving_the_series_moves_its_bindings_with_their_weeks() {
     );
     assert_eq!(titles_on(&e, &db, 11), ["Prepare notes"]);
     assert!(titles_on(&e, &db, 18).is_empty());
+    e.assert_rebuild_identity(&db);
+}
+
+/// A rule that holds the weekday (`BYDAY=WE`) does not follow an anchor
+/// moved to Thursday, so neither could a week's binding: the move is
+/// refused, as one that would strand an exception is, and the week keeps
+/// its task (#1275).
+#[test]
+fn a_move_that_would_strand_a_binding_is_refused() {
+    let mut db = db();
+    let e = engine();
+    let id = bindable(&e, &mut db);
+    recur(&e, &mut db, id, "FREQ=WEEKLY;BYDAY=WE");
+    let task = new_task(&e, &mut db, "Prepare notes");
+    e.apply(&mut db, bind(id, task, Some(key(11)))).unwrap();
+    let before = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+
+    let to_thursday = BlockPatch {
+        starts_at: Some(at(5, 9)),
+        ends_at: Some(at(5, 10)),
+        ..BlockPatch::default()
+    };
+    let refused = e.apply(&mut db, scoped_update(id, EditScope::All, to_thursday));
+    assert!(
+        matches!(&refused, Err(EngineError::Invalid(why)) if why.contains(&key(11))),
+        "{refused:?}"
+    );
+    assert_eq!(read_block(db.conn(), id.bytes()).unwrap().unwrap(), before);
+    assert_eq!(titles_on(&e, &db, 11), ["Prepare notes"]);
+    assert_eq!(blocks_of(&db, task), BTreeSet::from([id]));
+
+    // A split's continuation moved to Thursday would strand week 25's
+    // binding the same way, so the split is refused and writes nothing.
+    let later = new_task(&e, &mut db, "Retro notes");
+    e.apply(&mut db, bind(id, later, Some(key(25)))).unwrap();
+    let before = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    let to_thursday = BlockPatch {
+        starts_at: Some(at(19, 9)),
+        ends_at: Some(at(19, 10)),
+        ..BlockPatch::default()
+    };
+    assert!(matches!(
+        e.apply(
+            &mut db,
+            scoped_update(id, EditScope::ThisAndFuture { key: key(18) }, to_thursday),
+        ),
+        Err(EngineError::Invalid(_))
+    ));
+    assert_eq!(read_block(db.conn(), id.bytes()).unwrap().unwrap(), before);
+    let next = split_block_id(&id, &key(18));
+    assert!(read_block(db.conn(), next.bytes()).unwrap().is_none());
+    assert_eq!(titles_on(&e, &db, 25), ["Retro notes"]);
     e.assert_rebuild_identity(&db);
 }

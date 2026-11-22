@@ -298,7 +298,7 @@ pub enum PlanError {
     Stale,        // PLAN_STALE (commit only): an input changed since the preview; preview again
     Unknown,      // PLAN_UNKNOWN: a diff evicted or the vault reopened, or no such commit
     NotCommittable, // the diff carries a Blocking violation
-    Invalid(String), // the intent names nothing, or the wrong kind; or, at commit, a block move would strand a recurring block's exception
+    Invalid(String), // the intent names nothing, or the wrong kind; or, at commit, a block move would strand a recurring block's exception or occurrence binding
 }
 ```
 
@@ -448,7 +448,8 @@ by one snap re-solves one day's movable set and no more.
    exceptions and occurrence bindings with
    the occurrences they named, through the same path an edit of the whole
    block takes (`time-blocks.md` §Recurring blocks). A move that would leave
-   an exception applying to nothing is flagged by the preview, through the
+   an exception applying to nothing, or a binding naming no occurrence, is
+   flagged by the preview, through the
    same check, as a Blocking `Invalid` violation the diff introduces on the
    block, so the diff is not committable and step 3 refuses it. The base
    digests a block's occurrences in the window but not its rule, so a rule
