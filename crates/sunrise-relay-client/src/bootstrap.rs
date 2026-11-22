@@ -14,6 +14,12 @@
 //! error. So a client that crashes between the two, or repeats the pair, is
 //! recoverable by running it again — which is the property that lets a caller
 //! do this on every start rather than tracking whether it has run.
+//!
+//! The one exception is a revoked device: the relay refuses a key or vault id
+//! that a revoked row of the account carries with `403
+//! DEVICE_REVOKED_REGISTER`, which surfaces as [`BootstrapError::Device`].
+//! Running the bootstrap again cannot clear it; the revoker's reinstatement
+//! or pairing again does.
 
 use crate::account::{encode_public_key, encode_recovery_blob, AccountCreateRequest};
 use crate::api;
@@ -163,7 +169,8 @@ pub async fn bootstrap(
 /// relay reads the body's copy only as a self-host fallback.
 ///
 /// Idempotent at the server in the same way `bootstrap` is: a device
-/// re-registering with the same key is a second row rather than an error.
+/// re-registering with the same key is a second row rather than an error,
+/// unless the device has been revoked.
 ///
 /// # Errors
 /// [`BootstrapError::Device`] naming what the generated client reported.

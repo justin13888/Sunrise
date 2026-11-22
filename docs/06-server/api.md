@@ -292,6 +292,19 @@ transport.
 characters; each failure is a `400 VALIDATION_INVALID`. It rides the bootstrap
 exemption, because the device it registers cannot have signed the request.
 
+Because a bearer alone reaches it, it refuses a `device_pub_s` or a
+`vault_device_id` that a **revoked** row of the same account carries, with
+`403 DEVICE_REVOKED_REGISTER`, and writes nothing
+([#1300](https://github.com/justin13888/Sunrise/issues/1300)). Without that a
+revoked device still holding a bearer would register its own key again and
+sign under the fresh row, and the revocation would no longer hold at the relay.
+Either field is enough: a fresh key under a revoked vault id is the same device
+trying again. The way back is the revoker's reinstatement (below), which leaves
+no revoked row behind, or pairing again, which mints a new key and vault id. A
+row revoked by the relay-id route or by an unsigned request has no recorded
+revoker, so for that device pairing again is the only way back. Another
+account's rows are not consulted.
+
 #### Two names for one device, and why the second exists
 
 `device_id` is a ULID the relay mints at registration and returns to the device
@@ -342,7 +355,8 @@ Three consequences are observable and tested:
   evidence; signing out locally is a key wipe, not a server call.
 - **The `by-vault-id` route revokes *every* active row carrying that vault id**,
   not one. A device re-registering is a second row rather than an error (it is
-  what lets a client run the bootstrap on every start), and every one of those
+  what lets a client run the bootstrap on every start) until it is revoked,
+  when registration refuses it, and every one of those
   rows is the device the caller means; revoking one and leaving the rest would
   leave the device authenticating under a row its owner cannot name.
 - **Revoking twice is a `404 DEVICE_NOT_FOUND`**, because the `UPDATE` is
@@ -418,6 +432,7 @@ DeviceMeta = {
 | 401 | `AUTH_TOKEN_INVALID` | `X-Sunrise-Device` names a device that is **not** an active row on this account, or the token's own `device_id` claim disagrees with it. Deliberately the same answer a bad bearer gets: a finer code here would tell an unauthenticated caller which devices an account has. | No. |
 | 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any **active** device on this account — including a device already revoked. For `by-vault-id`, also a device that registered before it sent a `vault_device_id`, which is **still accepted by this relay**: the `404` is not a statement that the device is refused. For `reinstate`, no row on this account carries the vault id, revoked or not. | No. |
 | 403 | `DEVICE_NOT_REVOKER` | A `reinstate` from a caller that is not the device recorded as the revoker: another device revoked it, the revoke was unsigned or predates the record, or the reinstatement itself is unsigned. | No — the device is readmitted only by pairing it again. |
+| 403 | `DEVICE_REVOKED_REGISTER` | A `POST /api/v1/devices` whose `device_pub_s` or `vault_device_id` a revoked device of the same account carries. Nothing was written. | No — the device comes back only when its revoker reinstates it, or by pairing again. |
 | 409 | `DEVICE_REINSTATE_PREDATES_REVOKE` | A `reinstate` from the recorded revoker whose signed `Date` is not later than the `Date` its revoke was signed under: a replayed reinstatement captured before the device was revoked again, or a genuine one signed in the revoke's own second. Nothing changed. | Yes — sign it again; a genuine request succeeds once its `Date` passes the revoke's. |
 
 ### Blobs

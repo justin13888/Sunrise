@@ -47,7 +47,7 @@ on the authenticated account deliberately stays `AUTH_TOKEN_INVALID`
 
 ### The argument currently on the record is the wrong argument
 
-Both the doc comment (`crates/sunrise-server/src/api/error.rs:352#device_sig_invalid`) and
+Both the doc comment (`crates/sunrise-server/src/api/error.rs:357#device_sig_invalid`) and
 `auth.md` justify the pre-lookup case by pointing at `GET /meta`'s
 `device_binding_required` (`crates/sunrise-server/src/api/meta.rs:59#meta`). That
 answers a different question. `device_binding_required` tells every caller that
@@ -61,7 +61,7 @@ Two routes accept a bearer with **no binding at all**, by construction, on every
 configuration including `require_device_sig = true`:
 
 - `POST /api/v1/accounts` (`crates/sunrise-server/src/api/accounts.rs:117#create`)
-- `POST /api/v1/devices` (`crates/sunrise-server/src/api/devices.rs:190#register`)
+- `POST /api/v1/devices` (`crates/sunrise-server/src/api/devices.rs:198#register`)
 
 Both take `SignedBootstrap`, and `signed_of` skips verification entirely when the
 binding is absent (`crates/sunrise-server/src/api/signed.rs:484-488#signed_of`) — *a device
@@ -174,7 +174,7 @@ question — which is what happened.
   restate an ADR is not worth the regeneration.
 - **The wording defect #79 names is already fixed.**
   `crates/sunrise-server/src/api/signed.rs:128-134#verify`,
-  `crates/sunrise-server/src/api/error.rs:290-293#device_sig_invalid` and
+  `crates/sunrise-server/src/api/error.rs:295-298#device_sig_invalid` and
   `codes.toml`'s 204 entry all describe the pre-lookup case as an **incomplete**
   binding — "either header missing, not only both" — matching the `let else` at
   `crates/sunrise-server/src/api/signed.rs:202-203#verify_binding`. Commit `d52999d` landed that before this
