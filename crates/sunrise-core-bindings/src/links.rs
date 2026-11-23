@@ -7,7 +7,7 @@
 //! `DeepLink` and a `TaskLinkAction` of its own, which these replace in a later
 //! pass; the generated Swift must not shadow them first.
 
-use sunrise_client_core::links::{DeepLink, LinkScreen, TaskLinkAction};
+use sunrise_client_core::links::{DeepLink, LinkScreen, ShareLink, TaskLinkAction};
 use sunrise_client_core::share::{self, ImageRefusal};
 use sunrise_domain::note_body;
 use sunrise_domain::SnoozeSpan;
@@ -68,6 +68,12 @@ pub enum CoreDeepLink {
         /// The task.
         id: EntityRef,
     },
+    /// `sunrise://share/<token>`.
+    Share {
+        /// The token, as the link carries it
+        /// ([`sunrise_client_core::links::ShareLink`]).
+        token: String,
+    },
 }
 
 impl From<DeepLink> for CoreDeepLink {
@@ -86,28 +92,32 @@ impl From<DeepLink> for CoreDeepLink {
                 },
             },
             DeepLink::Focus(id) => Self::Focus { id },
+            DeepLink::Share(link) => Self::Share {
+                token: link.to_token(),
+            },
         }
     }
 }
 
-impl From<CoreDeepLink> for DeepLink {
-    fn from(link: CoreDeepLink) -> Self {
-        match link {
-            CoreDeepLink::MorningSummary => Self::MorningSummary,
-            CoreDeepLink::EndOfDayPlan => Self::EndOfDayPlan,
-            CoreDeepLink::Entity { id } => Self::Entity(id),
-            CoreDeepLink::Capture { text } => Self::Capture(text),
-            CoreDeepLink::Task { id, action } => Self::Task(
-                id,
-                match action {
-                    CoreTaskLinkAction::Open => TaskLinkAction::Open,
-                    CoreTaskLinkAction::Complete => TaskLinkAction::Complete,
-                    CoreTaskLinkAction::Snooze { span } => TaskLinkAction::Snooze(span),
-                },
-            ),
-            CoreDeepLink::Focus { id } => Self::Focus(id),
-        }
-    }
+/// The client layer's link, or `None` for a share whose token does not read:
+/// the one mirror a caller can build that the client layer would refuse.
+fn lift(link: CoreDeepLink) -> Option<DeepLink> {
+    Some(match link {
+        CoreDeepLink::MorningSummary => DeepLink::MorningSummary,
+        CoreDeepLink::EndOfDayPlan => DeepLink::EndOfDayPlan,
+        CoreDeepLink::Entity { id } => DeepLink::Entity(id),
+        CoreDeepLink::Capture { text } => DeepLink::Capture(text),
+        CoreDeepLink::Task { id, action } => DeepLink::Task(
+            id,
+            match action {
+                CoreTaskLinkAction::Open => TaskLinkAction::Open,
+                CoreTaskLinkAction::Complete => TaskLinkAction::Complete,
+                CoreTaskLinkAction::Snooze { span } => TaskLinkAction::Snooze(span),
+            },
+        ),
+        CoreDeepLink::Focus { id } => DeepLink::Focus(id),
+        CoreDeepLink::Share { token } => DeepLink::Share(Box::new(ShareLink::from_token(&token)?)),
+    })
 }
 
 /// Parse a `sunrise://` link, or `None` for a shape no client acts on.
@@ -117,25 +127,26 @@ pub fn parse_deep_link(url: String) -> Option<CoreDeepLink> {
     DeepLink::parse(&url).map(CoreDeepLink::from)
 }
 
-/// The link's URL, for a notification's payload.
+/// The link's URL, for a notification's payload, or `None` for a share
+/// whose token does not read.
 #[uniffi::export]
 #[must_use]
-pub fn deep_link_url(link: CoreDeepLink) -> String {
-    DeepLink::from(link).to_url()
+pub fn deep_link_url(link: CoreDeepLink) -> Option<String> {
+    lift(link).map(|l| l.to_url())
 }
 
 /// The screen the link lands on, or `None` for an operation that opens none.
 #[uniffi::export]
 #[must_use]
 pub fn deep_link_screen(link: CoreDeepLink) -> Option<LinkScreen> {
-    DeepLink::from(link).screen()
+    lift(link)?.screen()
 }
 
 /// The entity the link asks to be shown on that screen.
 #[uniffi::export]
 #[must_use]
 pub fn deep_link_reveal(link: CoreDeepLink) -> Option<EntityRef> {
-    DeepLink::from(link).reveal()
+    lift(link)?.reveal()
 }
 
 /// See [`sunrise_client_core::share::ImageRefusal`].
@@ -213,11 +224,27 @@ mod tests {
         .expect("a task link");
         assert_eq!(deep_link_screen(link.clone()), None);
         assert_eq!(deep_link_reveal(link.clone()), None);
-        assert_eq!(parse_deep_link(deep_link_url(link.clone())), Some(link));
+        assert_eq!(
+            parse_deep_link(deep_link_url(link.clone()).unwrap()),
+            Some(link)
+        );
         let draft = share_draft(Some("Title\nMore".into()), None, 0, vec![]);
         assert_eq!(draft.title, "Title");
         assert_eq!(draft.body.len(), 1);
         assert_eq!(share_image_refusal(0), Some(ImageRefusal::Empty));
         assert_eq!(share_attachment_name("  a.png ".into()), "a.png");
+    }
+
+    /// A share mirror built by hand around a token the client layer would
+    /// not read has no URL, screen or reveal, rather than a guessed one.
+    #[test]
+    fn a_share_mirror_whose_token_does_not_read_lowers_to_nothing() {
+        let unread = CoreDeepLink::Share {
+            token: "not-a-token".into(),
+        };
+        assert_eq!(deep_link_url(unread.clone()), None);
+        assert_eq!(deep_link_screen(unread.clone()), None);
+        assert_eq!(deep_link_reveal(unread), None);
+        assert_eq!(parse_deep_link("sunrise://share/not-a-token".into()), None);
     }
 }
