@@ -20,12 +20,13 @@
 //! contend with one another and re-delivery is a no-op. See ADR-0013 and
 //! [`crate::engine`]'s `materialize_focus_remote`.
 //!
-//! Ten families are **control** ops rather than entities: `KeyEnvelope`,
+//! Eleven families are **control** ops rather than entities: `KeyEnvelope`,
 //! `DeviceRevoke`, `DeviceRevokeByIdentity`, `DeviceRevokeWithdraw`,
 //! `DeviceRevokeWithdrawByIdentity`, `DeviceCertPublish` and
 //! `IdentityTransition` carry key material and trust, `StreamDigest` carries a replica's frontier in one
 //! stream (ADR-0043 §5), and `VaultRequires` and `DeviceFeatures` carry the
-//! vault's feature state (ADR-0045 §7). None has a row or a last-writer-wins
+//! vault's feature state (ADR-0045 §7), and `ShareGrant` records one Stream
+//! shared with one Person. None has a row or a last-writer-wins
 //! stamp, and all are classed `OpEffect::Control` so the compiler keeps them
 //! out of the entity materializer. See [`crate::control_op`], ADR-0024 and
 //! ADR-0032.
@@ -51,7 +52,7 @@
 use crate::control_op::{
     DeviceFeaturesPayload, DeviceRevokeByIdentityPayload, DeviceRevokePayload,
     DeviceRevokeWithdrawByIdentityPayload, DeviceRevokeWithdrawPayload, IdentityTransitionPayload,
-    KeyEnvelopePayload, VaultRequiresPayload,
+    KeyEnvelopePayload, ShareGrantOpPayload, VaultRequiresPayload,
 };
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
@@ -170,6 +171,11 @@ macro_rules! define_inner_op {
             /// Control op, on the vault-meta stream, and emitted only into a
             /// vault that requires `core.revoke_withdraw_authority`.
             DeviceRevokeWithdrawByIdentity(DeviceRevokeWithdrawByIdentityPayload),
+            /// Record one Stream shared with one Person: the sealed viewer
+            /// grant and the recipient key a rotation re-seals to
+            /// (`docs/03-crypto/sharing-with-others.md`). Control op, on the
+            /// vault-meta stream.
+            ShareGrant(ShareGrantOpPayload),
         }
 
         impl InnerOp {
@@ -197,6 +203,7 @@ macro_rules! define_inner_op {
                     Self::DeviceRevokeWithdrawByIdentity(_) => {
                         "device.revoke_withdraw_by_identity"
                     }
+                    Self::ShareGrant(_) => "share.grant",
                 }
             }
 
@@ -214,7 +221,7 @@ macro_rules! define_inner_op {
                     | Self::DeviceFeatures(_) => "device",
                     Self::IdentityTransition(_) => "identity",
                     Self::Patch(p) => p.target.kind().tag(),
-                    Self::StreamDigest(_) => "stream",
+                    Self::StreamDigest(_) | Self::ShareGrant(_) => "stream",
                     Self::VaultRequires(_) => "vault",
                 }
             }
@@ -258,6 +265,9 @@ macro_rules! define_inner_op {
                     // The sender, which the payload does not repeat; the
                     // zero id for `DeviceCertPublish`'s reason.
                     Self::DeviceFeatures(_) => EntityRef::new(EntityKind::Device, [0u8; 16]),
+                    // The Person shared with: the Stream is inside the sealed
+                    // grant, and the op is the account's record of whom.
+                    Self::ShareGrant(p) => p.person,
                 }
             }
 
@@ -274,7 +284,8 @@ macro_rules! define_inner_op {
                     | Self::IdentityTransition(_)
                     | Self::StreamDigest(_)
                     | Self::VaultRequires(_)
-                    | Self::DeviceFeatures(_) => OpEffect::Control,
+                    | Self::DeviceFeatures(_)
+                    | Self::ShareGrant(_) => OpEffect::Control,
                     Self::Patch(p) => p.effect(),
                 }
             }
@@ -292,7 +303,7 @@ macro_rules! define_inner_op {
                     | Self::DeviceFeatures(_) => EntityKind::Device,
                     Self::IdentityTransition(_) => EntityKind::Identity,
                     Self::Patch(p) => p.target.kind(),
-                    Self::StreamDigest(_) => EntityKind::Stream,
+                    Self::StreamDigest(_) | Self::ShareGrant(_) => EntityKind::Stream,
                 }
             }
 
@@ -313,6 +324,7 @@ macro_rules! define_inner_op {
                         | Self::StreamDigest(_)
                         | Self::VaultRequires(_)
                         | Self::DeviceFeatures(_)
+                        | Self::ShareGrant(_)
                 )
             }
         }
@@ -787,7 +799,7 @@ mod tests {
     fn known_kinds_is_the_derives_variant_list() {
         let kinds = known_kinds();
         assert_eq!(kinds.first(), Some(&"TaskCreate"));
-        assert_eq!(kinds.last(), Some(&"DeviceRevokeWithdrawByIdentity"));
+        assert_eq!(kinds.last(), Some(&"ShareGrant"));
         for name in [
             "BlockCreate",
             "AttachmentDelete",
@@ -804,8 +816,9 @@ mod tests {
     /// `InnerOp` is the registry's ops, in registry order, then the four
     /// control families, then `Patch`, then `StreamDigest`, then the two
     /// feature control families, then the identity-signed revocation, then the
-    /// withdrawal, then the identity-signed withdrawal — read
-    /// out of the derive, so it is the list the decoder actually accepts.
+    /// withdrawal, then the identity-signed withdrawal, then the share grant
+    /// — read out of the derive, so it is the list the decoder actually
+    /// accepts.
     #[test]
     fn the_derive_declares_the_registry_ops_then_the_control_families() {
         let mut expected: Vec<&str> = sunrise_id::registry::ENTITIES
@@ -824,6 +837,7 @@ mod tests {
             "DeviceRevokeByIdentity",
             "DeviceRevokeWithdraw",
             "DeviceRevokeWithdrawByIdentity",
+            "ShareGrant",
         ]);
         assert_eq!(known_kinds(), expected.as_slice());
     }

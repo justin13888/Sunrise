@@ -1936,6 +1936,7 @@
         "RoutineCreate",
         "RoutineDelete",
         "RoutineUpdate",
+        "ShareGrant",
         "StreamCreate",
         "StreamDelete",
         "StreamDigest",
@@ -1981,6 +1982,10 @@
         {
             "payload": "PatchPayload",
             "variant": "Patch"
+        },
+        {
+            "payload": "ShareGrantOpPayload",
+            "variant": "ShareGrant"
         },
         {
             "payload": "StreamDigestPayload",
@@ -2534,6 +2539,25 @@
             ],
             "keeps_unknowns": true,
             "name": "ScheduleConstraint",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "grant",
+                    "type": "Vec<u8>"
+                },
+                {
+                    "name": "person",
+                    "type": "EntityRef"
+                },
+                {
+                    "name": "recipient_id_d_pub",
+                    "type": "[u8;32]"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "ShareGrantOpPayload",
             "shape": "record"
         },
         {

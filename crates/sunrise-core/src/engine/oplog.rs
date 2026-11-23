@@ -274,6 +274,12 @@ impl Engine {
     /// `seal_under` chooses the epoch these ops are themselves sealed at; see
     /// [`Self::ops_insert_at`]. `None` means "whatever the meta stream's live
     /// epoch is", which is right for a first mint and wrong for a rotation.
+    ///
+    /// Every Stream-key rotation distributes its epoch through here, so this
+    /// is also where the epoch is re-sealed to the Stream's share recipients
+    /// ([`Self::reseal_shares`]), beside the account's own envelopes and
+    /// sealed under the same `seal_under`. A first mint has no shares, and the
+    /// re-seal finds none.
     pub(super) fn emit_key_envelopes(
         &self,
         tx: &Transaction<'_>,
@@ -291,7 +297,8 @@ impl Engine {
             now_ms,
             seal_under,
             EnvelopeRecipients::All,
-        )
+        )?;
+        self.reseal_shares(tx, stream_id, epoch, key, now_ms, seal_under)
     }
 
     /// [`Self::emit_key_envelopes`], to one of the two recipient classes or

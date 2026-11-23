@@ -147,6 +147,58 @@ impl Keychain {
             .map_err(|_| KeychainError::RevocationClaim("the claim does not encode"))
     }
 
+    /// Seal `key` and `metadata` to one share recipient, signed as the
+    /// account identity in force on this keychain
+    /// (`docs/03-crypto/sharing-with-others.md` §Granting access).
+    ///
+    /// # Errors
+    /// [`KeychainError::IdentitySigningKeyAbsent`] on a device admitted by
+    /// pairing; [`KeychainError::ShareGrant`] when the grant does not seal.
+    pub fn seal_share_grant(
+        &self,
+        terms: sunrise_crypto::ShareGrantTerms,
+        recipient_id_d_pub: &[u8; 32],
+        key: &sunrise_crypto::StreamKey,
+        metadata: &sunrise_crypto::StreamMetadata,
+        rng: &dyn Rng,
+    ) -> Result<sunrise_crypto::ShareGrant, KeychainError> {
+        let state = self.identity.lock();
+        let signing = state.identity.signing.require()?;
+        Ok(sunrise_crypto::seal_share_grant(
+            signing,
+            terms,
+            recipient_id_d_pub,
+            key,
+            metadata,
+            &mut RngAdapter(rng),
+        )?)
+    }
+
+    /// Seal the epoch a Stream-key rotation just minted to every share
+    /// recipient still entitled to it, signed as the account identity in
+    /// force on this keychain ([`sunrise_crypto::reseal_share_grants`]).
+    ///
+    /// # Errors
+    /// As [`Self::seal_share_grant`].
+    pub fn reseal_share_grants(
+        &self,
+        shared: sunrise_crypto::SharedEpoch<'_>,
+        recipients: &[sunrise_crypto::ShareRecipient],
+        now_ms: u64,
+        rng: &dyn Rng,
+    ) -> Result<Vec<sunrise_crypto::ShareGrant>, KeychainError> {
+        let state = self.identity.lock();
+        let signing = state.identity.signing.require()?;
+        Ok(sunrise_crypto::reseal_share_grants(
+            signing,
+            shared,
+            recipients,
+            &[],
+            now_ms,
+            &mut RngAdapter(rng),
+        )?)
+    }
+
     /// Mint a successor account identity: a fresh `ID_S`/`ID_D` pair.
     ///
     /// `created_at_ms` is the **account's** creation, carried forward from the

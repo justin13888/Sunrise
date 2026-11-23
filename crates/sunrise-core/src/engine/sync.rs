@@ -1008,6 +1008,11 @@ impl Engine {
                 Self::apply_device_features(tx, p, sender, hlc, now_ms)?;
                 Ok(Vec::new())
             }
+            // Kept as it came; the share fold decides what it counts for.
+            InnerOp::ShareGrant(p) => {
+                self.apply_share_grant(tx, p, sender)?;
+                Ok(Vec::new())
+            }
             InnerOp::DeviceCertPublish(cert_cbor) => {
                 // Verified in `self_authenticating_signer` before we ever got
                 // here for an unknown sender; re-verified here because a known

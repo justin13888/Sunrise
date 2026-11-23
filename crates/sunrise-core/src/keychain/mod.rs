@@ -389,6 +389,10 @@ pub enum KeychainError {
     /// the one asked to sign it, or it would not encode (ADR-0058 §2).
     #[error("revocation claim: {0}")]
     RevocationClaim(&'static str),
+    /// A share grant did not seal: metadata past its bound, a recipient key
+    /// that is not a key, or one recipient named twice in a re-seal.
+    #[error("share grant: {0}")]
+    ShareGrant(#[from] sunrise_crypto::ShareGrantError),
 }
 
 /// The account's Ed25519 signing key, or as much of it as this device has.

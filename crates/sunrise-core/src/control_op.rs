@@ -41,6 +41,11 @@
 //!   supports. It is read as the latest op per device, so a device that
 //!   upgrades replaces what it said before.
 //!
+//! [`ShareGrantOpPayload`] arrives at `DOC_SCHEMA_V = 32`: the account's
+//! record of one Stream shared with one Person, carrying the sealed viewer
+//! grant and the recipient key a rotation re-seals the next epoch to
+//! (`docs/03-crypto/sharing-with-others.md`).
+//!
 //! These are **not** entities. They have no row, no LWW stamp and no
 //! materialization: `inner_op`'s `OpEffect::Control` variant exists so the
 //! compiler cannot route one into the entity materializer, where the `_ =>`
@@ -433,6 +438,42 @@ pub struct DeviceFeaturesPayload {
     pub unknown: sunrise_domain::Unknowns,
 }
 
+/// One Stream shared with one Person, as the owner's account records it
+/// (`docs/03-crypto/sharing-with-others.md`, `DOC_SCHEMA_V = 32`).
+///
+/// `grant` is a [`sunrise_crypto::ShareGrant`] in its own canonical encoding:
+/// the Stream key of one epoch, HPKE-sealed to the recipient identity's
+/// `ID_D_pub` and signed by the granting account identity's `ID_S_priv`. This
+/// op is the account's record of it, sealed on the vault-meta stream like
+/// every control op, so the recipient never reads it here; the grant reaches
+/// the recipient beside the relay viewer grant's claim token (ADR-0074).
+///
+/// The op carries what the grant does not and a later rotation needs:
+/// `recipient_id_d_pub`, the key a re-seal of the next epoch is sealed to, and
+/// `person`, the Person the owner shared with. The grant names the recipient
+/// only by identity id, which a re-seal cannot seal to.
+///
+/// The receiver stores it whatever it says; the share fold
+/// (`engine::share_grant`) reads the grant and believes it only where it
+/// decodes, names a Person, and verifies under an identity on the account's
+/// chain, from a sender whose reads are not bounded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShareGrantOpPayload {
+    /// The Person the Stream is shared with: a `per_` ref whose
+    /// `identity_id` is the grant's recipient.
+    pub person: sunrise_id::EntityRef,
+    /// The recipient identity's `ID_D_pub`, which every re-seal is sealed to.
+    #[serde(with = "serde_bytes")]
+    pub recipient_id_d_pub: [u8; 32],
+    /// The canonical [`sunrise_crypto::ShareGrant`], at most
+    /// [`sunrise_crypto::MAX_SHARE_GRANT_BYTES`].
+    #[serde(with = "serde_bytes")]
+    pub grant: Vec<u8>,
+    /// Fields this build does not know, kept byte for byte.
+    #[serde(flatten)]
+    pub unknown: sunrise_domain::Unknowns,
+}
+
 // The payloads above, and the two `inner_op` keeps beside the op family it
 // defines, described field by field for the canonical document schema
 // (`crate::doc_schema`). A field or variant added to one of these types and
@@ -502,6 +543,12 @@ sunrise_id::describe_value_types! {
         }
         DeviceFeaturesPayload {
             features: Vec<String>;
+            ..unknown
+        }
+        ShareGrantOpPayload {
+            person: EntityRef;
+            recipient_id_d_pub: [u8; 32];
+            grant: Vec<u8>;
             ..unknown
         }
         PatchPayload {
@@ -578,6 +625,7 @@ op_payloads! {
     DeviceRevokeByIdentity(DeviceRevokeByIdentityPayload),
     DeviceRevokeWithdraw(DeviceRevokeWithdrawPayload),
     DeviceRevokeWithdrawByIdentity(DeviceRevokeWithdrawByIdentityPayload),
+    ShareGrant(ShareGrantOpPayload),
 }
 
 #[cfg(test)]

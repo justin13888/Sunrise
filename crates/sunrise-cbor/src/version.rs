@@ -311,7 +311,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// `routine.shift_policy`. `pause` is never written, so a routine that keeps
 /// it encodes as it did at v30; a v30 build keeps any other value as an
 /// unknown field and writes it back verbatim. The floor does not move.
-pub const DOC_SCHEMA_V: u16 = 31;
+///
+/// `32` adds the control family `ShareGrant` (#1318,
+/// `docs/03-crypto/sharing-with-others.md`): the account's record of one
+/// Stream shared with one Person, carrying the sealed viewer grant and the
+/// recipient key a rotation re-seals to. It needs no feature: it writes no
+/// entity, and a build that cannot read it parks it and only fails to
+/// re-seal the share, which a device without `ID_S_priv` cannot do either.
+/// Every v1..v31 payload shape is unchanged, so the floor does not move.
+pub const DOC_SCHEMA_V: u16 = 32;
 
 mod fingerprint;
 #[cfg(test)]
