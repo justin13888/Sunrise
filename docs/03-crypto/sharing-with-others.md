@@ -24,7 +24,7 @@ The only role it grants is `viewer`, the answer recorded for #133: a read-only g
 
 * `share_grant`, `share_revoke` and `share_decline` as ops. None is among the `InnerOp` variants in `crates/sunrise-core/src/inner_op.rs`, so nothing emits, stores or applies a grant, and no rotation calls the re-seal.
 * `crates/sunrise-domain/src/person.rs` defines `struct Person` and `0013_baseline.sql` creates a `persons` table that nothing reads or writes.
-* Any client use of the relay viewer grant. The relay half is built ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md), the threat model for all of sharing): an owner registers a grant on a Stream under a claim token, one other account claims it, and that account's sessions read the owner's channel and can write nothing into it. No client registers, claims or subscribes through one yet, and a viewer's snapshot, blob and push routes are not built.
+* Any client use of the relay viewer grant. The relay half is built ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md), the threat model for all of sharing): an owner registers a grant on a Stream under a claim token, one other account claims it, and that account's sessions read the owner's channel and can write nothing into it. No client registers, claims or subscribes through one yet, and a viewer's snapshot, blob and push routes are not built ([#1322](https://github.com/justin13888/Sunrise/issues/1322)).
 * The `sunrise://share/<token>` deep link, the accept and decline UI, and the CLI surface.
 * The `editor` role.
 

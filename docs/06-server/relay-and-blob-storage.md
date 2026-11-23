@@ -58,8 +58,9 @@ fan-out are the same machinery on the owner's channel (`Session::channel`).
   Stream key, sealed to the recipient's identity by the owner's device, and
   the rotation that seals the next epoch to everyone but a revoked recipient.
 - **Not yet routed:** the owner's pinned snapshot, its blobs, and a push wake
-  when the owner publishes. A viewer whose cursor falls behind retention gets
-  `SYNC_CURSOR_GAP` with nothing to resolve it.
+  when the owner publishes ([#1322](https://github.com/justin13888/Sunrise/issues/1322)).
+  A viewer whose cursor falls behind retention gets `SYNC_CURSOR_GAP` with
+  nothing to resolve it.
 
 ## Storage layout (managed — design target, not implemented)
 

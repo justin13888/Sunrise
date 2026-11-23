@@ -210,8 +210,10 @@ stream reading the owner's channel ends on its next re-check.
 - The deep link that carries the claim token and the sealed grant, and every
   client surface: [#1320](https://github.com/justin13888/Sunrise/issues/1320).
 - A viewer's reads beyond the op log: the owner's pinned snapshot (ADR-0068),
-  its blobs, and a push wake-up when the owner publishes. A viewer whose cursor
-  falls behind retention gets `SYNC_CURSOR_GAP` and nothing to resolve it with.
+  its blobs, and a push wake-up when the owner publishes
+  ([#1322](https://github.com/justin13888/Sunrise/issues/1322)). A viewer whose
+  cursor falls behind retention gets `SYNC_CURSOR_GAP` and nothing to resolve
+  it with.
 
 ## Revisit if
 
