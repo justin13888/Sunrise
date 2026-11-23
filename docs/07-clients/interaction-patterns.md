@@ -126,7 +126,7 @@ are set out below.
 | Calendar block → Task | Yes | **No** — see below | N/A |
 | Calendar block → Calendar (move / resize) | Yes | Yes | N/A |
 | File → Task (attach) | Yes | Yes *(iPad)* | N/A |
-| Task → Task (reorder) | Yes | Yes | N/A |
+| Task → Task (reorder) | Yes *(row drop)* | Yes *(`ForEach.onMove`)* | N/A |
 | Stream → Stream (reorder) | Yes | Yes | N/A |
 
 **Calendar block → Task binds or unbinds, and on the Mac only.** Dragging a
@@ -245,10 +245,19 @@ exactly what Split View hands out.
 Every file named above is under `Sunrise/`, so every modifier this section
 names compiles into the Mac app and the iOS app alike — what differs between
 the columns is which of them a user can bring together on one screen, not
-which of them exist.
+which of them exist. One cell is a platform fork: *Task → Task (reorder)*.
 `TaskRowView` is `.draggable`, and it is accepted by the sidebar's stream and
-context rows (`BrowseSidebar`) and by other task rows (`TaskListView`, which
-declines the drop in Today and in Search because the core ranks those lists).
+context rows (`BrowseSidebar`) and, on the Mac, by other task rows
+(`TaskListView`'s `dropDestination`, which declines the drop in Today and in
+Search because the core ranks those lists). On iOS that row drop never
+receives a sibling row's drag from inside the same `List` (#1297, as #1234
+found for Upcoming), so the iOS reorder is `rowList`'s `ForEach.onMove`
+(`#if os(iOS)`, `nil` where the list cannot be arranged by hand), writing the
+same `MoveTasks`; `TaskReorderUITests` drags an Inbox row onto its sibling on
+the simulator and finds it drawn above it. Whether the row's drag still
+reaches a target outside the `List` (a second iPad window) with `onMove`
+present is unmeasured, and the one-scene limit above leaves no such window to
+measure it in.
 The attachments pane takes files (`AttachmentsView`), and a block moves and
 resizes within the grid by its own gestures rather than by a drop. The grid's
 own drop target (an `onDrop` delegate, `GridTaskDropTarget`, because previewing a
