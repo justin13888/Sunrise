@@ -9,16 +9,20 @@
 //! whichever client the user taps it on.
 //!
 //! Two shapes are the views issue #9 asks a notification to open into
-//! (`morning`, `evening`). One documented shape is deliberately **not**
-//! parsed: `sunrise://share/<token>`. Sharing is deferred by ADR-0020, so
-//! there is no grant a token could resolve against, and a link that parses to
-//! something no router can act on fails silently rather than honestly.
+//! (`morning`, `evening`). `sunrise://share/<token>` is the link an owner
+//! hands the person a Stream is shared with: [`ShareLink`] is its token, the
+//! relay viewer grant's claim token beside the sealed grant (ADR-0074 §1).
+//! It is parsed and built here and routed by no client yet: no client can
+//! claim or open what it carries.
 //!
 //! Ported from the Apple app's `DeepLink.swift`. One difference: an id is
 //! checked by [`EntityRef::parse_any`] rather than by its shape, so a link
 //! naming `tsk_` and 26 characters that are not a ULID is refused here rather
 //! than by the core's `BadId` after it has been routed.
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use sunrise_crypto::{decode_share_grant, ShareGrant, ShareGrantError, MAX_SHARE_GRANT_BYTES};
 use sunrise_domain::SnoozeSpan;
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -41,6 +45,135 @@ pub enum DeepLink {
     Task(EntityRef, TaskLinkAction),
     /// `sunrise://focus/<TaskId>` — focus on that task.
     Focus(EntityRef),
+    /// `sunrise://share/<token>` — a Stream shared with whoever holds the
+    /// link's recipient identity.
+    Share(Box<ShareLink>),
+}
+
+/// The token's format version, its first byte.
+const SHARE_TOKEN_V1: u8 = 1;
+
+/// The bytes ahead of the grant: the version, the claim token and the
+/// granter's `ID_S_pub`.
+const SHARE_TOKEN_HEAD: usize = 1 + 32 + 32;
+
+/// The longest token text a link may carry: the base64url of the head and the
+/// largest grant `sunrise-crypto` decodes. Checked before decoding, so a link
+/// cannot make a client allocate for a grant it would refuse anyway.
+const MAX_SHARE_TOKEN_CHARS: usize = (SHARE_TOKEN_HEAD + MAX_SHARE_GRANT_BYTES).div_ceil(3) * 4;
+
+/// What a `sunrise://share/<token>` link hands the person a Stream is shared
+/// with (`docs/03-crypto/sharing-with-others.md` §Granting access, step 4).
+///
+/// The token is base64url, unpadded, of
+/// `0x01 || claim_token (32) || granter_id_s_pub (32) || grant`:
+///
+/// * `claim_token` claims the relay viewer grant the owner registered
+///   (ADR-0074 §1). It is a credential, so [`Debug`] never prints it.
+/// * `granter_id_s_pub` is the key the grant's `identity_sig` verifies under,
+///   and what the recipient compares with the owner's fingerprint out of band
+///   (step 5). The grant cannot name it: the relay offers no lookup from an
+///   identity to its keys.
+/// * `grant` is the canonical `ShareGrantPayload` `Engine::share_stream`
+///   returns, decoded here and refused unless it is a viewer grant within its
+///   bounds. Nothing is verified: the signature covers the recipient's
+///   `ID_D_pub`, which only the recipient holds.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ShareLink {
+    claim_token: [u8; 32],
+    granter_id_s_pub: [u8; 32],
+    grant: ShareGrant,
+    grant_bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for ShareLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShareLink")
+            .field("claim_token", &"<redacted>")
+            .field("granter_id_s_pub", &crate::ids::hex(&self.granter_id_s_pub))
+            .field("grant", &self.grant.terms())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ShareLink {
+    /// The link for `grant`, the encoding `Engine::share_stream` returned,
+    /// signed by `granter_id_s_pub`'s identity, beside the relay grant's
+    /// `claim_token`.
+    ///
+    /// # Errors
+    /// What [`decode_share_grant`] refuses: a grant that is malformed, past
+    /// its bound, or not a viewer grant.
+    pub fn new(
+        claim_token: [u8; 32],
+        granter_id_s_pub: [u8; 32],
+        grant: Vec<u8>,
+    ) -> Result<Self, ShareGrantError> {
+        Ok(Self {
+            claim_token,
+            granter_id_s_pub,
+            grant: decode_share_grant(&grant)?,
+            grant_bytes: grant,
+        })
+    }
+
+    /// The relay viewer grant's claim token.
+    #[must_use]
+    pub const fn claim_token(&self) -> &[u8; 32] {
+        &self.claim_token
+    }
+
+    /// The `ID_S_pub` the grant is signed under.
+    #[must_use]
+    pub const fn granter_id_s_pub(&self) -> &[u8; 32] {
+        &self.granter_id_s_pub
+    }
+
+    /// The grant, decoded and not verified.
+    #[must_use]
+    pub const fn grant(&self) -> &ShareGrant {
+        &self.grant
+    }
+
+    /// The grant's canonical encoding, as the link carries it.
+    #[must_use]
+    pub fn grant_bytes(&self) -> &[u8] {
+        &self.grant_bytes
+    }
+
+    /// The token, as the link's one path segment.
+    #[must_use]
+    pub fn to_token(&self) -> String {
+        let mut bytes = Vec::with_capacity(SHARE_TOKEN_HEAD + self.grant_bytes.len());
+        bytes.push(SHARE_TOKEN_V1);
+        bytes.extend_from_slice(&self.claim_token);
+        bytes.extend_from_slice(&self.granter_id_s_pub);
+        bytes.extend_from_slice(&self.grant_bytes);
+        URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    /// Read a token, or refuse it: text that is not canonical unpadded
+    /// base64url, an unknown version, a short head, or a grant
+    /// [`Self::new`] refuses.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        if token.len() > MAX_SHARE_TOKEN_CHARS {
+            return None;
+        }
+        let bytes = URL_SAFE_NO_PAD.decode(token).ok()?;
+        let (&version, rest) = bytes.split_first()?;
+        if version != SHARE_TOKEN_V1 || rest.len() < SHARE_TOKEN_HEAD - 1 {
+            return None;
+        }
+        let (claim_token, rest) = rest.split_at(32);
+        let (granter_id_s_pub, grant) = rest.split_at(32);
+        Self::new(
+            claim_token.try_into().ok()?,
+            granter_id_s_pub.try_into().ok()?,
+            grant.to_vec(),
+        )
+        .ok()
+    }
 }
 
 /// What a `sunrise://task/<id>` link asks for. The identifiers are the ones
@@ -140,6 +273,7 @@ impl DeepLink {
             // A task, and only a task: a session is time spent on one piece
             // of work, and the core's `StartFocus` takes a `tsk_` id.
             ("focus", [id]) => task_ref(id).map(Self::Focus),
+            ("share", [token]) => ShareLink::from_token(token).map(|l| Self::Share(Box::new(l))),
             _ => None,
         }
     }
@@ -156,6 +290,7 @@ impl DeepLink {
                 format!("{SCHEME}://task/{id}?action={}", action.identifier())
             }
             Self::Focus(id) => format!("{SCHEME}://focus/{id}"),
+            Self::Share(link) => format!("{SCHEME}://share/{}", link.to_token()),
         }
     }
 
@@ -163,13 +298,16 @@ impl DeepLink {
     ///
     /// `None` for the links that are an operation: completing or snoozing a
     /// task from a notification button must not drag a window forward
-    /// ("translates to a CRDT op without opening UI when possible").
+    /// ("translates to a CRDT op without opening UI when possible"). `None`
+    /// too for a share: what it opens is the recipient's decision to accept,
+    /// over whatever screen is showing.
     #[must_use]
     pub fn screen(&self) -> Option<LinkScreen> {
         match self {
             Self::MorningSummary => Some(LinkScreen::Morning),
             Self::EndOfDayPlan => Some(LinkScreen::Evening),
             Self::Capture(_)
+            | Self::Share(_)
             | Self::Task(_, TaskLinkAction::Complete | TaskLinkAction::Snooze(_)) => None,
             Self::Entity(id) => Some(home_of(id)),
             Self::Task(_, TaskLinkAction::Open) => Some(LinkScreen::Today),
@@ -298,6 +436,129 @@ mod tests {
 
     fn link(s: &str) -> Option<DeepLink> {
         DeepLink::parse(s)
+    }
+
+    /// A viewer grant from one fixed identity to another, as
+    /// `Engine::share_stream` encodes it.
+    fn grant_bytes() -> (Vec<u8>, [u8; 32]) {
+        use rand_core::SeedableRng;
+        use sunrise_crypto::{
+            identity_id_from_pub, seal_share_grant, IdentityDhKeyPair, IdentitySigningKeyPair,
+            ShareGrantTerms, ShareRole, StreamKey, StreamMetadata,
+        };
+        let granter = IdentitySigningKeyPair::from_secret_bytes(&[1; 32]);
+        let recipient = IdentitySigningKeyPair::from_secret_bytes(&[2; 32]);
+        let recipient_d = IdentityDhKeyPair::from_secret_bytes([3; 32]);
+        let grant = seal_share_grant(
+            &granter,
+            ShareGrantTerms {
+                stream_id: [0x5a; 16],
+                epoch: 4,
+                recipient_identity_id: identity_id_from_pub(&recipient.public_bytes()),
+                role: ShareRole::Viewer,
+                expires_at_ms: Some(1_900_000_000_000),
+            },
+            &recipient_d.public_bytes(),
+            &StreamKey::from_bytes([0x33; 32]),
+            &StreamMetadata {
+                name: "Garden".into(),
+                color: "green".into(),
+            },
+            &mut rand_chacha::ChaCha20Rng::seed_from_u64(7),
+        )
+        .unwrap();
+        (grant.encode().unwrap(), granter.public_bytes())
+    }
+
+    fn share() -> ShareLink {
+        let (grant, granter) = grant_bytes();
+        ShareLink::new([0xc1; 32], granter, grant).unwrap()
+    }
+
+    #[test]
+    fn a_share_link_carries_the_claim_token_the_granter_and_the_grant() {
+        let original = share();
+        let url = DeepLink::Share(Box::new(original.clone())).to_url();
+        assert!(url.starts_with("sunrise://share/"), "{url}");
+        let Some(DeepLink::Share(parsed)) = link(&url) else {
+            panic!("{url} should parse as a share");
+        };
+        assert_eq!(parsed.claim_token(), &[0xc1; 32]);
+        assert_eq!(parsed.granter_id_s_pub(), original.granter_id_s_pub());
+        assert_eq!(parsed.grant_bytes(), grant_bytes().0.as_slice());
+        assert_eq!(parsed.grant().terms().stream_id, [0x5a; 16]);
+        assert_eq!(
+            parsed.grant().terms().expires_at_ms,
+            Some(1_900_000_000_000)
+        );
+        assert_eq!(*parsed, original);
+    }
+
+    /// The token's layout, byte for byte, so a client in another language
+    /// that builds one is held to the same shape.
+    #[test]
+    fn the_share_token_is_the_version_the_claim_token_the_key_and_the_grant() {
+        let link = share();
+        let bytes = URL_SAFE_NO_PAD.decode(link.to_token()).unwrap();
+        assert_eq!(bytes[0], 1);
+        assert_eq!(&bytes[1..33], &[0xc1; 32]);
+        assert_eq!(&bytes[33..65], link.granter_id_s_pub());
+        assert_eq!(&bytes[65..], link.grant_bytes());
+    }
+
+    #[test]
+    fn a_share_opens_no_screen_and_reveals_nothing() {
+        let l = DeepLink::Share(Box::new(share()));
+        assert_eq!(l.screen(), None);
+        assert_eq!(l.reveal(), None);
+    }
+
+    #[test]
+    fn a_share_links_debug_never_prints_the_claim_token() {
+        let printed = format!("{:?}", share());
+        assert!(printed.contains("<redacted>"), "{printed}");
+        assert!(
+            !printed.contains(&crate::ids::hex(&[0xc1; 32])),
+            "{printed}"
+        );
+    }
+
+    #[test]
+    fn a_share_token_that_is_not_one_is_ignored() {
+        let token = share().to_token();
+        let bytes = URL_SAFE_NO_PAD.decode(&token).unwrap();
+        let with = |f: &dyn Fn(&mut Vec<u8>)| {
+            let mut b = bytes.clone();
+            f(&mut b);
+            format!("sunrise://share/{}", URL_SAFE_NO_PAD.encode(b))
+        };
+        let refused = [
+            // Another version.
+            with(&|b| b[0] = 2),
+            // A head cut short: no grant at all.
+            with(&|b| b.truncate(SHARE_TOKEN_HEAD)),
+            with(&|b| b.truncate(40)),
+            // A grant that is not one.
+            with(&|b| b.truncate(b.len() - 1)),
+            with(&|b| b.push(0)),
+            // A grant past `sunrise-crypto`'s bound, refused before decoding.
+            format!("sunrise://share/{}", "A".repeat(MAX_SHARE_TOKEN_CHARS + 1)),
+            // Padded, or outside base64url's alphabet.
+            format!("sunrise://share/{token}="),
+            format!("sunrise://share/+{token}"),
+            // A second segment, or none.
+            format!("sunrise://share/{token}/x"),
+            "sunrise://share".to_owned(),
+        ];
+        for raw in refused {
+            assert_eq!(link(&raw), None, "{raw} should be ignored");
+        }
+        assert_eq!(ShareLink::from_token(""), None);
+    }
+
+    #[test]
+    fn a_share_link_refuses_a_grant_that_is_not_one() {
+        assert!(ShareLink::new([0; 32], [0; 32], vec![0xa0]).is_err());
     }
 
     #[test]

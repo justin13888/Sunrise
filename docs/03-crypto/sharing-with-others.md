@@ -6,7 +6,7 @@ status: accepted
 
 A user shares a **Stream** (and all its descendant entities) with one or more other identities. The Stream is the unit; there is no per-Task ACL.
 
-## Implementation status: the viewer grant, its op, its re-seal and its relay route are built; no client uses them
+## Implementation status: the viewer grant, its op, its re-seal, its relay route and its link are built; no client uses them
 
 The "accept invite" and "view shared stream as editor" rows are MUST in the [parity matrix](../07-clients/parity-matrix.md), not built, and ranked on the roadmap ([`../roadmap.md`](../roadmap.md)) as [#133](https://github.com/justin13888/Sunrise/issues/133), which tracks the whole of sharing.
 
@@ -36,13 +36,15 @@ The only role it grants is `viewer`, the answer recorded for #133: a read-only g
 
 A build at `DOC_SCHEMA_V` 32 parks the three new ops, so its own rotation still re-seals to a share they ended. No client shares yet.
 
+**Built** ([#1320](https://github.com/justin13888/Sunrise/issues/1320), `crates/sunrise-client-core/src/links.rs`): the `sunrise://share/<token>` link that carries a grant to its recipient (step 4). `ShareLink` builds and parses the token, and `DeepLink::Share` is the link ([`../07-clients/interaction-patterns.md`](../07-clients/interaction-patterns.md) §`sunrise://share/<token>`). No client routes it.
+
 **Not built:**
 
 * A re-seal while no device holding `ID_S_priv` is online. Until one learns the epoch, a paired device's rotation reaches no share recipient, and says so (`core.share.reseal_skipped`).
 * The recipient's side of a decline: the signed message that carries it to the owner, and the recipient discarding post-cutoff ops on applying a revocation.
 * The `persons` table `0013_baseline.sql` creates is still read and written by nothing: a share names its `Person` by ref, and the caller supplies the `Person` and the recipient's `ID_D_pub`.
 * Any client use of the relay viewer grant. The relay half is built ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md), the threat model for all of sharing): an owner registers a grant on a Stream under a claim token, one other account claims it, and that account's sessions read the owner's channel and can write nothing into it. The same grant reads the owner's pinned snapshot and blobs, and a publish wakes the accounts holding one ([#1322](https://github.com/justin13888/Sunrise/issues/1322)). No client registers, claims, subscribes or reads through one yet.
-* The `sunrise://share/<token>` deep link, the accept and decline UI, and the CLI surface.
+* Any client route for the `sunrise://share/<token>` link, the accept and decline UI, and the CLI surface: no client claims a relay grant or opens a grant ([#1333](https://github.com/justin13888/Sunrise/issues/1333)).
 * The `editor` role. It is decided ([ADR-0075](../11-adr/0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md), [#1321](https://github.com/justin13888/Sunrise/issues/1321)) and none of it is built. Every build refuses an `editor` grant until all of that ADR's §8 is built (§Roles).
 
 ADR-0024 decision 4 — independently random per-`(stream_id, epoch)` keys distributed by HPKE — is what makes selective sharing expressible at all, and it is built.
@@ -103,8 +105,8 @@ An op that fails any of them, though its signature verifies, is parked ([ADR-004
    The op that carries it is the account's own record, sealed on the vault-meta stream like every control op: `{ "ShareGrant": { "person", "recipient_id_d_pub", "grant" } }`, where `grant` is the payload above in its canonical encoding, `person` the `per_` ref of the Person shared with, and `recipient_id_d_pub` the key every later re-seal is sealed to, which the grant itself does not carry but its signature covers ([`data-encryption-format.md`](./data-encryption-format.md) §Control op payloads). The recipient never reads this op; it receives the encoded grant in step 4.
 
    **Why the granter is in the AAD.** HPKE Base authenticates no sender, and `identity_sig` alone does not stop a third identity re-signing the owner's `hpke_ct` as its own grant: the recipient would then hold the owner's Stream key under the impostor's name. `granter_identity_id` is `identity_id_from_pub` of the `ID_S_pub` the recipient verifies `identity_sig` under, so a ciphertext opens only beside the signature of the identity that sealed it. It is not a field: the recipient derives it from the key it already checked.
-4. **Owner publishes the `share_grant` op and registers a relay viewer grant** ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md)): `POST /api/v1/sync/grants` on the Stream, under a claim token of 32 random bytes and the grant's `expires_at`. The recipient receives the claim token beside the sealed grant, claims it from its own account, and from then on reads the owner's channel by naming the grant in its subscription. The relay learns which account reads the Stream; it never learns the recipient's identity, and never holds the key.
-5. **Recipient receives** the envelope on next sync. UI shows "Stream X shared with you by Y. Accept?" The recipient's client verifies `identity_sig` against the granting identity's published `ID_S_pub`.
+4. **Owner publishes the `share_grant` op and registers a relay viewer grant** ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md)): `POST /api/v1/sync/grants` on the Stream, under a claim token of 32 random bytes and the grant's `expires_at`. The recipient receives the claim token beside the sealed grant, in one `sunrise://share/<token>` link: base64url, unpadded, of `0x01 || claim_token (32) || granter_id_s_pub (32) || grant`, where `granter_id_s_pub` is the key `identity_sig` verifies under and what step 5 checks against the owner's fingerprint. It claims the token from its own account, and from then on reads the owner's channel by naming the grant in its subscription. The relay learns which account reads the Stream; it never learns the recipient's identity, and never holds the key.
+5. **Recipient receives** the envelope on next sync. UI shows "Stream X shared with you by Y. Accept?" The recipient's client verifies `identity_sig` under the `granter_id_s_pub` the link carries (step 4), and the recipient checks that key's fingerprint against the owner's, out of band, as the owner checked theirs in step 2. No `ID_S_pub` is published anywhere the relay could look it up.
 6. **On accept:** recipient's device opens the HPKE ciphertext using its `ID_D_priv`, stores `stream_key_<epoch>` locally (wrapped under its own `vault_root`), subscribes to the Stream on the relay, decrypts ops, renders.
 7. **On decline:** the recipient's decline reaches the owner out of band, as the grant reached the recipient (not built). The owner's device records it as a `ShareDecline` control op on the vault-meta stream, `{ "ShareDecline": { "stream_id", "recipient_identity_id", "declined_at_ms" } }`, which ends the share as a revocation does, with no rotation of its own; the owner's UI shows the result (`Engine::ended_stream_shares`).
 
