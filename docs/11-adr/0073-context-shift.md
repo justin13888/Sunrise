@@ -211,7 +211,11 @@ it is still running):
   (`crates/sunrise-core/src/engine/routine.rs`); the bindings. A future
   occurrence a shift holds back stops the generation watermark, so ending
   the shift early gives it back.
-- **Not yet built**: `sunrise shift`, the macOS surfaces, focus applied in
+- **Built** (#1308): `sunrise shift start`, `end` and `status`
+  (`crates/sunrise-cli/src/cmd/shift.rs`): `end` ends the shift in force
+  now and prints the summary, and `status --json` is documented in
+  [`../07-clients/overview.md`](../07-clients/overview.md) §JSON output.
+- **Not yet built**: the macOS surfaces, focus applied in
   the views (§5), and views reading an occurrence generated before the shift
   through the policy (§4). They are tracked in
   [#1308](https://github.com/justin13888/Sunrise/issues/1308).

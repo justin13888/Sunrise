@@ -67,10 +67,10 @@ At most one shift is in force at a time: of those covering the moment, the one s
 |---|---|
 | `pause` | Covered occurrences are not generated and not missed; the generation horizon resumes at the shift's end with no backfill. |
 | `shift_tz` | Covered occurrences keep their wall-clock time (e.g. `09:00`) in the shift's destination zone; the UTC time changes and the occurrence key does not. DST in the destination follows the one DST rule ([`../10-cross-cutting/time.md`](../10-cross-cutting/time.md) §3). A floating routine already follows the user and is unaffected. |
-| `skip` | Covered occurrences are generated as skipped with cause `context_shift`. The streak excuses them: neither counted nor missed, spending no forgiveness (see [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md) §Streak). |
+| `skip` | Covered occurrences are not generated, as under `pause`, and ending or deleting the shift gives them back with no stale skip to undo (ADR-0073 §4, as amended). The streak excuses them: neither counted nor missed, spending no forgiveness (see [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md) §Streak). |
 | `unchanged` | Routine ignores the shift. |
 
-The rules are built as pure functions in `crates/sunrise-domain/src/shift.rs`. Storing shifts, the per-routine field, the CLI's `sunrise shift start|end|status` and the macOS "Start shift…" action are not built yet (ADR-0073 §Build status, [#1244](https://github.com/justin13888/Sunrise/issues/1244)).
+The rules are pure functions in `crates/sunrise-domain/src/shift.rs`; shifts are stored and synced, each routine carries its policy, and generation and the streak follow it ([#1244](https://github.com/justin13888/Sunrise/issues/1244)). From the CLI, `sunrise shift start <name> [--zone Z] [--place plc_…]` starts one, `sunrise shift status` shows the shift in force and what it has gathered so far, and `sunrise shift end` ends it and prints "While you were away". The macOS "Start shift…" action, focus in the views and views reading an occurrence generated before the shift through the policy are not built yet (ADR-0073 §Build status, [#1308](https://github.com/justin13888/Sunrise/issues/1308)).
 
 ## 6. Recover / move device
 
