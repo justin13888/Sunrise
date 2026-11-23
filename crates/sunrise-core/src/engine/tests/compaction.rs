@@ -246,10 +246,16 @@ fn a_compaction_run_returns_the_pages_it_freed() {
     let mut r = replicas(2, &c);
     let (eb, mut dbb) = r.pop().unwrap();
     let (ea, mut dba) = r.pop().unwrap();
+    // Two hundred writes on each replica, each of which would rebuild the
+    // whole log after it: checked once, when the log is whole (#1279).
+    let setup = crate::engine::rebuild::check::pause();
     for i in 0..200 {
         new_task(&ea, &mut dba, &format!("task {i:03} {}", "x".repeat(200)));
     }
     relay(&dba, &eb, &mut dbb);
+    drop(setup);
+    ea.assert_rebuild_identity(&dba);
+    eb.assert_rebuild_identity(&dbb);
     ack_outbox(&mut dba);
     let ack = digest_op(&eb, &mut dbb, &INBOX);
     ea.apply_remote_all(&mut dba, &ack).unwrap();
