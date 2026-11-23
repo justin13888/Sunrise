@@ -131,7 +131,7 @@ const WITHDRAW_DOMAIN: &[u8] = b"sunrise.device_revoke_withdraw.identity.v1";
 /// ```
 ///
 /// [`RevocationClaim`] less the reason, which a withdrawal does not carry, and
-/// under [`WITHDRAW_DOMAIN`]. The sender and the HLC are the authenticated
+/// under `WITHDRAW_DOMAIN`. The sender and the HLC are the authenticated
 /// envelope's, for the same reason: the signature cannot be lifted into
 /// another device's op, so it withdraws nothing but the pair of the device
 /// that carried it, and cannot be re-dated past a later revocation.

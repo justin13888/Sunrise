@@ -6,7 +6,7 @@
 //! token; [`list`] shows the caller's grants on both sides; [`withdraw`]
 //! removes one, by either party. A session reads through a grant by naming it
 //! in a subscription ([`super::StreamSubscription::grant`]), which
-//! [`in_force`] checks there and on every re-check of an open stream.
+//! `in_force` checks there and on every re-check of an open stream.
 //!
 //! The grant decides whom the relay hands a channel's ciphertext and metadata
 //! to, and nothing about who can read it: the Stream key reaches the recipient

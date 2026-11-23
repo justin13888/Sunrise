@@ -7,7 +7,7 @@
 //! ([`PgLimiter`], §5) and the pairing rendezvous ([`PgRendezvous`], #1262).
 //! Every node connects to it, and any node serves any account.
 //!
-//! - **Metadata.** [`PgStore`] implements [`MetadataStore`]
+//! - **Metadata.** [`PgStore`] implements `MetadataStore`
 //!   (`metadata.rs`). Each method is one transaction at `READ COMMITTED`, so a
 //!   revocation committed on one node is what every request that starts after
 //!   it sees, on any node. Where a method reads before it writes — the
@@ -152,7 +152,7 @@ impl OpenError {
     }
 }
 
-/// A failed statement or connection, as every [`MetadataStore`] caller sees
+/// A failed statement or connection, as every `MetadataStore` caller sees
 /// it: retryable, and nothing committed.
 pub(super) fn unavailable(e: impl std::fmt::Display) -> MetadataError {
     MetadataError::Unavailable(e.to_string())

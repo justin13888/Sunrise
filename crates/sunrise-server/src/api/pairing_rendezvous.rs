@@ -175,7 +175,7 @@ pub struct Session {
     pub expires_at_ms: u64,
     /// The typed code, until the existing device sends its first message.
     pub code: Option<u32>,
-    /// Indexed by [`PairRole::index`]: what each side has sent.
+    /// Indexed by `PairRole::index`: what each side has sent.
     pub sent: [Vec<Vec<u8>>; 2],
 }
 
@@ -250,7 +250,7 @@ impl Session {
 
 /// A code for a new session of an account whose live sessions hold `taken`:
 /// drawn from the random `pair_id`, then stepped past every taken code. An
-/// account holds far fewer than [`CODE_SPACE`] sessions, so the step ends.
+/// account holds far fewer than `CODE_SPACE` sessions, so the step ends.
 ///
 /// The taken codes are collected once rather than rescanned per step: the
 /// `pair_id` is the client's to choose, so a client can make every one of its

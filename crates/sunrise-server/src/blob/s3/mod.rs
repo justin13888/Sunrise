@@ -618,7 +618,7 @@ impl BlobBackend for S3Blobs {
 
     /// A manifest that does not parse is left out, as on the filesystem.
     ///
-    /// One listing, then a `GET` only for each manifest [`ReadManifests`]
+    /// One listing, then a `GET` only for each manifest `ReadManifests`
     /// has not already read under the same entity tag: the first pass after
     /// a start reads every manifest, and each later one only those committed
     /// since.
