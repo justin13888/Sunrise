@@ -732,3 +732,35 @@ async fn a_revocation_keeps_revoked_unknown_and_refused_apart() {
         "a `call` with no body advertises no media type either"
     );
 }
+
+/// The resume point is opaque, and a relay serving several streams writes one
+/// position per stream into it (ADR-0023's third amendment). A client that
+/// read it as a number would drop it, or keep only the part it could parse,
+/// and resume each stream from somewhere the relay never said.
+#[tokio::test]
+async fn a_per_stream_resume_position_is_presented_verbatim() {
+    const POSITION: &str = "0123456789abcdef:0=9,1=3";
+    let relay = relay::start(vec![
+        relay::Canned::json(200, SESSION_OK),
+        relay::Canned::stream(vec![hyper::body::Bytes::from(format!(
+            "id: {POSITION}\ndata: {}\n\n",
+            serde_json::json!({"kind": "caught_up", "stream_id": "ab".repeat(16)})
+        ))]),
+        relay::Canned::stream(Vec::new()),
+    ])
+    .await;
+    let mut t = open_session(&relay).await;
+
+    next_frame(&mut t)
+        .await
+        .expect("the stream opens")
+        .expect("a frame");
+    assert_eq!(t.last_event_id.as_deref(), Some(POSITION));
+    assert!(next_frame(&mut t)
+        .await
+        .expect("a relay that closes the stream is not an error")
+        .is_none());
+    let _ = next_frame(&mut t).await;
+
+    assert_eq!(relay.seen()[2].header("last-event-id"), Some(POSITION));
+}

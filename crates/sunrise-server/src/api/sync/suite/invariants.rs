@@ -301,3 +301,276 @@ async fn a_zero_last_event_id_is_not_a_resume_point() {
     assert!(body.contains("\"kind\":\"caught_up\""), "{body}");
     assert_eq!(client.metrics.get("sunrise_sync_resume_conflict_total"), 0);
 }
+
+/// The second stream of the two-stream scenarios below.
+const OTHER_STREAM: [u8; 16] = [0x22; 16];
+
+/// Subscribe `id` to [`STREAM_BYTES`] and [`OTHER_STREAM`], in that order,
+/// with no cursors.
+async fn subscribe_both(client: &Client, id: &str) {
+    let streams: Vec<serde_json::Value> = [STREAM_BYTES, OTHER_STREAM]
+        .iter()
+        .map(|s| serde_json::json!({ "stream_id": hex::encode(s), "cursors": [] }))
+        .collect();
+    client
+        .send_with(
+            Method::POST,
+            "/api/v1/sync/subscribe",
+            Some(BEARER),
+            Some(&serde_json::json!({ "streams": streams })),
+            &[("x-sunrise-session", id)],
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+/// Publish an empty batch on `stream`.
+async fn publish_on(client: &Client, id: &str, stream: [u8; 16], batch_id: u64) {
+    let res = client
+        .send_with(
+            Method::POST,
+            "/api/v1/sync/ops",
+            Some(BEARER),
+            Some(&serde_json::json!({
+                "stream_id": hex::encode(stream), "batch_id": batch_id, "ops": [],
+            })),
+            &[("x-sunrise-session", id)],
+        )
+        .await;
+    res.assert_status(StatusCode::OK);
+}
+
+/// Each `ops` event of an SSE body, in order: its stream, and the `id:` it
+/// carried.
+fn ops_events(body: &str) -> Vec<(String, String)> {
+    body.split("\n\n")
+        .filter_map(|block| {
+            let mut id = None;
+            let mut data = None;
+            for line in block.lines() {
+                if let Some(v) = line.strip_prefix("id:") {
+                    id = Some(v.trim().to_owned());
+                } else if let Some(v) = line.strip_prefix("data:") {
+                    data = serde_json::from_str::<serde_json::Value>(v.trim()).ok();
+                }
+            }
+            let data = data?;
+            if data["kind"] != "ops" {
+                return None;
+            }
+            Some((data["stream_id"].as_str()?.to_owned(), id?))
+        })
+        .collect()
+}
+
+/// The `ops` events of `body` on `stream`.
+fn on(events: &[(String, String)], stream: [u8; 16]) -> usize {
+    let stream = hex::encode(stream);
+    events.iter().filter(|(s, _)| *s == stream).count()
+}
+
+/// #1263, the replay half. Frame ids are one sequence across every channel,
+/// and a session's streams are replayed one after the other, so a client
+/// that drops after the first stream's replay holds an id above frames of
+/// the second it was never sent. Resuming on that id has to send them.
+#[tokio::test]
+async fn a_drop_between_two_replayed_streams_resumes_both() {
+    let client = Client::new(ServerConfig::default());
+    let writer = establish(&client).await;
+    // Ids 1 and 4 on the first stream, 2 and 3 on the second.
+    publish_on(&client, &writer, STREAM_BYTES, 1).await;
+    publish_on(&client, &writer, OTHER_STREAM, 2).await;
+    publish_on(&client, &writer, OTHER_STREAM, 3).await;
+    publish_on(&client, &writer, STREAM_BYTES, 4).await;
+
+    let reader = establish(&client).await;
+    subscribe_both(&client, &reader).await;
+    let first = ops_events(&read(&client, &reader, &[]).await);
+    assert_eq!(
+        (on(&first, STREAM_BYTES), on(&first, OTHER_STREAM)),
+        (2, 2),
+        "{first:?}"
+    );
+
+    // The drop: after the last frame of the first stream, before any of the
+    // second. This is the id the client holds there.
+    let (_, held) = first
+        .iter()
+        .rfind(|(s, _)| *s == hex::encode(STREAM_BYTES))
+        .expect("the first stream replayed")
+        .clone();
+    let resumed = ops_events(&read(&client, &reader, &[("last-event-id", &held)]).await);
+    assert_eq!(
+        on(&resumed, OTHER_STREAM),
+        2,
+        "the second stream's frames were never sent: {resumed:?}"
+    );
+    assert_eq!(
+        on(&resumed, STREAM_BYTES),
+        0,
+        "the first stream's were: {resumed:?}"
+    );
+}
+
+/// #1263, the live half. The relay publishes each channel in log order but
+/// promises nothing across channels, so a live frame of one stream can reach
+/// a session before a lower-id frame of another — one still on the cluster's
+/// bus, or on another node. A client that drops right after the higher one
+/// has to be sent the lower one when it resumes.
+#[tokio::test]
+async fn a_drop_after_a_live_frame_overtakes_another_stream_resumes_both() {
+    use crate::relay::RelayFrame;
+    use http_body_util::BodyExt as _;
+    use kynos::http::body::Body;
+    use kynos::http::{HeaderName, HeaderValue, Request};
+
+    let state = ServerState::new(ServerConfig::default());
+    let client = Client::from_state(state.clone());
+    let reader = establish(&client).await;
+    subscribe_both(&client, &reader).await;
+    // The stream that serves the set: nothing to replay, no id yet.
+    let _ = read(&client, &reader, &[]).await;
+    let session = client
+        .sessions
+        .get(&reader, client.clock_now_ms())
+        .await
+        .expect("the session store answers")
+        .expect("the session is live");
+
+    let mut request = Request::new(Body::empty());
+    *request.uri_mut() = "/api/v1/sync/events".parse().unwrap();
+    request.headers_mut().insert(
+        HeaderName::from_static("authorization"),
+        HeaderValue::from_static(BEARER),
+    );
+    request.headers_mut().insert(
+        HeaderName::from_static("x-sunrise-session"),
+        HeaderValue::from_str(&reader).unwrap(),
+    );
+    let mut body = client.call(request).await.into_body();
+    let mut seen = String::new();
+    let mut next = async |seen: &mut String| {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+            .await
+            .expect("the stream sent nothing")
+            .expect("the stream ended")
+            .expect("a readable frame");
+        if let Some(data) = frame.data_ref() {
+            seen.push_str(&String::from_utf8_lossy(data));
+        }
+    };
+    while seen.matches("\"kind\":\"caught_up\"").count() < 2 {
+        next(&mut seen).await;
+    }
+
+    // Both frames commit, the second stream's first, so its id is the lower.
+    let append = |stream: [u8; 16], batch_id: u64| {
+        state.store.relay_append(
+            (session.account, stream),
+            b"frame",
+            &[],
+            0,
+            None,
+            batch_id,
+            1_000,
+            crate::relay_log::DurableCaps::default(),
+        )
+    };
+    let id_of = |appended| match appended {
+        crate::relay_log::Appended::Fresh { frame_id, .. } => frame_id,
+        crate::relay_log::Appended::Duplicate { .. } => panic!("a fresh frame"),
+    };
+    let lower = id_of(append(OTHER_STREAM, 1).await.expect("appended"));
+    let higher = id_of(append(STREAM_BYTES, 2).await.expect("appended"));
+    assert!(lower < higher);
+    // Only the higher one reaches this stream live.
+    state.relay.publish(
+        (session.account, STREAM_BYTES),
+        RelayFrame {
+            id: higher,
+            ..RelayFrame::opaque(session.conn.wrapping_add(1), b"frame".to_vec())
+        },
+    );
+    while ops_events(&seen).is_empty() {
+        next(&mut seen).await;
+    }
+    let live = ops_events(&seen);
+    assert_eq!(on(&live, STREAM_BYTES), 1, "{live:?}");
+    // The drop.
+    drop(body);
+
+    let (_, held) = live[0].clone();
+    let resumed = ops_events(&read(&client, &reader, &[("last-event-id", &held)]).await);
+    assert_eq!(
+        on(&resumed, OTHER_STREAM),
+        1,
+        "the lower frame of the other stream was never sent: {resumed:?}"
+    );
+    assert_eq!(
+        on(&resumed, STREAM_BYTES),
+        0,
+        "the live frame was: {resumed:?}"
+    );
+}
+
+/// An id the session cannot apply resumes nothing: a bare id cannot say
+/// which of two streams it is about, so every stream replays from its
+/// cursors. Over-delivery is a no-op at the op-log gate; a skip is loss.
+#[tokio::test]
+async fn a_bare_id_on_a_two_stream_session_replays_from_the_cursors() {
+    let client = Client::new(ServerConfig::default());
+    let writer = establish(&client).await;
+    publish_on(&client, &writer, STREAM_BYTES, 1).await;
+    publish_on(&client, &writer, OTHER_STREAM, 2).await;
+
+    let reader = establish(&client).await;
+    subscribe_both(&client, &reader).await;
+    let _ = read(&client, &reader, &[]).await;
+
+    let resumed = ops_events(&read(&client, &reader, &[("last-event-id", "2")]).await);
+    assert_eq!(
+        (on(&resumed, STREAM_BYTES), on(&resumed, OTHER_STREAM)),
+        (1, 1),
+        "{resumed:?}"
+    );
+}
+
+/// And a position from another stream set — the same two streams, listed
+/// the other way round by a later `Subscribe` — is not read against this
+/// one, where its indices would name the other stream.
+#[tokio::test]
+async fn a_position_from_another_stream_set_replays_from_the_cursors() {
+    let client = Client::new(ServerConfig::default());
+    let writer = establish(&client).await;
+    publish_on(&client, &writer, STREAM_BYTES, 1).await;
+    publish_on(&client, &writer, OTHER_STREAM, 2).await;
+
+    let reader = establish(&client).await;
+    subscribe_both(&client, &reader).await;
+    let first = ops_events(&read(&client, &reader, &[]).await);
+    let (_, held) = first.last().expect("a replay").clone();
+
+    // The same streams, the other way round.
+    let streams: Vec<serde_json::Value> = [OTHER_STREAM, STREAM_BYTES]
+        .iter()
+        .map(|s| serde_json::json!({ "stream_id": hex::encode(s), "cursors": [] }))
+        .collect();
+    client
+        .send_with(
+            Method::POST,
+            "/api/v1/sync/subscribe",
+            Some(BEARER),
+            Some(&serde_json::json!({ "streams": streams })),
+            &[("x-sunrise-session", &reader)],
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let _ = read(&client, &reader, &[]).await;
+
+    let resumed = ops_events(&read(&client, &reader, &[("last-event-id", &held)]).await);
+    assert_eq!(
+        (on(&resumed, STREAM_BYTES), on(&resumed, OTHER_STREAM)),
+        (1, 1),
+        "{resumed:?}"
+    );
+}

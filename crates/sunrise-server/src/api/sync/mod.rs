@@ -43,6 +43,7 @@
 mod credential;
 mod cursors;
 mod publish;
+mod resume;
 mod stream;
 #[cfg(test)]
 mod suite;
