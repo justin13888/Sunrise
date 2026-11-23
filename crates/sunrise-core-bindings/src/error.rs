@@ -6,9 +6,9 @@
 //! recovery errors in [`crate::recovery`].
 
 use sunrise_core::CoreError;
+use thiserror::Error;
 
 use crate::dto::hex16;
-use thiserror::Error;
 
 #[cfg(doc)]
 use crate::{pairing_relay, vault_repair, SunriseCore, SunriseLogin};

@@ -382,7 +382,7 @@ final class DeviceListModel {
     /// the account identity made, which the identity key's holder may
     /// withdraw.
     nonisolated static let withdrawalFeatures: Set<String> = [
-        "core.revoke_withdraw", "core.revoke_withdraw_authority",
+        "core.revoke_withdraw", "core.revoke_withdraw_authority"
     ]
 
     /// What to show for a withdrawal the core refused.
