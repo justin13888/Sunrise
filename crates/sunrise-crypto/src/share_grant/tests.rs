@@ -1,5 +1,6 @@
 //! `share_grant`'s unit tests: the codec, the seal and open, what the
-//! signature and the AAD bind, expiry, and the re-seal a rotation emits.
+//! signature and the AAD bind, expiry, and the re-seal a rotation emits. The
+//! byte-exact freeze is `tests/frozen_share_grant.rs`.
 
 use super::*;
 use rand_chacha::ChaCha20Rng;

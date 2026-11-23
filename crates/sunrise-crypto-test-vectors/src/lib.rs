@@ -21,7 +21,8 @@
 //!
 //! This file holds the vectors `sunrise-crypto` asserts against its own
 //! primitives: the two id derivations, `BLAKE3.derive_key`, the stream-root
-//! chain, the two whole envelopes, the HPKE key envelope, and the blob chunk.
+//! chain, the two whole envelopes, the HPKE key envelope, the viewer share
+//! grant, and the blob chunk.
 //!
 //! Three sibling modules hold the rest of the freeze, split by who has to
 //! agree with whom rather than by which crate owns the code:
@@ -529,6 +530,63 @@ pub mod key_envelope {
         "9d31afc2db7b161fa2c7438771899f949e15caa6e3870378df111cc9fed017",
         "644f3ccfa3801468d990e29f19482e660b166d5911fd6059b4630febc9430c",
         "e2e0ef840f05b8491fad958192715ecf1629",
+    ));
+}
+
+/// A frozen viewer `share_grant` (`docs/03-crypto/sharing-with-others.md`):
+/// the frozen identity of [`crate::identity_transition`] grants one Stream
+/// key to its successor identity, which here stands for another account.
+///
+/// Like [`key_envelope`], the HPKE half is reproducible only against
+/// [`share_grant::RNG_SEED`]; the unconditional half — that [`share_grant::ENCODED`]
+/// decodes, verifies under the granter and opens under the recipient's
+/// `ID_D_priv` to [`share_grant::STREAM_KEY`] — needs no seed. Freezing it
+/// pins the HPKE `info`, the AAD that binds the granter, the signature domain
+/// `sunrise.share_grant.v1` and the payload's CBOR field numbering, none of
+/// which a round trip would notice moving.
+pub mod share_grant {
+    use crate::identity_transition as it;
+
+    /// The granting identity's `ID_S_priv`.
+    pub const GRANTER_SIGNING_SECRET: [u8; 32] = it::IDENTITY_SIGNING_SECRET;
+    /// The granting identity's `ID_S_pub`.
+    pub const GRANTER_SIGNING_PUBLIC: [u8; 32] = it::IDENTITY_SIGNING_PUBLIC;
+    /// The recipient identity.
+    pub const RECIPIENT_IDENTITY_ID: [u8; 16] = it::SUCCESSOR_IDENTITY_ID;
+    /// The recipient's `ID_D_priv`.
+    pub const RECIPIENT_DH_SECRET: [u8; 32] = it::SUCCESSOR_DH_SECRET;
+    /// The recipient's `ID_D_pub`, which the grant is sealed to.
+    pub const RECIPIENT_DH_PUBLIC: [u8; 32] = it::SUCCESSOR_DH_PUBLIC;
+    /// The Stream shared.
+    pub const STREAM_ID: [u8; 16] = super::STREAM_ID;
+    /// The epoch of the key sealed.
+    pub const EPOCH: u32 = 3;
+    /// The Stream key sealed.
+    pub const STREAM_KEY: [u8; 32] = [0x77; 32];
+    /// The Stream's name, sealed with the key.
+    pub const NAME: &str = "Garden";
+    /// The Stream's color, sealed with the key.
+    pub const COLOR: &str = "green";
+    /// The grant's expiry, ms since the epoch.
+    pub const EXPIRES_AT_MS: u64 = 1_900_000_000_000;
+    /// `"sunrise.hpke.share_grant.v1" || stream_id || u32_be(epoch) ||
+    /// recipient_identity_id`.
+    pub const INFO: [u8; 63] = super::hex(concat!(
+        "73756e726973652e68706b652e73686172655f6772616e742e76312222222222",
+        "222222222222222222222200000003284c6ded64230b663e86fc76156b088c",
+    ));
+    /// Seed for the `ChaCha20Rng` that reproduces [`ENCODED`].
+    pub const RNG_SEED: u64 = 0x0133_5EED;
+    /// The whole canonical payload, fields 1 to 7.
+    pub const ENCODED: [u8; 228] = super::hex(concat!(
+        "a701502222222222222222222222222222222202030350284c6ded64230b663e",
+        "86fc76156b088c0466766965776572051b000001ba60d33800065865cfb3dcc8",
+        "d7cad92b6282ee8fab0931a9f50e47c2bec6c96138b1b93c2e6f6f08141d0f34",
+        "6faf728795ccdbdf908273b9375437d45bf449384f852c1717509746c070a32a",
+        "acfbce94f2a1a07c06c96f796e962b10fbda2d4597cf7c79758153c9fd08a34a",
+        "c8075840c8dde0b82367decacc7ed83a584338fa3607a0e4e3d7cc48b32a968f",
+        "3d1874288dd7773698d690d88f573643d14b85504e094ff5da3b5b19559a18e2",
+        "d203710a",
     ));
 }
 
