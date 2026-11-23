@@ -116,7 +116,11 @@ async fn a_drag_of_one_occurrence_reaches_the_core() {
         .expect("block")
         .entity;
     let key = "2030-03-04T09:00".to_owned();
-    for scope in [OccurrenceScope::This, OccurrenceScope::All] {
+    for scope in [
+        OccurrenceScope::This,
+        OccurrenceScope::All,
+        OccurrenceScope::ThisAndFollowing,
+    ] {
         let moved = core.plan_preview(PlanIntentItem::MoveBlockOccurrence {
             block,
             key: key.clone(),

@@ -161,11 +161,16 @@ impl<'a> World<'a> {
             let day = day_of(s);
             let named_block = named.contains(&b.id);
             let subject = named_block && b.occurrence.as_ref() == occurrence.map(|o| &o.key);
-            // The other occurrences a gesture on the whole series reaches
-            // move with the one dragged, so none is in its way.
+            // The other occurrences a gesture on every event, or on this and
+            // the following ones, reaches move with the one dragged, so none
+            // is in its way.
             if named_block
                 && !subject
-                && occurrence.is_some_and(|o| o.scope == OccurrenceScope::All)
+                && occurrence.is_some_and(|o| {
+                    b.occurrence
+                        .as_deref()
+                        .map_or(o.scope == OccurrenceScope::All, |k| o.reaches(k))
+                })
             {
                 continue;
             }

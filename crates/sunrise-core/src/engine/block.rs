@@ -370,7 +370,7 @@ impl Engine {
     ) -> Result<CommandResult, EngineError> {
         let now_ms = self.clock.now_ms();
         let now = ms_to_ts(now_ms.cast_signed());
-        let (block, series) = recurring_block(db.conn(), id)?;
+        let (block, _) = recurring_block(db.conn(), id)?;
         let root = block.split_from.unwrap_or(block.id);
         let continues = split_block_id(&root, key);
         // Splitting again where the series was already split edits the
@@ -380,8 +380,8 @@ impl Engine {
                 return self.edit_block(db, continues, patch.clone());
             }
         }
-        let split = series.split_at(key).map_err(|e| occurrence_error(id, e))?;
-        let Some(ended) = split.ended else {
+        let tz = self.device_zone();
+        let Some(split) = split_series(db.conn(), &block, key, now, &tz)? else {
             return match patch {
                 Some(patch) => self.edit_block(db, id, patch),
                 None => Ok(self
@@ -389,51 +389,16 @@ impl Engine {
                     .with_events(vec![DomainEvent::Deleted(id)])),
             };
         };
-        let tz = self.device_zone();
-        let mut before = block.clone();
-        before.rrule = Some(ended.rrule);
-        before.exceptions = ended.exceptions;
-        // The ended series keeps the occurrence bindings before `key`; the
-        // ones at or after it go to the continuation, or with no edit, with
-        // the occurrences they named.
-        let moved = before.take_bindings_from(key);
-        before.updated_at = now;
-        before.validate_invariants(&tz)?;
+        let SeriesSplit {
+            ended: before,
+            continuation: mut next,
+            existing,
+        } = split;
         let Some(patch) = patch else {
             let done = self.emit_block(db, &before, now_ms, "block.update")?;
             return Ok(CommandResult::new(id, None, done.op_id, done.seq));
         };
 
-        let existing = read_block(db.conn(), continues.bytes())?;
-        // The continuation shows the title the series shows now, fixed,
-        // because it takes none of the whole-block bindings a title could
-        // track.
-        let shown = block_row(db.conn(), block.clone())?.title;
-        let mut next = Block {
-            id: continues,
-            created_at: existing.as_ref().map_or(now, |e| e.created_at),
-            updated_at: now,
-            starts_at: split.continuation.starts_at,
-            ends_at: split.continuation.ends_at,
-            title: shown,
-            title_track_task: false,
-            // Whole-block bindings stay on the block they were made on:
-            // `tasks` merges as an OR-set, so copying them would bind each
-            // task to a second block no one bound it to. A binding to one
-            // occurrence moves with its occurrence (#1162). The import fields
-            // stay too: the continuation is this device's block, not the
-            // external item a re-import writes to (time-blocks.md §Recurring
-            // blocks).
-            tasks: BTreeSet::new(),
-            occurrence_tasks: moved,
-            source: None,
-            external_id: None,
-            rrule: Some(split.continuation.rrule),
-            exceptions: split.continuation.exceptions,
-            split_from: Some(root),
-            deleted: false,
-            ..block
-        };
         let anchor = next.starts_at.clone();
         let was = next.series();
         apply_block_patch(&mut next, patch)?;
@@ -826,6 +791,92 @@ fn recurring_block(
         .series()
         .ok_or_else(|| EngineError::Invalid(format!("block {id} does not recur")))?;
     Ok((block, series))
+}
+
+/// The two blocks a split of a recurring block's series at one occurrence
+/// leaves, before any edit of the continuation.
+pub(super) struct SeriesSplit {
+    /// The block split, its series ended before the key, keeping the
+    /// exceptions and occurrence bindings before it.
+    pub(super) ended: Block,
+    /// The block at [`split_block_id`]`(series root, key)` that continues the
+    /// series from the key, with the exceptions and occurrence bindings at or
+    /// after it.
+    pub(super) continuation: Block,
+    /// The continuation as it stands, tombstoned or not, where a split at the
+    /// key made it before.
+    pub(super) existing: Option<Block>,
+}
+
+/// Split recurring `block`'s series at occurrence `key`, as of `now`: what an
+/// edit of "this and future" events and a planner drag of this and the
+/// following events both write. `None` when `key` is the series' first
+/// occurrence, which leaves nothing before it.
+///
+/// # Errors
+/// [`EngineError::Invalid`] for a block with no rule or a key that is not
+/// one, [`EngineError::NotFound`] for an occurrence the rule does not
+/// produce, and [`EngineError::Validation`] for an ended block whose
+/// invariants fail.
+pub(super) fn split_series(
+    conn: &rusqlite::Connection,
+    block: &Block,
+    key: &str,
+    now: jiff::Timestamp,
+    tz: &jiff::tz::TimeZone,
+) -> Result<Option<SeriesSplit>, EngineError> {
+    let id = block.id;
+    let series = block
+        .series()
+        .ok_or_else(|| EngineError::Invalid(format!("block {id} does not recur")))?;
+    let root = block.split_from.unwrap_or(id);
+    let continues = split_block_id(&root, key);
+    let split = series.split_at(key).map_err(|e| occurrence_error(id, e))?;
+    let Some(ended) = split.ended else {
+        return Ok(None);
+    };
+    let mut before = block.clone();
+    before.rrule = Some(ended.rrule);
+    before.exceptions = ended.exceptions;
+    // The ended series keeps the occurrence bindings before `key`; the ones
+    // at or after it go to the continuation.
+    let moved = before.take_bindings_from(key);
+    before.updated_at = now;
+    before.validate_invariants(tz)?;
+
+    let existing = read_block(conn, continues.bytes())?;
+    // The continuation shows the title the series shows now, fixed, because
+    // it takes none of the whole-block bindings a title could track.
+    let shown = block_row(conn, block.clone())?.title;
+    let next = Block {
+        id: continues,
+        created_at: existing.as_ref().map_or(now, |e| e.created_at),
+        updated_at: now,
+        starts_at: split.continuation.starts_at,
+        ends_at: split.continuation.ends_at,
+        title: shown,
+        title_track_task: false,
+        // Whole-block bindings stay on the block they were made on: `tasks`
+        // merges as an OR-set, so copying them would bind each task to a
+        // second block no one bound it to. A binding to one occurrence moves
+        // with its occurrence (#1162). The import fields stay too: the
+        // continuation is this device's block, not the external item a
+        // re-import writes to (time-blocks.md §Recurring blocks).
+        tasks: BTreeSet::new(),
+        occurrence_tasks: moved,
+        source: None,
+        external_id: None,
+        rrule: Some(split.continuation.rrule),
+        exceptions: split.continuation.exceptions,
+        split_from: Some(root),
+        deleted: false,
+        ..block.clone()
+    };
+    Ok(Some(SeriesSplit {
+        ended: before,
+        continuation: next,
+        existing,
+    }))
 }
 
 /// Carry a block's occurrence bindings and exceptions with a write that

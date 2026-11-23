@@ -75,6 +75,51 @@ fn another_occurrence_is_fixed_unless_the_drag_reaches_it() {
     assert_ne!(this.id, all.id);
 }
 
+/// A drag of this and the following events moves the later occurrences with
+/// it, so none of them is in its way, and leaves the earlier ones fixed.
+#[test]
+fn this_and_following_reaches_the_later_occurrences_alone() {
+    const F: Date = date(2026, 11, 12);
+    let mut i = inputs(
+        ts(D, 6, 0),
+        vec![plan_day(D, 7, 23), plan_day(E, 7, 23), plan_day(F, 7, 23)],
+    );
+    for d in [D, E, F] {
+        i.blocks.push(occurrence(d));
+    }
+    let overlaps_the_series = |diff: &PlanDiff| {
+        diff.violations.iter().any(|v| {
+            v.item == bid(1) && v.rule == PlanRule::OverlapsFixed && v.with == Some(bid(1))
+        })
+    };
+    // Onto the next event, which moves with it.
+    let later = solve(&i, &drag(E, OccurrenceScope::ThisAndFollowing, at(F, 9, 0))).unwrap();
+    assert!(!overlaps_the_series(&later), "{:#?}", later.violations);
+    assert!(later.committable, "{:#?}", later.violations);
+    // Onto the event before, which stays where it is.
+    let earlier = solve(&i, &drag(E, OccurrenceScope::ThisAndFollowing, at(D, 9, 0))).unwrap();
+    assert!(overlaps_the_series(&earlier), "{:#?}", earlier.violations);
+    // The scope is part of the diff's identity.
+    let all = solve(&i, &drag(E, OccurrenceScope::All, at(F, 9, 0))).unwrap();
+    assert_ne!(later.id, all.id);
+}
+
+#[test]
+fn a_scope_reaches_the_keys_it_names() {
+    let o = |scope| PlanOccurrence {
+        key: "2026-11-11T09:00".into(),
+        scope,
+    };
+    let keys = ["2026-11-10T09:00", "2026-11-11T09:00", "2026-11-12T09:00"];
+    let reached = |scope| keys.map(|k| o(scope).reaches(k));
+    assert_eq!(reached(OccurrenceScope::This), [false, true, false]);
+    assert_eq!(reached(OccurrenceScope::All), [true, true, true]);
+    assert_eq!(
+        reached(OccurrenceScope::ThisAndFollowing),
+        [false, true, true]
+    );
+}
+
 #[test]
 fn a_recurring_block_is_dragged_by_its_occurrence() {
     let i = two_days_of_a_series();

@@ -133,6 +133,26 @@ pub enum OccurrenceScope {
     /// Every occurrence: the commit moves the series' anchor by as much as
     /// the gesture moved the occurrence.
     All,
+    /// That occurrence and every later one: the commit splits the series at
+    /// it, as an edit of "this and following" events does, and moves the
+    /// series that continues from it by as much as the gesture moved the
+    /// occurrence. At the series' first occurrence it reaches every
+    /// occurrence, as [`Self::All`] does.
+    ThisAndFollowing,
+}
+
+impl PlanOccurrence {
+    /// Whether the gesture moves occurrence `key` of the same series along
+    /// with the one it drags. Keys order as their occurrences do, as a split
+    /// of the series orders them.
+    #[must_use]
+    pub fn reaches(&self, key: &str) -> bool {
+        match self.scope {
+            OccurrenceScope::This => key == self.key,
+            OccurrenceScope::All => true,
+            OccurrenceScope::ThisAndFollowing => key >= self.key.as_str(),
+        }
+    }
 }
 
 impl PlanIntent {

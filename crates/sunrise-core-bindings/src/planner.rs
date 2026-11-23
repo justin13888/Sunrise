@@ -45,6 +45,7 @@ pub enum UnscheduleKeep {
 pub enum OccurrenceScope {
     This,
     All,
+    ThisAndFollowing,
 }
 
 /// See [`sunrise_domain::planner::MoveRole`].
@@ -383,6 +384,7 @@ pub enum PlanField {
     EndsAt,
     OccurrenceStartsAt,
     OccurrenceEndsAt,
+    Until,
 }
 
 /// A field an undo left as it is. See [`sunrise_core::PlanUndoSkip`].

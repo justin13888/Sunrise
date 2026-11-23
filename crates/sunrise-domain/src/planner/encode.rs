@@ -132,6 +132,7 @@ impl Feed {
                 self.u8(match o.scope {
                     OccurrenceScope::This => 0,
                     OccurrenceScope::All => 1,
+                    OccurrenceScope::ThisAndFollowing => 2,
                 });
             }
             None => self.u8(0),
