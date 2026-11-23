@@ -13,7 +13,7 @@ use crate::engine::EngineError;
 use rusqlite::Transaction;
 use std::collections::BTreeMap;
 use sunrise_domain::planner::OccurrenceScope;
-use sunrise_domain::{Block, SunriseTime};
+use sunrise_domain::{Block, RRule, SunriseTime};
 use sunrise_id::{EntityKind, EntityRef};
 
 /// What a planner move of one block writes.
@@ -146,7 +146,8 @@ pub(super) struct Joined {
 ///
 /// `None`, leaving both as they are, where any row is no longer held (either
 /// block written again since), either block is deleted, the continuation
-/// was bound to a task as a whole since, or the joined series would be
+/// was bound to a task as a whole since, its rule is no longer the one the
+/// split gave it ([`given_by_split`]), or the joined series would be
 /// invalid.
 pub(super) fn join_split(
     tx: &Transaction<'_>,
@@ -200,6 +201,9 @@ pub(super) fn join_split(
         return Ok(None);
     };
     rule.until.clone_from(&until.prior);
+    if !given_by_split(rule, back.rrule.as_ref()) {
+        return Ok(None);
+    }
     joined.exceptions.extend(back.exceptions);
     joined.occurrence_tasks.extend(back.occurrence_tasks);
     joined.updated_at = now;
@@ -216,4 +220,31 @@ pub(super) fn join_split(
         ended: joined,
         continuation,
     }))
+}
+
+/// Whether `continuation` is still the rule a split of the series whose rule
+/// is `series` gave the block that continues it ([`split_series`]): the
+/// series' own rule, its `UNTIL` included, with a `COUNT` no larger than the
+/// series' (the split reduces it by the events before the key).
+///
+/// A later split of the continuation always writes its `UNTIL`, so this is
+/// what refuses to join a series whose continuation was split again since:
+/// a later drag of this and the following events of the continuation
+/// renews its anchor and leaves it as it was, so the anchor's rows alone
+/// still read as held, and joining would restore the whole series beside
+/// the second continuation, every event from its key on shown twice.
+fn given_by_split(series: &RRule, continuation: Option<&RRule>) -> bool {
+    let Some(continuation) = continuation else {
+        return false;
+    };
+    let counted = match (series.count, continuation.count) {
+        (None, None) => true,
+        (Some(series), Some(continuation)) => continuation <= series,
+        _ => false,
+    };
+    counted
+        && RRule {
+            count: series.count,
+            ..continuation.clone()
+        } == *series
 }

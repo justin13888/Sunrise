@@ -513,14 +513,22 @@ ended block's rule (`Until`, the prior value its `UNTIL`, `None` where it had
 none), and the continuation's `StartsAt` and `EndsAt`, whose prior values are
 where the split put its anchor before the drag moved it. Its undo joins the
 series back whole or not at all: where all three rows are still held, both
-blocks are live and the continuation is bound to no task as a whole, the
+blocks are live, the continuation is bound to no task as a whole, and its
+rule is still the one the split gave it (the series' own, a `COUNT` reduced
+at most), the
 continuation's anchor goes back, which carries its exceptions and bindings
 back to the keys the series gave them, the ended block's `UNTIL` is restored
 and it takes those exceptions and bindings, and the continuation is
 tombstoned, in one group. Otherwise both blocks are left as they are and all
 three rows are reported skipped. A later commit or undo that renews the
 ended block's rule and leaves it as it was keeps the split's undo, as for any
-other field below.
+other field below. A later drag of this and the following events of the
+continuation renews its anchor the same way, but it writes the
+continuation's `UNTIL`, so the first split's undo then leaves the series
+split: joining it would restore the whole series beside the second
+continuation, every event from that continuation's key on shown twice. Undone newest first, the second split's
+undo gives the continuation its rule back, and the first split's undo then
+joins the whole series.
 
 A drag of one event stores its inverse against the occurrence's entry in the
 `exceptions` map (`OccurrenceStartsAt`, `OccurrenceEndsAt`, the prior value
