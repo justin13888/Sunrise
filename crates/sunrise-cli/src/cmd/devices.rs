@@ -225,7 +225,7 @@ pub(super) async fn device(core: &Core, rest: &[String]) -> CmdResult {
 /// The report says which of the outcomes the core returned, because only one
 /// of them is "the device is back", and the relay's half separately, because
 /// a relay already told refuses the device until the reinstatement the
-/// withdrawal queued is sent, and for good if the relay refuses it
+/// withdrawal queued is sent, and while the relay refuses that request
 /// (ADR-0056 §5).
 async fn withdraw(core: &Core, args: &[String]) -> CmdResult {
     let prefix = args
@@ -265,17 +265,27 @@ async fn withdraw(core: &Core, args: &[String]) -> CmdResult {
     if w.outcome == WithdrawalOutcome::NotAuthor {
         return Err(strings::devices::withdraw_not_author(&id).into());
     }
-    // Read only when the relay may have been told: a cancelled telling
-    // leaves nothing to reverse.
-    let relay = if w.relay_intent_cancelled {
-        RelayReinstatement::Clear
-    } else {
-        core.relay_reinstatement_pending(&target)?
-    };
+    let relay = relay_after_withdrawal(w, || core.relay_reinstatement_pending(&target));
     for line in withdrawal_lines(&id, w, relay) {
         println!("{line}");
     }
     Ok(())
+}
+
+/// Where the relay's reinstatement stands after `w`, as [`withdrawal_lines`]
+/// takes it. `read` runs only when the relay may have been told: a cancelled
+/// telling leaves nothing to reverse. The withdrawal is already saved by then,
+/// so a failed read must not fail the command; it falls back to `Clear`, the
+/// line that claims neither a queued request nor a refusal it did not see,
+/// as the Apple device list does.
+fn relay_after_withdrawal<E>(
+    w: Withdrawal,
+    read: impl FnOnce() -> Result<RelayReinstatement, E>,
+) -> RelayReinstatement {
+    if w.relay_intent_cancelled {
+        return RelayReinstatement::Clear;
+    }
+    read().unwrap_or(RelayReinstatement::Clear)
 }
 
 /// The lines [`withdraw`] prints for a withdrawal that was emitted, separate
@@ -778,6 +788,44 @@ mod tests {
                 .to_lowercase()
                 .contains("pair it again"),
             "a refused reinstatement names the remedy"
+        );
+    }
+
+    /// **The relay's state is read only after an uncancelled telling, and a
+    /// failed read does not fail the saved withdrawal** (ADR-0056 §5): what
+    /// the read answers reaches the report, so a `Pending` read prints the
+    /// queued line; a cancelled telling never asks; an error falls back to
+    /// `Clear`.
+    #[test]
+    fn the_relays_state_is_read_only_after_an_uncancelled_telling() {
+        let id = "a1".repeat(16);
+        let told = withdrawal(WithdrawalOutcome::Reinstated, true, 0, false);
+        let relay = relay_after_withdrawal(told, || Ok::<_, &str>(RelayReinstatement::Pending));
+        assert_eq!(relay, RelayReinstatement::Pending);
+        assert_eq!(
+            withdrawal_lines(&id, told, relay).last(),
+            Some(&format!(
+                "  - {}",
+                strings::devices::withdraw_relay_queued()
+            )),
+            "an uncancelled telling with a queued reinstatement says it is queued"
+        );
+        assert_eq!(
+            relay_after_withdrawal(told, || Ok::<_, &str>(RelayReinstatement::Refused)),
+            RelayReinstatement::Refused
+        );
+        assert_eq!(
+            relay_after_withdrawal(told, || Err("vault closed")),
+            RelayReinstatement::Clear,
+            "a failed read must not fail a withdrawal already saved"
+        );
+
+        let cancelled = withdrawal(WithdrawalOutcome::Reinstated, true, 0, true);
+        assert_eq!(
+            relay_after_withdrawal(cancelled, || -> Result<_, &str> {
+                panic!("a cancelled telling leaves nothing to read")
+            }),
+            RelayReinstatement::Clear
         );
     }
 }
