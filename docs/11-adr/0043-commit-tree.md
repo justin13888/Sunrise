@@ -13,7 +13,11 @@ amended where the answers changed them. Fields 14 and 15, the three
 position its revocation cut covers, and for no other fork, §4's "the first is
 the one applied" gives way to the cut: the half the cut names is applied,
 whichever arrived first, and the other moves into `fork_evidence`. Both
-halves are kept and the fork is surfaced as before. §3 is unchanged.
+halves are kept and the fork is surfaced as before. For that same case, §5's
+"changes nothing already folded" gives way too: the swap recomputes that
+device's `ops.chain_root` from the swapped seq up, and a `StreamDigest`
+already published over the old half stays in the log, read as a
+`chain_divergence` until its publisher's next digest agrees. §3 is unchanged.
 
 **Relates to:**
 
