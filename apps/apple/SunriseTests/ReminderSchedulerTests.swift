@@ -37,6 +37,17 @@ actor FakeNotificationCenter: NotificationCenterClient {
         return status
     }
 
+    /// What the time-sensitive setting reads as, and how often it was read.
+    private var timeSensitive: TimeSensitiveDelivery = .allowed
+    private(set) var timeSensitiveReads = 0
+
+    func setTimeSensitive(_ delivery: TimeSensitiveDelivery) { timeSensitive = delivery }
+
+    func timeSensitiveDelivery() async -> TimeSensitiveDelivery {
+        timeSensitiveReads += 1
+        return timeSensitive
+    }
+
     func registerCategories() async { categoryRegistrations += 1 }
 
     func install(delegate: ReminderResponder) async { hasDelegate = true }

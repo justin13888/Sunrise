@@ -183,6 +183,53 @@ brings back what it now admits. A cut correction is lossless, as ADR-0034's
 corollary 2 requires of one. No such rebuild exists in the engine today, and
 §8 item 5 builds it.
 
+A swap changes the op the chain root folds. ADR-0043 §5 folds
+`root(d, n)` from the op `ops` holds at `n` and stores it on that op as
+`ops.chain_root`, so once the halves at seq `k` trade places, every root
+stored for that device from `k` up is over the half that left. The rebuild
+recomputes them: for the editor's device whose halves traded, it refolds
+`root(d, m)` for every `m` from `k` to the end of that device's contiguous
+prefix, applied and parked ops alike, and stores each on its op. No other
+device's roots move. The root then describes the op set the replica applies,
+so two replicas that hold the same ops and the same cut hold the same roots,
+in whichever order the halves reached them. Leaving the stale root would make
+the digest disagree forever between replicas whose Streams are equal, and
+record a `chain_divergence` no later agreement could clear. This amends
+ADR-0043 §5's "changes nothing already folded" for this one case (§9). The
+cost is one hash step per op in that prefix from `k`, paid once per swap.
+
+A `StreamDigest` published before the swap, over the old half, is not
+withdrawn or rewritten: it is a signed op in the log, and history is never
+rewritten (ADR-0043 §7). It stays true as a record of what its writer held
+then. A replica that has swapped reads it as ADR-0043 §5 reads any frontier:
+where its own `root(d, n)` differs, it records a `chain_divergence` naming the
+editor's device, the publisher and `n`. That is honest evidence, because the
+publisher did hold the other half at `n`. It clears as §5 clears any
+divergence, at the publisher's first later digest that agrees at or above it.
+Two rules keep that from waiting on traffic an idle Stream may never send:
+
+- **A swap counts as one op entering the Stream's log** for §5's digest
+  cadence, on the replica that makes it. §5 counts only ops that entered the
+  log since the replica's last digest, and a swap need not add one: a
+  publisher that digested after the cut reached it, but before the named
+  half did, would otherwise have nothing new to count. With it, the
+  publisher's next digest, over its recomputed roots, is due within a day of
+  its last however idle the Stream is.
+- **The swap re-judges the divergences already recorded for that device.**
+  §5 judges a peer's root only when the peer's digest arrives, so a replica
+  that recorded a divergence before its own swap would keep it until that
+  peer digested again. In the same transaction as the recomputed roots, the
+  rebuild compares each `chain_divergence` row for the swapped device with
+  its new `root(d, n)` at the row's `n`. A row whose peer root now matches
+  is cleared, and any other keeps its peer root and takes the new held root.
+
+Until a digest agrees, the divergence stands and `Engine::chain_integrity`
+counts it. A replica that holds only the half the cut does not name keeps its
+root over that half, and disagrees with its peers until the named half
+reaches it, which is the fork it really holds. When it does, the swap's
+re-judgement clears what that disagreement recorded against peers whose
+digests already folded the named half.
+
 Expiry ends an editor's writes the same way. When a device of the owner's sees
 an editor grant expire at its own clock, it emits the same revoke with its
 cut. Until that cut lands, the editor's writes apply. The recipient's own
@@ -245,10 +292,15 @@ together:
 5. **The shared Stream's re-derivation** of §4: a rebuild of one Stream's
    materialized entities from its retained log and the `fork_evidence` the
    cut covers, run when a cut lands, which un-materializes ops past it and
-   swaps in the fork half the cut names. Tested by delivering one log to two
-   replicas in different orders, the cut before and after the ops past it,
-   and the two halves of a fork in either order, and asserting the two
-   Streams are equal.
+   swaps in the fork half the cut names, recomputing that device's
+   `ops.chain_root` from the swapped seq up, re-judging its recorded
+   `chain_divergence` rows, and counting as one op for the digest cadence.
+   Tested by delivering one log to two replicas in different orders, the cut
+   before and after the ops past it, and the two halves of a fork in either
+   order, and asserting the two Streams are equal and their stream digests at
+   one frontier are equal. Also tested with no op after the swap: a
+   divergence recorded before it clears at the swap where the roots then
+   agree, and the swapping replica's digest is due a day after its last.
 6. **The relay's editor write route** of §6.
 7. **A structural feature** (ADR-0045 §7), named when it is built and listed
    in `vault_requires` before any device seals an editor grant. Until then, no
@@ -308,6 +360,19 @@ that, and each is read here rather than past.
   so a replica that never received the named half applies neither until it
   does. Every other fork, including any by the owner's devices or by an
   editor not yet cut, stays exactly as ADR-0043 §4 decides.
+- **[ADR-0043](./0043-commit-tree.md) §5** says applying an op folds one
+  step into its device's root, and a late arrival "changes nothing already
+  folded". This record amends that for the same one case: when §4's rebuild
+  trades the halves at seq `k`, it recomputes `ops.chain_root` for that
+  device from `k` to the end of its prefix, so the root folds the half that
+  is applied. A `StreamDigest` already published over the old half stays in
+  the log unchanged, and a replica that has swapped records the
+  `chain_divergence` it shows until the publisher's next digest agrees (§4).
+  Two additions keep that from waiting on traffic: §5's cadence counts a
+  swap as one op entering the log, and a swap re-judges the device's
+  recorded divergences against its recomputed roots, where §5 otherwise
+  judges only when a digest arrives. The root formula, the digest, the
+  `StreamDigest` shape and every other device's roots are unchanged.
 
 ## Alternatives considered
 
@@ -342,7 +407,7 @@ that, and each is read here rather than past.
 - The `editor` role has a fixed meaning. Building it is §8 and nothing beyond.
   Any change to what an editor may do is a new ADR, not an implementation
   choice.
-- ADR-0034, ADR-0041 §3, ADR-0043 §4 and ADR-0045 §4 each gain one scoped
+- ADR-0034, ADR-0041 §3, ADR-0043 §4 and §5, and ADR-0045 §4 each gain one scoped
   exception or addition for editor ops in a shared Stream, and keep
   everything else (§9).
   Each carries an `Amended by` line pointing here.

@@ -298,6 +298,28 @@ enum L10n {
             static var placeArrival: String { L10n.tr("apple.account.notification_kinds.place_arrival") }
             /// Fires before your sleep time from the day schedule. A Sleep Focus holds it unless Sunrise is allowed in that Focus.
             static var windDownCaption: String { L10n.tr("apple.account.notification_kinds.wind_down_caption") }
+            /// Time-sensitive delivery
+            static var timeSensitive: String { L10n.tr("apple.account.notification_kinds.time_sensitive") }
+            /// Allowed
+            static var timeSensitiveAllowed: String { L10n.tr("apple.account.notification_kinds.time_sensitive_allowed") }
+            /// Off
+            static var timeSensitiveOff: String { L10n.tr("apple.account.notification_kinds.time_sensitive_off") }
+            /// Not available
+            static var timeSensitiveUnsupported: String { L10n.tr("apple.account.notification_kinds.time_sensitive_unsupported") }
+            /// Time-sensitive notifications are off for Sunrise in System Settings, so any Focus holds wind-down until it ends.
+            static var timeSensitiveOffCaption: String { L10n.tr("apple.account.notification_kinds.time_sensitive_off_caption") }
+            /// This build of Sunrise cannot send time-sensitive notifications, so wind-down arrives as an ordinary notification that a Focus can hold.
+            static var timeSensitiveUnsupportedCaption: String { L10n.tr("apple.account.notification_kinds.time_sensitive_unsupported_caption") }
+            /// Let wind-down through Sleep
+            static var sleepFocusTitle: String { L10n.tr("apple.account.notification_kinds.sleep_focus_title") }
+            /// Wind-down reaches you as you wind down, which is often after a Sleep Focus has started. A Sleep Focus holds it unless Sunrise is one of that Focus's allowed apps, and only you can add it there.
+            static var sleepFocusMessage: String { L10n.tr("apple.account.notification_kinds.sleep_focus_message") }
+            /// Open Focus Settings…
+            static var openFocusSettings: String { L10n.tr("apple.account.notification_kinds.open_focus_settings") }
+            /// Open Notification Settings…
+            static var openNotificationSettings: String { L10n.tr("apple.account.notification_kinds.open_notification_settings") }
+            /// Not Now
+            static var notNow: String { L10n.tr("apple.account.notification_kinds.not_now") }
         }
 
         enum QuietHours {

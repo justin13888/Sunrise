@@ -91,7 +91,7 @@ Linux have no client yet ([`../07-clients/parity-matrix.md`](../07-clients/parit
 | 5 | Morning brief | **built** (Plan My Day opens the morning summary; Open Triage when the nudge is folded in) | **built** (same) | no client | no client | no client |
 | 6 | Triage nudge | **built** (Open Triage opens the triage queue, a sheet over the window with the queue's four actions) | **built** (same) | no client | no client | no client |
 | 7 | Evening plan | **built** (Move Open Tasks to Tomorrow and Open open the end-of-day plan, where the move is) | **built** (same) | no client | no client | no client |
-| 8 | Wind-down | **built** (`.timeSensitive` requested; without the Time Sensitive entitlement the system delivers it as active. See Tomorrow opens the end-of-day plan; Snooze 15 min posts it again) | **built** (same) | no client | no client | no client |
+| 8 | Wind-down | **built** (`.timeSensitive`, with the Time Sensitive entitlement on the Mac's Release build and both iOS builds; a Mac Debug build lacks it, so the system delivers it as active. See Tomorrow opens the end-of-day plan; Snooze 15 min posts it again) | **built** (same) | no client | no client | no client |
 | 9 | Focus end / break | not built | not built | no client | no client | no client |
 | 10 | Time zone changed | **built** (posted on the re-plan a zone change causes; Review Times opens the calendar) | **built** (same) | no client | no client | no client |
 | 11 | Weekly review | not built | not built | no client | no client | no client |
@@ -158,10 +158,14 @@ What exists today, read from the tree:
   `reconcile_wind_down` says whether to add, replace, cancel or keep it; a
   zone change moves it and replaces it. `Schedule::wind_down` carries it,
   the seam exports it as `SunriseCore::wind_down_plan`, and `sunrise reminders
-  plan` prints it. The Apple clients schedule it at the time-sensitive level;
-  the Time Sensitive entitlement, and Settings showing whether time-sensitive
-  delivery is allowed (§Wind-down), are not done yet, so the system delivers
-  it as active.
+  plan` prints it. The Apple clients schedule it at the time-sensitive level
+  and carry the Time Sensitive entitlement (the Mac on Release only, in
+  `apps/apple/macOS/Sunrise.entitlements`; iOS in the target's entitlements
+  in `apps/apple/project.yml`). The App ID capability and the provisioning
+  profiles that grant it to a signed build are not in place yet
+  ([#1329](https://github.com/justin13888/Sunrise/issues/1329)). Settings
+  shows whether time-sensitive delivery is allowed beside the wind-down row
+  and explains the Sleep Focus when it is turned on (§Wind-down).
 - **The client layer** turns the core's intents into an OS schedule
   (`crates/sunrise-client-core/src/reminders/mod.rs`): the 24-hour horizon,
   the 56-request cap with the earliest kept, the body text, and the reconcile
@@ -238,11 +242,14 @@ when a Sleep Focus or Bedtime mode is already on. So:
 - **Apple.** The request uses the `.timeSensitive` interruption level (the app
   carries the Time Sensitive Notifications entitlement). A Sleep Focus that
   silences time-sensitive notifications still holds it, and the app cannot grant
-  itself an exception. When the user enables wind-down, Sunrise explains this
-  and opens the system Focus settings so the user can add Sunrise to Sleep's
-  allowed apps. Settings shows whether time-sensitive delivery is allowed
-  (`UNNotificationSettings.timeSensitiveSetting`). Critical alerts are never
-  used.
+  itself an exception. When the user turns wind-down on, Sunrise explains this
+  and offers to open the system Focus settings so the user can add Sunrise to
+  Sleep's allowed apps; the same button stays under the wind-down row. iOS
+  publishes no URL for the Focus settings, so there it opens Sunrise's own
+  notification settings instead. Settings shows whether time-sensitive
+  delivery is allowed (`UNNotificationSettings.timeSensitiveSetting`) beside
+  the wind-down row, as allowed, off, or not available (a build without the
+  entitlement). Critical alerts are never used.
 - **Android.** A dedicated channel `wind_down` with `CATEGORY_REMINDER` and high
   importance. Only the user can let a channel bypass Do Not Disturb or Bedtime
   mode; enabling wind-down deep-links to that channel's settings with the same

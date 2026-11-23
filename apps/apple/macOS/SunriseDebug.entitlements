@@ -6,10 +6,14 @@
 
   The App Group the widgets read the app's snapshot through, and nothing
   else. It is macOS/Sunrise.entitlements, which Release signs with, minus
-  `keychain-access-groups`: that one is restricted, and every Debug consumer
-  is team-less, so carrying it would get the build killed by AMFI before
-  `main`. The group is not restricted, so an ad-hoc build that carries it
-  still launches. `$(SUNRISE_APP_GROUP)` is spelled in project.yml.
+  `keychain-access-groups` and
+  `com.apple.developer.usernotifications.time-sensitive`: both are granted
+  only through a provisioning profile, and every Debug consumer is
+  team-less, so carrying either would get the build killed by AMFI before
+  `main`. A Debug build therefore sends wind-down as active, and Settings
+  shows time-sensitive delivery as not available. The group is not
+  restricted, so an ad-hoc build that carries it still launches.
+  `$(SUNRISE_APP_GROUP)` is spelled in project.yml.
 
   Release also writes out `com.apple.security.device.camera`; Debug is
   granted it all the same, by the `ENABLE_RESOURCE_ACCESS_CAMERA` build
