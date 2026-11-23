@@ -4159,13 +4159,13 @@ pub mod devices {
         out
     }
 
-    /// only this device can withdraw this revocation, with `sunrise device withdraw {id}`; if the account identity rotated with it, or the relay has been told, the device must be paired again instead
+    /// only this device can withdraw this revocation, with `sunrise device withdraw {id}`, which also asks the relay to let it back in; if the account identity rotated with it, or the relay refuses, the device must be paired again instead
     #[must_use]
     pub fn withdrawable(id: &str) -> String {
         let mut out = String::new();
         out.push_str("only this device can withdraw this revocation, with `sunrise device withdraw ");
         out.push_str(id);
-        out.push_str("`; if the account identity rotated with it, or the relay has been told, the device must be paired again instead");
+        out.push_str("`, which also asks the relay to let it back in; if the account identity rotated with it, or the relay refuses, the device must be paired again instead");
         out
     }
 
@@ -4261,11 +4261,27 @@ pub mod devices {
         out
     }
 
-    /// if the relay was already told, it still refuses that device, and nothing can tell it otherwise yet: pair it again as a new device if it cannot sync
+    /// if the relay was already told, it refuses that device until it is asked to let it back in, which a sync does once no device's revocation of it stands
     #[must_use]
     pub fn withdraw_relay_told() -> String {
         let mut out = String::new();
-        out.push_str("if the relay was already told, it still refuses that device, and nothing can tell it otherwise yet: pair it again as a new device if it cannot sync");
+        out.push_str("if the relay was already told, it refuses that device until it is asked to let it back in, which a sync does once no device's revocation of it stands");
+        out
+    }
+
+    /// if the relay was already told, it refuses that device until it accepts it again; asking it to is queued and will be sent on the next `sunrise sync`
+    #[must_use]
+    pub fn withdraw_relay_queued() -> String {
+        let mut out = String::new();
+        out.push_str("if the relay was already told, it refuses that device until it accepts it again; asking it to is queued and will be sent on the next `sunrise sync`");
+        out
+    }
+
+    /// the relay refuses that device: another device revoked it there too, or this device no longer holds the key it revoked it with. Pair it again as a new device if it cannot sync
+    #[must_use]
+    pub fn withdraw_relay_refused() -> String {
+        let mut out = String::new();
+        out.push_str("the relay refuses that device: another device revoked it there too, or this device no longer holds the key it revoked it with. Pair it again as a new device if it cannot sync");
         out
     }
 

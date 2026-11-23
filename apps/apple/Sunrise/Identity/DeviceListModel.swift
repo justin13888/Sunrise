@@ -130,20 +130,27 @@ final class DeviceListModel {
         /// included.
         let keysResent: Int
         /// This device's unsent telling of the relay was cancelled. `false`
-        /// means the relay may already refuse the device, and nothing can tell
-        /// it otherwise until the relay's reinstatement lands
-        /// ([#1299](https://github.com/justin13888/Sunrise/issues/1299)).
+        /// means the relay may already refuse the device, until the
+        /// reinstatement the withdrawal queued is sent (ADR-0056 §5).
         let relayIntentCancelled: Bool
+        /// Where that reinstatement stands, read after the withdrawal:
+        /// `pending` until a sync sends it, `refused` once the relay
+        /// answered that this device is not the remover it recorded. Not
+        /// read, and `clear`, when the telling was cancelled.
+        let relay: RelayReinstatementKind
 
-        /// Read straight off what the command returned. A missing report is
-        /// read as `notAuthor`, the one outcome that claims nothing happened.
-        init(nickname: String, outcome: CommandOutcome) {
+        /// Read straight off what the command returned, and `relay` off
+        /// ``CoreBridge/relayReinstatementPending(_:)`` after it. A missing
+        /// report is read as `notAuthor`, the one outcome that claims nothing
+        /// happened.
+        init(nickname: String, outcome: CommandOutcome, relay: RelayReinstatementKind) {
             self.nickname = nickname
             let report = outcome.withdrawal
             self.outcome = report?.outcome ?? .notAuthor
             readBoundReleased = report?.readBoundReleased ?? false
             keysResent = Int(report?.keysResent ?? 0)
             relayIntentCancelled = report?.relayIntentCancelled ?? false
+            self.relay = relay
         }
 
         /// The report, title first. `device` is the platform's word for the
@@ -180,12 +187,25 @@ final class DeviceListModel {
             if outcome == .reinstated, !readBoundReleased {
                 out.append(L10n.Devices.withdrawnStillBounded(device: device))
             }
-            out.append(
-                relayIntentCancelled
-                    ? L10n.Devices.withdrawnRelayCancelled
-                    : L10n.Devices.withdrawnRelayTold(name: name)
-            )
+            out.append(relayLine(name: name, device: device))
             return out
+        }
+
+        /// The relay's half: cancelled before it was sent, or else where the
+        /// reinstatement stands. Only `refused` sends the user to pair the
+        /// device again.
+        private func relayLine(name: String, device: String) -> String {
+            if relayIntentCancelled {
+                return L10n.Devices.withdrawnRelayCancelled
+            }
+            switch relay {
+            case .pending:
+                return L10n.Devices.withdrawnRelayQueued(name: name)
+            case .refused:
+                return L10n.Devices.withdrawnRelayRefused(name: name, device: device)
+            case .clear:
+                return L10n.Devices.withdrawnRelayTold(name: name)
+            }
         }
     }
 
@@ -370,7 +390,14 @@ final class DeviceListModel {
         defer { busy = false }
         do {
             let outcome = try await bridge.submit(.withdrawRevocation(deviceId: row.id))
-            lastWithdrawal = Withdrawal(nickname: row.nickname, outcome: outcome)
+            // Read only when the relay may have been told. A failed read falls
+            // back to the line that claims neither a queued request nor a
+            // refusal it did not see.
+            var relay = RelayReinstatementKind.clear
+            if outcome.withdrawal?.relayIntentCancelled == false {
+                relay = (try? await bridge.relayReinstatementPending(row.id)) ?? .clear
+            }
+            lastWithdrawal = Withdrawal(nickname: row.nickname, outcome: outcome, relay: relay)
             errorMessage = nil
             await refresh()
         } catch {

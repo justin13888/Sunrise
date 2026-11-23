@@ -3758,7 +3758,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, a removal signed by the account identity can be withdrawn only by the device holding that identity, while it is still the one in force, and once the relay has been told, which happens on the next sync, the device must be paired again as a new device to sync."
+            "value": "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, and a removal signed by the account identity can be withdrawn only by the device holding that identity, while it is still the one in force. The relay is told on the next sync; a withdrawal after that asks it to let the device back in, and if the relay refuses, the device must be paired again as a new device to sync."
           }
         }
       }
@@ -3989,7 +3989,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "If the relay has already been told of the removal, it goes on refusing the device: Sunrise does not yet ask the relay to let it back in, so the device must be paired again as a new device to sync."
+            "value": "If the relay has already been told of the removal, it refuses the device until the next sync asks it to let the device back in. The relay refuses that if another device removed it there too, or if this device no longer holds the key it removed it with; then the device must be paired again as a new device to sync."
           }
         }
       }
@@ -4104,13 +4104,35 @@
         }
       }
     },
+    "apple.devices.withdrawn_relay_queued": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If the relay was already told of the removal, it refuses %1$@ until the next sync asks it to let %1$@ back in. That request is queued."
+          }
+        }
+      }
+    },
+    "apple.devices.withdrawn_relay_refused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The relay refuses %1$@: another device removed it there too, or this %2$@ no longer holds the key it removed it with. If %1$@ cannot sync, pair it again as a new device."
+          }
+        }
+      }
+    },
     "apple.devices.withdrawn_relay_told": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "If the relay was already told of the removal, it still refuses %1$@: Sunrise does not yet ask it to let %1$@ back in. If %1$@ cannot sync, pair it again as a new device."
+            "value": "If the relay was already told of the removal, it refuses %1$@ until Sunrise asks it to let %1$@ back in, which happens on a sync once no device's removal of %1$@ stands."
           }
         }
       }

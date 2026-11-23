@@ -376,7 +376,8 @@ struct DeviceListModelTests {
             _ kind: WithdrawalOutcomeKind,
             keys: UInt32 = 0,
             released: Bool = true,
-            cancelled: Bool = true
+            cancelled: Bool = true,
+            relay: RelayReinstatementKind = .clear
         ) -> [String] {
             let outcome = CommandOutcome(
                 entity: "dev_00000000000000000000000001",
@@ -394,7 +395,8 @@ struct DeviceListModelTests {
                     relayIntentCancelled: cancelled
                 )
             )
-            return DeviceListModel.Withdrawal(nickname: "Old laptop", outcome: outcome).lines(device: "Mac")
+            return DeviceListModel.Withdrawal(nickname: "Old laptop", outcome: outcome, relay: relay)
+                .lines(device: "Mac")
         }
         let back = L10n.Devices.withdrawnReinstated(name: "Old laptop")
 
@@ -425,6 +427,20 @@ struct DeviceListModelTests {
         )
         for kind in [WithdrawalOutcomeKind.notAuthor, .stillClaimed, .repairRequired] {
             #expect(!lines(kind).contains(back), "only a reinstated device may be called back")
+        }
+
+        // The relay's half says where the reinstatement stands (ADR-0056 §5),
+        // and a cancelled telling says so whatever was read.
+        #expect(
+            lines(.reinstated, cancelled: false, relay: .pending).last
+                == L10n.Devices.withdrawnRelayQueued(name: "Old laptop")
+        )
+        #expect(
+            lines(.reinstated, cancelled: false, relay: .refused).last
+                == L10n.Devices.withdrawnRelayRefused(name: "Old laptop", device: "Mac")
+        )
+        for relay in [RelayReinstatementKind.clear, .pending, .refused] {
+            #expect(lines(.reinstated, relay: relay).last == L10n.Devices.withdrawnRelayCancelled)
         }
     }
 
