@@ -183,9 +183,9 @@ pub struct DeviceListRow {
     /// This device is revoked **by the account identity**: an authority row
     /// names it at the register's last fold (ADR-0058 §7).
     ///
-    /// The one revocation nothing can unwind. No op from any device takes it
-    /// back while the identity that signed it is in force, and a rotation
-    /// carries it forward. Every other revocation is ordinary: a later op can
+    /// The one revocation an ordinary device cannot unwind. Only the device
+    /// holding the identity that signed it can withdraw it, while that
+    /// identity is in force, and a rotation carries it forward. Every other revocation is ordinary: a later op can
     /// take it back off the list (ADR-0041), which is what `readBounded`
     /// without `revoked` looks like afterwards. Word the two differently, so a
     /// user can tell which kind removed a device.
@@ -353,8 +353,9 @@ pub struct CommandOutcome {
     #[uniffi(default = [])]
     pub ordering_warnings: Vec<String>,
     /// This `revokeDevice` was signed by the account identity, so it is an
-    /// **authority revocation** (ADR-0058 §7): no op from any device can
-    /// unwind it while that identity is in force.
+    /// **authority revocation** (ADR-0058 §7): only the
+    /// device holding that identity can withdraw it, while that identity is in
+    /// force.
     ///
     /// `false` for every other command, and for a revocation from a device
     /// that does not hold the account's signing key, which is every device

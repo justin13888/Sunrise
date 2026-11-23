@@ -92,8 +92,9 @@ final class DeviceListModel {
         /// Removed **by the account identity**: a removal signed with the
         /// account's key names this device (ADR-0058 §7).
         ///
-        /// The one removal nothing can take back while that identity is in
-        /// force. Every other removal is ordinary, and a later change on the
+        /// The one removal only the device holding that identity can take
+        /// back, and only while that identity is in force; no other device
+        /// can. Every other removal is ordinary, and a later change on the
         /// account can take it back off the list (ADR-0041), which is what
         /// ``readBounded`` without ``revoked`` looks like afterwards. The row
         /// words the two differently so a user can tell them apart. Never
@@ -224,7 +225,8 @@ final class DeviceListModel {
         /// Whether a removal carries the account identity's signature, and if
         /// it could have but did not, what stood in the way.
         enum Authority: Equatable {
-            /// Signed by the account identity: nothing can take it back.
+            /// Signed by the account identity: only the device holding that
+            /// identity can take it back.
             case signed
             /// Made by a device that does not hold the account's signing key,
             /// which is every device added by pairing. A later change on the

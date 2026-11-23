@@ -901,9 +901,9 @@ pub struct DeviceRow {
     /// authority row names it at the register's last fold (ADR-0058 §7).
     ///
     /// A revocation signed by the `ID_S_priv` of the identity in force is
-    /// never gated and seats a revoker the discount never removes, so no op
-    /// from any device unwinds it while that identity is in force, and a
-    /// rotation carries it forward. Every other revocation is ordinary, and a
+    /// never gated and seats a revoker the discount never removes, so only
+    /// the device holding that identity withdraws it, while that identity is
+    /// in force, and a rotation carries it forward. Every other revocation is ordinary, and a
     /// later op can take it back off the list (ADR-0041). This is what lets a
     /// user tell the two apart.
     ///

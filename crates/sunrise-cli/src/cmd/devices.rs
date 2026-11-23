@@ -40,9 +40,10 @@ fn print_revocation_unwound(unwound: &[String]) {
 
 /// Say which kind of revocation `devices revoke` made (ADR-0058 §7).
 ///
-/// One signed by the account identity is the only kind nothing can unwind;
-/// every other kind is ordinary, and a later op can take it back off the list
-/// (ADR-0041). Printed on the effective branch only: an authority revocation
+/// One signed by the account identity is the only kind no later op can
+/// unwind; only the device holding that identity can withdraw it, while it is
+/// in force. Every other kind is ordinary, and a later op can take it back off
+/// the list (ADR-0041). Printed on the effective branch only: an authority revocation
 /// is never gated, so a gated one is ordinary and already says that nothing
 /// was revoked. When the holder could not sign only because some devices'
 /// builds cannot read a signed revocation, those devices are named, since
@@ -386,13 +387,10 @@ async fn revoke(core: &Core, args: &[String]) -> CmdResult {
     println!("  - {}", strings::devices::no_recertify());
     // Said on the effective branch only: a gated revocation revoked nothing,
     // so there is nothing to undo. An ordinary revocation is withdrawn by
-    // this device (ADR-0056); one signed by the account identity is not, so
-    // for it pairing again is the only way back.
-    if outcome.revoked_by_authority {
-        println!("  - {}", strings::devices::irreversible());
-    } else {
-        println!("  - {}", strings::devices::withdrawable(&hex16(&target)));
-    }
+    // this device (ADR-0056). One signed by the account identity was signed
+    // by this device too, since it holds that identity's key, so it is
+    // withdrawn the same way and the same line is true of both.
+    println!("  - {}", strings::devices::withdrawable(&hex16(&target)));
     print_revocation_unwound(&outcome.revocation_unwound);
     let pending = core.relay_revocation_pending(&target)?;
     if pending {
@@ -579,7 +577,8 @@ mod tests {
     }
 
     /// The three kinds ADR-0058 §7 asks a user to be able to tell apart each
-    /// print their own line, and only the signed one says nothing can undo it.
+    /// print their own line, and only the signed one says that just the device
+    /// holding the account identity can undo it.
     #[test]
     fn a_revocation_says_whether_it_carries_the_accounts_authority() {
         let signed = revocation_authority_lines(&revocation(true, Vec::new()));

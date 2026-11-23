@@ -159,9 +159,10 @@ struct DeviceListSection: View {
     private func marks(_ row: DeviceListModel.DeviceRow) -> [String] {
         var out: [String] = []
         if row.isThisDevice { out.append(L10n.Devices.markThisDevice(device: Platform.deviceName)) }
-        // ADR-0058 §7: a removal nothing can take back, beside one a later
-        // change can. Both say "removed"; only the signed one says it is for
-        // good, and the ordinary one says what taking it back would leave.
+        // ADR-0058 §7: a removal only the identity-holding device can take
+        // back, beside one a later change can. Both say "removed"; the signed
+        // one says who can take it back, and the ordinary one says what
+        // taking it back would leave.
         if row.revoked {
             out.append(
                 row.revokedByAuthority ? L10n.Devices.markRemovedByAuthority : L10n.Devices.markRemoved

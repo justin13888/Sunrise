@@ -3827,11 +3827,11 @@ pub mod devices {
         out
     }
 
-    /// revoked by the account identity; nothing can undo it
+    /// revoked by the account identity; only the device holding it can undo it
     #[must_use]
     pub fn mark_revoked_by_authority() -> String {
         let mut out = String::new();
-        out.push_str("revoked by the account identity; nothing can undo it");
+        out.push_str("revoked by the account identity; only the device holding it can undo it");
         out
     }
 
@@ -4000,14 +4000,6 @@ pub mod devices {
         out
     }
 
-    /// this cannot be undone: to use that device again, pair it as a new device
-    #[must_use]
-    pub fn irreversible() -> String {
-        let mut out = String::new();
-        out.push_str("this cannot be undone: to use that device again, pair it as a new device");
-        out
-    }
-
     /// only this device can withdraw this revocation, with `sunrise device withdraw {id}`; if the account identity rotated with it, or the relay has been told, the device must be paired again instead
     #[must_use]
     pub fn withdrawable(id: &str) -> String {
@@ -4018,13 +4010,13 @@ pub mod devices {
         out
     }
 
-    /// Nothing withdrawn: this device holds no revocation of {id} it can withdraw. A revocation another device made is withdrawn from that device, and one signed by the account identity cannot be withdrawn; otherwise pair {id} again as a new device.
+    /// Nothing withdrawn: this device holds no revocation of {id} it can withdraw. A revocation another device made is withdrawn from that device, and one signed by the account identity is withdrawn only from the device holding that identity; otherwise pair {id} again as a new device.
     #[must_use]
     pub fn withdraw_not_author(id: &str) -> String {
         let mut out = String::new();
         out.push_str("Nothing withdrawn: this device holds no revocation of ");
         out.push_str(id);
-        out.push_str(" it can withdraw. A revocation another device made is withdrawn from that device, and one signed by the account identity cannot be withdrawn; otherwise pair ");
+        out.push_str(" it can withdraw. A revocation another device made is withdrawn from that device, and one signed by the account identity is withdrawn only from the device holding that identity; otherwise pair ");
         out.push_str(id);
         out.push_str(" again as a new device.");
         out
@@ -4118,11 +4110,11 @@ pub mod devices {
         out
     }
 
-    /// signed by the account identity: no op from any device can undo this revocation
+    /// signed by the account identity: only the device holding that identity can undo this revocation
     #[must_use]
     pub fn authority_signed() -> String {
         let mut out = String::new();
-        out.push_str("signed by the account identity: no op from any device can undo this revocation");
+        out.push_str("signed by the account identity: only the device holding that identity can undo this revocation");
         out
     }
 

@@ -34,7 +34,7 @@ enum L10n {
         }
         /// Remove this device?
         static var removeConfirmTitleUnnamed: String { L10n.tr("apple.devices.remove_confirm_title_unnamed") }
-        /// Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, a removal from the device holding the account identity cannot be withdrawn at all, and once the relay has been told, which happens on the next sync, the device must be paired again as a new device to sync.
+        /// Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, a removal signed by the account identity can be withdrawn only by the device holding that identity, while it is still the one in force, and once the relay has been told, which happens on the next sync, the device must be paired again as a new device to sync.
         static var removeConfirmMessage: String { L10n.tr("apple.devices.remove_confirm_message") }
         /// I lost it
         static var reasonLost: String { L10n.tr("apple.devices.reason_lost") }
@@ -52,7 +52,7 @@ enum L10n {
         static func markThisDevice(device: String) -> String {
             L10n.tr("apple.devices.mark_this_device", device)
         }
-        /// Removed by the account identity. It reads nothing written since, and nothing can take this removal back.
+        /// Removed by the account identity. It reads nothing written since. Only the device holding the account identity can take this removal back.
         static var markRemovedByAuthority: String { L10n.tr("apple.devices.mark_removed_by_authority") }
         /// Removed by a device. It reads nothing written since. A later change on the account can take this removal back off the list, though the device would still receive no keys.
         static var markRemoved: String { L10n.tr("apple.devices.mark_removed") }
@@ -90,7 +90,7 @@ enum L10n {
         static var relayPending: String { L10n.tr("apple.devices.relay_pending") }
         /// The relay has been told.
         static var relayTold: String { L10n.tr("apple.devices.relay_told") }
-        /// The account identity signed this removal, so nothing can take it back.
+        /// The account identity signed this removal, so only the device holding that identity can take it back.
         static var authoritySigned: String { L10n.tr("apple.devices.authority_signed") }
         /// This removal comes from this {device}, not the account identity, so a later change on the account can take it back off the list. The device would still receive no keys.
         static func authorityOrdinary(device: String) -> String {
@@ -144,7 +144,7 @@ enum L10n {
         }
         /// Nothing was withdrawn.
         static var withdrawNotAuthorTitle: String { L10n.tr("apple.devices.withdraw_not_author_title") }
-        /// This {device} holds no removal of {name} it can withdraw. A removal another device made is withdrawn from that device, and one signed by the account identity cannot be withdrawn; otherwise pair {name} again as a new device.
+        /// This {device} holds no removal of {name} it can withdraw. A removal another device made is withdrawn from that device, and one signed by the account identity is withdrawn only from the device holding that identity; otherwise pair {name} again as a new device.
         static func withdrawNotAuthor(device: String, name: String) -> String {
             L10n.tr("apple.devices.withdraw_not_author", device, name)
         }
