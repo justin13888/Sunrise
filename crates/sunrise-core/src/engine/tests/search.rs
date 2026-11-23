@@ -311,24 +311,22 @@ fn a_short_cjk_term_finds_at_most_the_cap() {
 /// `created:` reads the clock and the created stamp through the whole
 /// jiff range, so a task made in the last second of year 9999 is read
 /// (#1280): `Timestamp::from_millisecond` refuses that second, and the
-/// fallback to the epoch would have put "today" in 1970.
+/// fallback to the epoch would have put "today" in 1970. The query runs from
+/// that second too: the last planner day ends at the range's last instant
+/// (#1313), so the lateness reader has a today there.
 #[test]
 fn created_today_holds_in_the_last_second_of_the_range() {
     const LAST: u64 = 253_402_207_200_500;
-    // The last planner days have no end in range, so the query reads from noon
-    // the day before (UTC), and the stamp made in the last second is tomorrow's.
-    const NOON: u64 = 253_402_084_800_000;
     let clock = Arc::new(FakeClock(PLMutex::new(LAST)));
     let e = engine_clocked(clock.clone());
     let mut db = db();
     new_task(&e, &mut db, "last second");
-    set_clock(&clock, NOON);
     let r = match e
         .query(
             &db,
             Query::SearchGrouped {
-                text: "created:tomorrow".into(),
-                now_ms: NOON,
+                text: "created:today".into(),
+                now_ms: LAST,
                 prefix: false,
                 per_group: None,
             },
