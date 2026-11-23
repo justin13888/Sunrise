@@ -434,3 +434,72 @@ async fn an_accepted_revocation_queues_no_reinstatement() {
         None
     );
 }
+
+/// A real session asks the relay again about a refused row when it starts, and
+/// a submit wake inside it does not (ADR-0056 §5). The unit tests above call
+/// each pass by name; this runs the driver, so swapping the two passes at the
+/// call sites fails. The first connection drops straight after subscribing, so
+/// the second session start is the one that asks again.
+#[tokio::test(start_paused = true)]
+async fn a_session_start_asks_a_refused_row_again_and_a_submit_wake_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open_arc(dir.path()).await;
+    let target = [0xc1; 16];
+    core.queue_relay_reinstatement_for_test(target).unwrap();
+    // Warm the vault so the only batch the relay sees later is the submit's,
+    // not the announcement a fresh vault queues.
+    core.submit(Command::CreateTask(TaskDraft {
+        title: "warm-up".into(),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    drain_announcement(&core);
+
+    let mut status_rx = core.sync_status();
+    let (factory, server, mut batch_rx) = harness(vec![
+        Script {
+            close_after_subscribe: true,
+            ..Default::default()
+        },
+        Script::default(),
+    ]);
+    server.lock().reinstate_answer = Some(ReinstateOutcome::NotRevoker);
+    core.start_sync(factory).unwrap();
+
+    // Live on the second connection: both session starts have run.
+    // The first connection can reach Live before its scripted drop, so read
+    // Live until the second connection has been dialled.
+    for _ in 0..4 {
+        let _ = collect_until_live(&mut status_rx).await;
+        if server.lock().connect_count >= 2 {
+            break;
+        }
+    }
+    assert!(server.lock().connect_count >= 2, "a second session started");
+    assert_eq!(
+        server.lock().reinstate_asked,
+        vec![target, target],
+        "each session start asks, the second about a row the first saw refused"
+    );
+    assert_eq!(
+        core.relay_reinstatement_pending(&target).unwrap(),
+        RelayReinstatement::Refused
+    );
+
+    // A submit wakes the live session; it must not ask about the refused row.
+    core.submit(Command::CreateTask(TaskDraft {
+        title: "wake".into(),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    let _ = timeout(Duration::from_secs(10), batch_rx.recv())
+        .await
+        .expect("the submit reached the relay, so the wake ran");
+    assert_eq!(
+        server.lock().reinstate_asked,
+        vec![target, target],
+        "a submit wake does not re-ask a refused row"
+    );
+}

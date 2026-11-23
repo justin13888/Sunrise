@@ -124,10 +124,23 @@ struct ChannelTransport {
     /// address: a relay whose pin and blob disagree. `None` derives it
     /// from `pinned`, as an honest relay's does.
     pinned_blob_id: Option<[u8; 16]>,
+    /// The fake relay this transport answers account calls for, if it is the
+    /// client end of a `harness` connection.
+    relay: Option<SharedServer>,
 }
 
 #[async_trait]
 impl Transport for ChannelTransport {
+    async fn reinstate_device(
+        &mut self,
+        device_id: [u8; 16],
+    ) -> Result<sunrise_sync::ReinstateOutcome, TransportError> {
+        let relay = self.relay.as_ref().ok_or(TransportError::Unsupported)?;
+        let mut relay = relay.lock();
+        let answer = relay.reinstate_answer.ok_or(TransportError::Unsupported)?;
+        relay.reinstate_asked.push(device_id);
+        Ok(answer)
+    }
     async fn snapshot_latest(
         &mut self,
         _stream_id: &[u8; 16],
@@ -179,6 +192,7 @@ fn duplex() -> (ChannelTransport, ChannelTransport) {
             serves_snapshots: false,
             pinned: None,
             pinned_blob_id: None,
+            relay: None,
         },
         ChannelTransport {
             tx: b_tx,
@@ -187,6 +201,7 @@ fn duplex() -> (ChannelTransport, ChannelTransport) {
             serves_snapshots: false,
             pinned: None,
             pinned_blob_id: None,
+            relay: None,
         },
     )
 }
@@ -242,6 +257,11 @@ struct ServerInner {
     /// with the frame's, so a test reads this to see what the relay would
     /// have been left serving.
     subscribes: Vec<Vec<[u8; 16]>>,
+    /// What the relay answers a reinstatement with; `None` is a relay with no
+    /// account API, which is what every connection but a test's own is.
+    reinstate_answer: Option<sunrise_sync::ReinstateOutcome>,
+    /// The devices a reinstatement was asked for, in order, across connections.
+    reinstate_asked: Vec<[u8; 16]>,
 }
 type SharedServer = Arc<parking_lot::Mutex<ServerInner>>;
 
@@ -298,6 +318,8 @@ fn harness_full(
         scripts: scripts.into_iter().collect(),
         presented: Vec::new(),
         subscribes: Vec::new(),
+        reinstate_answer: None,
+        reinstate_asked: Vec::new(),
     }));
     let (batch_tx, batch_rx) = mpsc::unbounded_channel();
     let subs: SubCount = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -322,6 +344,7 @@ fn harness_full(
         let fut = async move {
             let (mut client_end, server_end) = duplex();
             client_end.batch_send_hold = script.client_batch_send_hold;
+            client_end.relay = Some(server.clone());
             if let SnapshotRoutes::Pinned(record) = &script.snapshots {
                 client_end.serves_snapshots = true;
                 client_end.pinned.clone_from(record);
