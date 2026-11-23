@@ -206,6 +206,14 @@ async fn the_old_checks_refuse(core: &Core, task: EntityRef) {
         ),
     );
     refused("open_share_grant", core.open_share_grant(&[1; 32], b"x"));
+    let shared = EntityRef::new(sunrise_id::EntityKind::Stream, [7; 16]);
+    refused("revoke_share", core.revoke_share(shared, [3; 16]));
+    refused(
+        "record_share_decline",
+        core.record_share_decline(shared, [3; 16]),
+    );
+    refused("stream_shares", core.stream_shares(shared));
+    refused("ended_stream_shares", core.ended_stream_shares(shared));
     refused("deadline_candidates", core.deadline_candidates());
     refused("security_events", core.security_events());
     refused("oldest_unacked_ms", core.oldest_unacked_ms());
