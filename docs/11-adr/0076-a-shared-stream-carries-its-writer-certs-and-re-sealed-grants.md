@@ -14,6 +14,9 @@ and [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-form
 §Signature key resolution (a recipient resolves the owner's devices from the
 shared Stream, not from a vault-meta log it cannot read).
 **Answers** [#1336](https://github.com/justin13888/Sunrise/issues/1336).
+**Built:** §1 and §2, and the recipient's verification and keying of what it
+reads, by #1336. §3's replica and §4's withdrawal handling are
+[#1337](https://github.com/justin13888/Sunrise/issues/1337).
 
 ## Context
 

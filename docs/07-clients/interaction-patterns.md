@@ -380,8 +380,11 @@ The CLI makes and takes the link
 > accepted the link with nowhere to take it would be the one failure this
 > section rules out: a link that goes somewhere plausible and wrong. The CLI
 > holds the key ([#1335](https://github.com/justin13888/Sunrise/issues/1335));
-> reading through the grant and the Apple accept sheet are
-> [#1336](https://github.com/justin13888/Sunrise/issues/1336).
+> the Stream carries what a recipient verifies and keys it with
+> ([#1336](https://github.com/justin13888/Sunrise/issues/1336), ADR-0076);
+> applying and syncing it is
+> [#1337](https://github.com/justin13888/Sunrise/issues/1337), and the Apple
+> accept sheet [#1338](https://github.com/justin13888/Sunrise/issues/1338).
 
 ## Conflict-of-shortcut handling
 
