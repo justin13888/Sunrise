@@ -160,22 +160,20 @@ struct PlannedRepeatingDragTests {
         await vault.bridge.shutdown()
     }
 
-    /// A drag's "which events?" offers *this event* and *all events* only,
-    /// each sending its scope; an answer the planner does not plan is a
-    /// dismissal, which takes the plan away rather than guessing.
+    /// A drag's "which events?" offers *this event*, *this and following*
+    /// and *all events*, each sending its scope, and no answer dismisses it.
     @Test
-    func aDragsQuestionOffersOnlyTheReachesThePlannerPlans() {
+    func aDragsQuestionOffersEveryReachThePlannerPlans() {
         var sent: [OccurrenceScope] = []
         var dismissals = 0
         let question = PendingBlockReach.planned(dismissed: { dismissals += 1 }, commit: { sent.append($0) })
 
-        #expect(question.reaches == [.thisEvent, .allEvents])
+        #expect(question.reaches == [.thisEvent, .thisAndFollowing, .allEvents])
         #expect(question.action == .move)
         question.commit(.thisEvent)
-        question.commit(.allEvents)
-        #expect(sent == [.this, .all])
         question.commit(.thisAndFollowing)
-        #expect(sent.count == 2)
-        #expect(dismissals == 1)
+        question.commit(.allEvents)
+        #expect(sent == [.this, .thisAndFollowing, .all])
+        #expect(dismissals == 0)
     }
 }
