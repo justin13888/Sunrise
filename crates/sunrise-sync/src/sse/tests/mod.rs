@@ -17,6 +17,7 @@ mod mapping;
 mod readers;
 mod relay;
 mod session;
+mod session_refusals;
 mod stream;
 
 use super::{
