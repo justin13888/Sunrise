@@ -7,6 +7,9 @@
 //! in force, and what accrued during it, are the core's reads
 //! (`Query::ActiveShift`, `Query::AwaySummary`); this module only words them.
 
+use std::collections::BTreeMap;
+
+use jiff::Timestamp;
 use sunrise_cli::i18n::strings;
 use sunrise_core::{Command, Query, QueryResult};
 use sunrise_domain::{AwaySummary, Routine, Shift, ShiftDraft, SunriseTime};
@@ -144,38 +147,61 @@ async fn status(ctx: &Ctx<'_>) -> CmdResult {
     print_away(ctx, &summary).await
 }
 
-/// The "While you were away" summary (ADR-0073 §6): each group under its
-/// heading, a missed occurrence by its routine's title and when it was due,
-/// a task by its id and title.
+/// Print the "While you were away" summary: read the titles its lines name,
+/// then [`away_lines`].
 async fn print_away(ctx: &Ctx<'_>, summary: &AwaySummary) -> CmdResult {
-    println!();
-    println!("{}", strings::shift::away());
-    if summary.missed.is_empty()
-        && summary.deadlines_passed.is_empty()
-        && summary.captured.is_empty()
-    {
-        println!("  {}", strings::shift::away_empty());
-        return Ok(());
-    }
-    let reader = ctx.reader();
+    let mut titles = BTreeMap::new();
     if !summary.missed.is_empty() {
         let QueryResult::Routines(routines) = ctx.core.query(Query::Routines).await? else {
             return Err(strings::general::unexpected_result().into());
         };
-        let title = |id: EntityRef| {
+        titles.extend(
             routines
-                .iter()
-                .find(|r: &&Routine| r.id == id)
-                .map_or_else(|| id.to_str(), |r| r.template.title.clone())
-        };
-        println!("  {}", strings::shift::away_missed());
+                .into_iter()
+                .map(|r: Routine| (r.id, r.template.title)),
+        );
+    }
+    for id in summary.deadlines_passed.iter().chain(&summary.captured) {
+        if !titles.contains_key(id) {
+            titles.insert(*id, read_task(ctx.core, *id).await?.title);
+        }
+    }
+    let reader = ctx.reader();
+    let when = |at| sunrise_cli::when::describe(&SunriseTime::instant(at), &reader);
+    for line in away_lines(summary, &titles, when) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// The "While you were away" summary (ADR-0073 §6), one printed line each:
+/// a blank line, the heading, then each non-empty group under its own
+/// heading, a missed occurrence as `routine  when  title` and a task as
+/// `id  title`. `titles` holds the routines' and tasks' titles by id; a
+/// routine missing from it (archived since) prints its id as its title.
+fn away_lines(
+    summary: &AwaySummary,
+    titles: &BTreeMap<EntityRef, String>,
+    when: impl Fn(Timestamp) -> String,
+) -> Vec<String> {
+    let title = |id: &EntityRef| titles.get(id).cloned().unwrap_or_else(|| id.to_str());
+    let mut lines = vec![String::new(), strings::shift::away()];
+    if summary.missed.is_empty()
+        && summary.deadlines_passed.is_empty()
+        && summary.captured.is_empty()
+    {
+        lines.push(format!("  {}", strings::shift::away_empty()));
+        return lines;
+    }
+    if !summary.missed.is_empty() {
+        lines.push(format!("  {}", strings::shift::away_missed()));
         for m in &summary.missed {
-            println!(
+            lines.push(format!(
                 "    {}  {}  {}",
                 m.routine.to_str(),
-                sunrise_cli::when::describe(&SunriseTime::instant(m.at), &reader),
-                title(m.routine)
-            );
+                when(m.at),
+                title(&m.routine)
+            ));
         }
     }
     for (heading, ids) in [
@@ -185,11 +211,85 @@ async fn print_away(ctx: &Ctx<'_>, summary: &AwaySummary) -> CmdResult {
         if ids.is_empty() {
             continue;
         }
-        println!("  {heading}");
+        lines.push(format!("  {heading}"));
         for id in ids {
-            let task = read_task(ctx.core, *id).await?;
-            println!("    {}  {}", id.to_str(), task.title);
+            lines.push(format!("    {}  {}", id.to_str(), title(id)));
         }
     }
-    Ok(())
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sunrise_domain::MissedOccurrence;
+
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_millisecond(ms).unwrap()
+    }
+
+    /// Every group prints under its heading in the documented order: a
+    /// missed occurrence by routine id, when it was due and the routine's
+    /// title (its id when the routine is gone), then each passed deadline and
+    /// each capture by task id and title.
+    #[test]
+    fn the_away_summary_prints_each_group_under_its_heading() {
+        let routine = EntityRef::new(EntityKind::Routine, [1; 16]);
+        let gone = EntityRef::new(EntityKind::Routine, [2; 16]);
+        let due = EntityRef::new(EntityKind::Task, [3; 16]);
+        let captured = EntityRef::new(EntityKind::Task, [4; 16]);
+        let summary = AwaySummary {
+            window: Some((at(1_000), at(9_000))),
+            missed: vec![
+                MissedOccurrence {
+                    routine,
+                    key: "k1".into(),
+                    at: at(2_000),
+                },
+                MissedOccurrence {
+                    routine: gone,
+                    key: "k2".into(),
+                    at: at(3_000),
+                },
+            ],
+            deadlines_passed: vec![due],
+            captured: vec![captured],
+        };
+        let titles = BTreeMap::from([
+            (routine, "Stretch".to_owned()),
+            (due, "File the visa form".to_owned()),
+            (captured, "Buy an adapter".to_owned()),
+        ]);
+        let lines = away_lines(&summary, &titles, |t| format!("@{}", t.as_millisecond()));
+        assert_eq!(
+            lines,
+            [
+                String::new(),
+                "While you were away".to_owned(),
+                "  Missed".to_owned(),
+                format!("    {}  @2000  Stretch", routine.to_str()),
+                format!("    {}  @3000  {}", gone.to_str(), gone.to_str()),
+                "  Deadlines passed".to_owned(),
+                format!("    {}  File the visa form", due.to_str()),
+                "  Captured".to_owned(),
+                format!("    {}  Buy an adapter", captured.to_str()),
+            ]
+        );
+    }
+
+    /// A summary with nothing in it says so, and prints no group heading.
+    #[test]
+    fn an_empty_away_summary_says_nothing_accrued() {
+        let lines = away_lines(&AwaySummary::default(), &BTreeMap::new(), |_| {
+            unreachable!("nothing to time")
+        });
+        assert_eq!(
+            lines,
+            [
+                String::new(),
+                "While you were away".to_owned(),
+                "  Nothing was missed, passed or captured.".to_owned(),
+            ]
+        );
+    }
 }
