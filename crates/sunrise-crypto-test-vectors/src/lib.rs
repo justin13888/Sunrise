@@ -339,6 +339,9 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// The 30 → 31 re-freeze (#1244, the Shift entity and routine shift policy)
 /// moved the same three regions and nothing else.
 ///
+/// The 31 → 32 re-freeze (#1318, the `ShareGrant` op family) moved the same
+/// three regions and nothing else.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -356,10 +359,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840fd",
-        "402fbc39ce93c4895ec8f31f39c9d1584027c39c990a1b6fab411d21b8c3",
-        "ea527a6c40d6678b51d70f5ddcb811bc16e25b3d25789b5b69450e471a07",
-        "00370d0c181f0d488594c078d9f1afcc",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58401c",
+        "db3768c79f490a9d17957c70ace36c8bc6bdd58761a7e169e6c9244f4ab3",
+        "3aca0f75af1bb91514421adac74e0715e4a877924e11071690c9ba1c58bf",
+        "96110d0c18200d48ec0dc7290af1db0e",
     ));
 }
 
@@ -459,6 +462,9 @@ pub mod signed_only_envelope {
 /// moved the same four regions; the ciphertext at `[94..117]` is again
 /// untouched.
 ///
+/// The 31 → 32 re-freeze (#1318, the `ShareGrant` op family) moved the same
+/// four regions; the ciphertext at `[94..117]` is again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -478,11 +484,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb857fbc0",
-        "69c91c47736143daa0d4fc74e80b5840247a735114676cf026f25efa3ed7",
-        "8dcf05a544ad4e99c822c78d901bfcad586d3f9483b38bf346ac7153bee6",
-        "415861aed8ff1439c9eebeff6791c5b3b145b7090c181f0d488594c078d9",
-        "f1afcc",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb83cabe5",
+        "073bab74d42e40f37887f191f20b58402707e9d951a92614d26c78268614",
+        "4571b2c7a0afc6f07c83289b6f3e37e4d27bfe5d3498ae0c01e40a61c80a",
+        "d989ff887c3d0d9a2bb0780303928db6df3ade0b0c18200d48ec0dc7290a",
+        "f1db0e",
     ));
 }
 
@@ -578,15 +584,19 @@ pub mod share_grant {
     /// Seed for the `ChaCha20Rng` that reproduces [`ENCODED`].
     pub const RNG_SEED: u64 = 0x0133_5EED;
     /// The whole canonical payload, fields 1 to 7.
+    ///
+    /// Re-frozen with #1318, before any op carried a grant: the signature
+    /// now covers the `ID_D_pub` the grant is sealed to (here
+    /// [`RECIPIENT_DH_PUBLIC`]), so field 7 moved and fields 1 to 6 did not.
     pub const ENCODED: [u8; 228] = super::hex(concat!(
         "a701502222222222222222222222222222222202030350284c6ded64230b663e",
         "86fc76156b088c0466766965776572051b000001ba60d33800065865cfb3dcc8",
         "d7cad92b6282ee8fab0931a9f50e47c2bec6c96138b1b93c2e6f6f08141d0f34",
         "6faf728795ccdbdf908273b9375437d45bf449384f852c1717509746c070a32a",
         "acfbce94f2a1a07c06c96f796e962b10fbda2d4597cf7c79758153c9fd08a34a",
-        "c8075840c8dde0b82367decacc7ed83a584338fa3607a0e4e3d7cc48b32a968f",
-        "3d1874288dd7773698d690d88f573643d14b85504e094ff5da3b5b19559a18e2",
-        "d203710a",
+        "c8075840187442f59caae2ee598e26f0a8fcd6d755dea0293dd3cc26c7cd6f64",
+        "ed70fe9be00588731092bf1822dbadd69579ff8e759486cd25f8a01a824c592c",
+        "7320120e",
     ));
 }
 

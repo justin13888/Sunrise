@@ -16,7 +16,7 @@ Each line names what exists; the section it points to holds the rule, and the AD
 - Backfill of every held epoch to a newly certified device: §A device certified after an epoch was minted.
 - §Slow peers and out-of-order epochs, as written: no per-epoch barrier, a keyless op waits in `deferred_ops`.
 - §Revocation steps 1 to 3: the read bound, per replica ([ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md)), and the relay write bound under the three conditions of step 3.
-- Peer-side refusal of two control ops, `device_revoke` and a read-bounded sender's recipient claim: §Revocation ([ADR-0041](../11-adr/0041-peer-side-revocation-is-a-fold.md)).
+- Peer-side refusal of two control ops, `device_revoke` and a read-bounded sender's recipient claim: §Revocation ([ADR-0041](../11-adr/0041-peer-side-revocation-is-a-fold.md)). The share fold also counts no read-bounded sender's `share_grant` ([`sharing-with-others.md`](./sharing-with-others.md)).
 - Disclosure of an incomplete rotation (`CommandResult::unrotated_streams`) and of a relay-pending revocation at the moment of the act: §Revocation steps 2 and 3.
 - §Identity rotation, in full, with the cert admission rule ([ADR-0037](../11-adr/0037-identity-transition.md)), and carrying or retiring the recovery code ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)).
 - Sponsor-issued certs, so no paired device holds `ID_S_priv`: [`pairing-and-onboarding.md`](./pairing-and-onboarding.md) ([ADR-0032](../11-adr/0032-revocation-cannot-bound-cert-issuance.md) records the rejected countersignature).
@@ -28,7 +28,8 @@ Each line names what exists; the section it points to holds the rule, and the AD
 
 - Rotating the identity from a device that did not create the account: §Revocation, `core.identity.rotation_unavailable`.
 - §Device key rotation (`device_rotate`); a device's `D_D_pub` is set once, as that section states.
-- `share_grant` / `share_revoke`: sharing is unbuilt, so every "shared peer" clause describes nothing.
+- `share_revoke`, so no shared peer's access is revoked by a rotation: the re-seal leaves out only a peer whose grant has expired. `share_grant` and the re-seal are built ([#1318](https://github.com/justin13888/Sunrise/issues/1318), [`sharing-with-others.md`](./sharing-with-others.md)).
+- A re-seal by a device that does not hold `ID_S_priv`: its rotation reaches no shared peer (`core.share.reseal_skipped`).
 - §Revocation step 4: nothing wipes the revoked device's database or explains the situation on it.
 - Peer-side refusal of a revoked device's entity writes, which is a decision rather than a gap ([ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md) §Why re-adding a peer-side refusal is not free).
 - Standing disclosure of a relay-pending revocation: `DeviceRow` carries no pending flag, and the Apple notice keeps saying the relay has not been told after a sync drained the intent ([#160](https://github.com/justin13888/Sunrise/issues/160)).
@@ -67,10 +68,12 @@ time-less binary flag on relay metadata the relay already holds, not a content
 check, and it refuses the *device's credential* rather than ops signed by a
 superseded key. In the vault, the matching check is the receiving client's, and
 since [ADR-0041](../11-adr/0041-peer-side-revocation-is-a-fold.md) it exists for
-two **control** ops and for nothing else: `device_revoke`, and a read-bounded
+three **control** ops and for nothing else: `device_revoke`, a read-bounded
 sender's claim that a third device has been keyed
-([#82](https://github.com/justin13888/Sunrise/issues/82), closed). That is the
-scope; §Revocation below states both gates in full. A revoked device's *entity*
+([#82](https://github.com/justin13888/Sunrise/issues/82), closed), and a
+read-bounded sender's `share_grant`, which the share fold counts for nothing
+([`sharing-with-others.md`](./sharing-with-others.md)). That is the
+scope; §Revocation below states the first two gates in full. A revoked device's *entity*
 ops a replica still applies like any other, which is a decision rather than a gap
 ([ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md)). The relay
 cannot make either check for it: it does not open envelopes, and
@@ -88,7 +91,7 @@ cannot make either check for it: it does not open envelopes, and
 
 1. The rotating device generates `stream_key_<epoch+1>` (32 random bytes).
 2. For every still-authorized sibling device, it produces a `key_envelope` op (HPKE single-shot to that device's `D_D_pub`).
-3. For every still-authorized shared peer, it produces a `share_grant` op for the new epoch (HPKE single-shot to the peer identity's `ID_D_pub`).
+3. For every still-authorized shared peer, it produces a `share_grant` op for the new epoch (HPKE single-shot to the peer identity's `ID_D_pub`). Built: `emit_key_envelopes` re-seals each epoch it distributes to the Stream's shares, leaving out any whose grant has expired at the rotating device's clock, and only a device holding `ID_S_priv` can sign one ([`sharing-with-others.md`](./sharing-with-others.md) §Revoking access).
 4. From the next emitted op forward in this Stream, `epoch` in the envelope is the new value; ciphertext is encrypted under `stream_key_<epoch+1>`.
 5. The previous epoch's key MUST be retained by the rotating device (and any still-authorized recipient) so historical ops remain readable. Past epochs are never deleted from local storage.
 
@@ -195,9 +198,15 @@ devices compare to decide they belong together. It lives in
    excluded — and the user must be told
    (`core.identity.recovery_code_invalidated`); `sunrise identity new-code` is
    how they get a working code back.
-7. When sharing exists, a fresh `share_grant` to every shared peer for every
-   Stream. The peer's `ID_D_pub` is unchanged; only the granting identity has
-   new keys, so the share signature changes. Nothing implements sharing yet.
+7. A fresh `share_grant` to every shared peer, for every Stream a rotation
+   that retires the recovery code re-mints: those re-mints go through
+   `emit_key_envelopes` and re-seal under the successor, whose signature the
+   share fold accepts as the chain's head. The peer's `ID_D_pub` is
+   unchanged; only the granting identity has new keys, so the share
+   signature changes. A rotation that keeps the code re-mints no Stream and
+   so re-seals nothing, and a share whose grant the retired identity signed
+   still counts. Either way a grant counts only from a sender whose reads are
+   not bounded ([`sharing-with-others.md`](./sharing-with-others.md)).
 
 **A `DeviceCert` is admitted if it verifies under any identity on the chain,
 and confers membership only while the device's row names the chain's head**

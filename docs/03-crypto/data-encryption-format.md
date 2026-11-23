@@ -204,7 +204,7 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 | `device_revoke_withdraw` | 1 | `{ revoked_device_id }` — the sender withdraws its own revocation of that device ([ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md)); the sender is the envelope's, so the op can withdraw nothing else |
 | `device_revoke_withdraw_by_identity` | 1 | `{ revoked_device_id, identity_id, identity_sig }` — the account identity in force withdraws the sender's own authority revocation of that device ([ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) §6); it reaches only the sender's authority pair, never an ordinary one; see the CDDL below |
 | `key_envelope` | 1 | `{ stream_id, epoch, recipient, key_id, hpke_ciphertext }` |
-| `share_grant` | 0 | `{ stream_id, epoch, recipient_identity_id, role, expires_at?, hpke_ciphertext, identity_sig }` |
+| `share_grant` | 1 | `{ person, recipient_id_d_pub, grant }` — the account's record of one Stream shared with one Person; `grant` is the canonical `ShareGrantPayload` of [`sharing-with-others.md`](./sharing-with-others.md) (`{ stream_id, epoch, recipient_identity_id, role, expires_at?, hpke_ct, identity_sig }`); see the CDDL below |
 | `share_revoke` | 0 | `{ stream_id, recipient_identity_id, effective_at }` |
 | `snapshot` | 1 | `{ covers: { device_id => max_seq }, base_root, state_cbor }` (encrypted under Stream key) |
 | `checkpoint` | 1 | `{ root, covers: { device_id => max_seq } }` (encrypted under Stream key) |
@@ -212,11 +212,11 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 
 `hpke_ciphertext` is the byte string `enc || ct` produced by HPKE single-shot Base mode; see "HPKE single-shot" below.
 
-`identity_sig` on `share_grant` is `Ed25519_sign(ID_S_priv, "sunrise.share_grant.v1" || canonical_cbor(payload_without_identity_sig))`. Verification requires the granting identity's `ID_S_pub`, looked up from the server-published bundle.
+`identity_sig` inside a `share_grant`'s `grant` is `Ed25519_sign(ID_S_priv, "sunrise.share_grant.v1" || canonical_cbor(payload_without_identity_sig) || recipient_id_d_pub)`, where `recipient_id_d_pub` is the 32-byte `ID_D_pub` the grant is sealed to: the op's own field, and the recipient's own key. It is signed though not in the grant, so a `share_grant` op naming a key beside a grant that was not sealed to it verifies under no identity. Verification requires the granting identity's `ID_S_pub`, looked up from the server-published bundle.
 
 ### The six families that are implemented
 
-[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `Patch`, an entity family rather than a control one, followed at `DOC_SCHEMA_V = 8` ([ADR-0044](../11-adr/0044-per-field-ops.md)), and the `StreamDigest` control family, a replica's frontier and digest in one stream, at `DOC_SCHEMA_V = 9` ([ADR-0043](../11-adr/0043-commit-tree.md)); it takes the place `checkpoint` was sketched for. [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 10`. [ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) added `device_revoke_by_identity` at `DOC_SCHEMA_V = 23`, behind the structural feature `core.revoke_authority`, and [ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md) added `device_revoke_withdraw` at `DOC_SCHEMA_V = 28`, behind the structural feature `core.revoke_withdraw`. ADR-0058 §6 added `device_revoke_withdraw_by_identity` at `DOC_SCHEMA_V = 30`, behind the structural feature `core.revoke_withdraw_authority`. `share_grant`, `share_revoke` and `snapshot` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
+[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `Patch`, an entity family rather than a control one, followed at `DOC_SCHEMA_V = 8` ([ADR-0044](../11-adr/0044-per-field-ops.md)), and the `StreamDigest` control family, a replica's frontier and digest in one stream, at `DOC_SCHEMA_V = 9` ([ADR-0043](../11-adr/0043-commit-tree.md)); it takes the place `checkpoint` was sketched for. [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 10`. [ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) added `device_revoke_by_identity` at `DOC_SCHEMA_V = 23`, behind the structural feature `core.revoke_authority`, and [ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md) added `device_revoke_withdraw` at `DOC_SCHEMA_V = 28`, behind the structural feature `core.revoke_withdraw`. ADR-0058 §6 added `device_revoke_withdraw_by_identity` at `DOC_SCHEMA_V = 30`, behind the structural feature `core.revoke_withdraw_authority`. [#1318](https://github.com/justin13888/Sunrise/issues/1318) added `share_grant` at `DOC_SCHEMA_V = 32`, behind no feature: it writes no entity, and a build that cannot read it parks it and fails only to re-seal the share. `share_revoke` and `snapshot` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
 
 The six are **not** the `OpKind`-tagged shape sketched above. The inner op is a Rust enum encoded externally tagged, so what is on the wire is a one-entry map from the variant name to its payload — the same shape the 21 domain variants already have. This is the encoder's shape, and it is normative:
 
@@ -230,6 +230,7 @@ InnerOp /= { "KeyEnvelope" => KeyEnvelopePayload }
          / { "DeviceRevokeByIdentity" => DeviceRevokeByIdentityPayload }
          / { "DeviceRevokeWithdraw" => DeviceRevokeWithdrawPayload }
          / { "DeviceRevokeWithdrawByIdentity" => DeviceRevokeWithdrawByIdentityPayload }
+         / { "ShareGrant" => ShareGrantOpPayload }
 
 FeatureList = {
     "features" => [ + feature-id ],   ; never emitted empty
@@ -265,6 +266,13 @@ DeviceRevokeWithdrawByIdentityPayload = {
     "revoked_device_id" => bstr .size 16,   ; the sender's own authority revocation of it is withdrawn
     "identity_id"       => bstr .size 16,   ; identity_id_from_pub(ID_S_pub) of the signer
     "identity_sig"      => bstr .size 64,   ; see below
+}
+
+ShareGrantOpPayload = {
+    "person"             => EntityRef,       ; the per_ Person the Stream is shared with
+    "recipient_id_d_pub" => bstr .size 32,   ; the recipient's ID_D_pub, which every re-seal is sealed to
+    "grant"              => bstr,            ; canonical ShareGrantPayload, at most 8 KiB
+    * tstr => any,                           ; fields a later build adds, kept verbatim
 }
 
 IdentityTransitionPayload = {

@@ -250,6 +250,9 @@ mod revocation_ledger;
 /// release, and the command that emits one.
 mod revocation_withdraw;
 
+/// Share grants as ops: emitted to a Person, folded, re-sealed (#1318).
+mod share_grant;
+
 /// Identity transitions: the verification rule and the rotation chain.
 mod identity_rotation;
 

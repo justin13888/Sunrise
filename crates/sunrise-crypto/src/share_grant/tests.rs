@@ -83,7 +83,10 @@ fn a_grant_round_trips_and_opens_for_its_recipient() {
     let decoded = decode_share_grant(&bytes).unwrap();
     assert_eq!(decoded, g);
     assert_eq!(decoded.encode().unwrap(), bytes);
-    assert_eq!(decoded.verify(&alice.id_s.public_bytes()), Ok(()));
+    assert_eq!(
+        decoded.verify(&alice.id_s.public_bytes(), &bob.id_d.public_bytes()),
+        Ok(())
+    );
     let opened = open(&decoded, &alice, &bob, 9_999).unwrap();
     assert_eq!(opened.key, StreamKey::from_bytes([0x33; 32]));
     assert_eq!(opened.metadata, metadata());
@@ -121,10 +124,26 @@ fn another_identity_cannot_open_it() {
         open(&g, &alice, &carol, 0),
         Err(ShareGrantError::OtherRecipient)
     );
-    // Carol claiming Bob's identity still holds only her own ID_D.
+    // Carol claiming Bob's identity still holds only her own ID_D, which is
+    // not the key Alice signed the grant as sealed to.
     assert_eq!(
         g.open(&alice.id_s.public_bytes(), &bob.identity_id, &carol.id_d, 0),
-        Err(ShareGrantError::Open)
+        Err(ShareGrantError::BadSignature)
+    );
+}
+
+/// The `ID_D_pub` the grant is sealed to is under the signature, though not
+/// on the wire: the same grant beside any other key does not verify, so
+/// nobody can name another key as the one the granter sealed to.
+#[test]
+fn the_key_it_is_sealed_to_is_signed() {
+    let (alice, bob, carol) = (identity(1), identity(2), identity(3));
+    let g = grant(&alice, &bob, None);
+    let pk = alice.id_s.public_bytes();
+    assert_eq!(g.verify(&pk, &bob.id_d.public_bytes()), Ok(()));
+    assert_eq!(
+        g.verify(&pk, &carol.id_d.public_bytes()),
+        Err(ShareGrantError::BadSignature)
     );
 }
 
@@ -135,6 +154,7 @@ fn every_field_is_signed() {
     let (alice, bob) = (identity(1), identity(2));
     let g = grant(&alice, &bob, Some(5));
     let pk = alice.id_s.public_bytes();
+    let to = bob.id_d.public_bytes();
     let mut ct = g.hpke_ct.clone();
     ct[40] ^= 1;
     for bytes in [
@@ -146,10 +166,10 @@ fn every_field_is_signed() {
         with_field(&g, 6, Some(Value::Bytes(ct))),
     ] {
         let altered = decode_share_grant(&bytes).unwrap();
-        assert_eq!(altered.verify(&pk), Err(ShareGrantError::BadSignature));
+        assert_eq!(altered.verify(&pk, &to), Err(ShareGrantError::BadSignature));
     }
     assert_eq!(
-        g.verify(&bob.id_s.public_bytes()),
+        g.verify(&bob.id_s.public_bytes(), &to),
         Err(ShareGrantError::BadSignature)
     );
 }
@@ -164,10 +184,13 @@ fn a_re_signed_ciphertext_does_not_open_under_the_impostor() {
     let forged = ShareGrant {
         identity_sig: mallory
             .id_s
-            .sign(&signed_message(&g.terms, &g.hpke_ct).unwrap()),
+            .sign(&signed_message(&g.terms, &g.hpke_ct, &bob.id_d.public_bytes()).unwrap()),
         ..g.clone()
     };
-    assert_eq!(forged.verify(&mallory.id_s.public_bytes()), Ok(()));
+    assert_eq!(
+        forged.verify(&mallory.id_s.public_bytes(), &bob.id_d.public_bytes()),
+        Ok(())
+    );
     assert_eq!(open(&forged, &mallory, &bob, 0), Err(ShareGrantError::Open));
     assert!(open(&g, &alice, &bob, 0).is_ok());
 }
@@ -279,7 +302,9 @@ fn a_plaintext_of_the_wrong_shape_does_not_open() {
             &mut rng,
         )
         .unwrap();
-        let identity_sig = alice.id_s.sign(&signed_message(&t, &hpke_ct).unwrap());
+        let identity_sig = alice
+            .id_s
+            .sign(&signed_message(&t, &hpke_ct, &bob.id_d.public_bytes()).unwrap());
         let g = ShareGrant {
             terms: t.clone(),
             hpke_ct,

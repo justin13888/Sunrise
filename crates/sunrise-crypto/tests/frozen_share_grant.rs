@@ -55,7 +55,7 @@ fn the_frozen_share_grant_opens_for_its_recipient() {
     let grant = decode_share_grant(&sg::ENCODED).expect("the frozen grant decodes");
     assert_eq!(grant.terms(), &terms());
     grant
-        .verify(&sg::GRANTER_SIGNING_PUBLIC)
+        .verify(&sg::GRANTER_SIGNING_PUBLIC, &sg::RECIPIENT_DH_PUBLIC)
         .expect("the frozen grant verifies under its granter");
     let recipient = IdentityDhKeyPair::from_secret_bytes(sg::RECIPIENT_DH_SECRET);
     assert_eq!(recipient.public_bytes(), sg::RECIPIENT_DH_PUBLIC);

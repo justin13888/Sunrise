@@ -266,7 +266,8 @@ pub(super) fn materialize_member(
         | InnerOp::IdentityTransition(_)
         | InnerOp::StreamDigest(_)
         | InnerOp::VaultRequires(_)
-        | InnerOp::DeviceFeatures(_) => {}
+        | InnerOp::DeviceFeatures(_)
+        | InnerOp::ShareGrant(_) => {}
     }
     Ok(())
 }
