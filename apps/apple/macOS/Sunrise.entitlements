@@ -30,6 +30,16 @@
   macOS/SunriseDebug.entitlements, which Debug signs with; keep the two in
   step. `$(SUNRISE_APP_GROUP)` is spelled in project.yml.
 
+  `com.apple.developer.usernotifications.time-sensitive` lets wind-down's
+  `.timeSensitive` request be delivered as one, past a Focus that allows
+  time-sensitive notifications (docs/08-features/notifications.md
+  §Wind-down); without it the system reports the setting as not supported
+  and delivers the request as active. It is a `com.apple.developer`
+  entitlement, granted by the App ID's Time Sensitive Notifications
+  capability through the provisioning profile, so it is Release-only for the
+  same reason `keychain-access-groups` is, and the Developer ID profile must
+  be regenerated with the capability on before a signed build carries it.
+
   No `com.apple.security.app-sandbox`: the App Sandbox stays off (ADR-0031).
 -->
 <plist version="1.0">
@@ -38,6 +48,8 @@
 	<array>
 		<string>$(SUNRISE_APP_GROUP)</string>
 	</array>
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
 	<key>com.apple.security.device.camera</key>
 	<true/>
 	<key>keychain-access-groups</key>
