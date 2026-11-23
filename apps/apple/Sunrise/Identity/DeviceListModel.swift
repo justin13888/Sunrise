@@ -390,12 +390,8 @@ final class DeviceListModel {
         defer { busy = false }
         do {
             let outcome = try await bridge.submit(.withdrawRevocation(deviceId: row.id))
-            // Read only when the relay may have been told. A failed read falls
-            // back to the line that claims neither a queued request nor a
-            // refusal it did not see.
-            var relay = RelayReinstatementKind.clear
-            if outcome.withdrawal?.relayIntentCancelled == false {
-                relay = (try? await bridge.relayReinstatementPending(row.id)) ?? .clear
+            let relay = await Self.relayAfterWithdrawal(outcome) {
+                try await bridge.relayReinstatementPending(row.id)
             }
             lastWithdrawal = Withdrawal(nickname: row.nickname, outcome: outcome, relay: relay)
             errorMessage = nil
@@ -404,6 +400,19 @@ final class DeviceListModel {
             lastWithdrawal = nil
             errorMessage = Self.withdrawalRefusal(error, rows: rows)
         }
+    }
+
+    /// Where the relay's reinstatement stands after `outcome`, as
+    /// ``Withdrawal`` takes it. `read` runs only when the relay may have been
+    /// told: a cancelled telling, or no report, leaves nothing to reverse. A
+    /// failed read falls back to `clear`, the line that claims neither a
+    /// queued request nor a refusal it did not see.
+    static func relayAfterWithdrawal(
+        _ outcome: CommandOutcome,
+        read: () async throws -> RelayReinstatementKind
+    ) async -> RelayReinstatementKind {
+        guard outcome.withdrawal?.relayIntentCancelled == false else { return .clear }
+        return (try? await read()) ?? .clear
     }
 
     /// The features whose gate can refuse a withdrawal: `core.revoke_withdraw`

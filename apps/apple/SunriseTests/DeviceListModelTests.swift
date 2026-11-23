@@ -462,3 +462,58 @@ struct DeviceListModelTests {
         await vault.bridge.shutdown()
     }
 }
+
+extension DeviceListModelTests {
+    /// **The relay's state is read only after an uncancelled telling**
+    /// (ADR-0056 §5), and what the read answers reaches the report: a
+    /// `pending` read prints the queued line. A cancelled telling never asks,
+    /// and a failed read falls back to `clear`.
+    ///
+    /// Synthetic: an uncancelled telling exists only once a sync delivered
+    /// the revocation to a relay, and `sunrise-e2e`'s `relay_reinstatement`
+    /// asserts the core's answer along that path.
+    @Test
+    func theRelaysStateIsReadOnlyAfterAnUncancelledTelling() async {
+        struct ReadFailed: Error {}
+        func outcome(cancelled: Bool) -> CommandOutcome {
+            CommandOutcome(
+                entity: "dev_00000000000000000000000001",
+                state: nil,
+                opId: String(repeating: "0", count: 32),
+                seq: 1,
+                softViolations: [],
+                unrotatedStreams: [],
+                revocationGated: false,
+                revocationUnwound: [],
+                withdrawal: WithdrawalReport(
+                    outcome: .reinstated,
+                    readBoundReleased: true,
+                    keysResent: 0,
+                    relayIntentCancelled: cancelled
+                )
+            )
+        }
+        let told = outcome(cancelled: false)
+
+        let relay = await DeviceListModel.relayAfterWithdrawal(told) { .pending }
+        #expect(relay == .pending)
+        #expect(
+            DeviceListModel.Withdrawal(nickname: "Old laptop", outcome: told, relay: relay)
+                .lines(device: "Mac").last == L10n.Devices.withdrawnRelayQueued(name: "Old laptop"),
+            "an uncancelled telling with a queued reinstatement says it is queued"
+        )
+        #expect(await DeviceListModel.relayAfterWithdrawal(told) { .refused } == .refused)
+        #expect(
+            await DeviceListModel.relayAfterWithdrawal(told) { throw ReadFailed() } == .clear,
+            "a failed read must not claim a queued request or a refusal"
+        )
+
+        var asked = false
+        let cancelled = await DeviceListModel.relayAfterWithdrawal(outcome(cancelled: true)) {
+            asked = true
+            return .pending
+        }
+        #expect(cancelled == .clear)
+        #expect(!asked, "a cancelled telling leaves nothing to read")
+    }
+}

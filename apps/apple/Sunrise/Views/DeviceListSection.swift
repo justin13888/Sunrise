@@ -97,8 +97,9 @@ struct DeviceListSection: View {
 
     /// ADR-0056 §6's three warnings, in its order: the keys the device is sent,
     /// the other devices whose removals still stand, and the relay, which
-    /// nothing can tell to readmit a device yet
-    /// ([#1299](https://github.com/justin13888/Sunrise/issues/1299)).
+    /// refuses a device it was told of until the next sync asks it to let
+    /// the device back in, and refuses that request where it recorded
+    /// another remover (ADR-0056 §5).
     nonisolated static func withdrawConfirmMessage(device: String) -> String {
         [
             L10n.Devices.withdrawConfirmKeys(device: device),
