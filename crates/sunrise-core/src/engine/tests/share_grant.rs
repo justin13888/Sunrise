@@ -580,8 +580,38 @@ fn recipients(e: &Engine, db: &Db, stream: EntityRef) -> Vec<[u8; 16]> {
     ids
 }
 
+/// The share `stream` holds on `db`'s replica reaches Ada's key at the live
+/// epoch, and Mallory's key opens none of it.
+fn reaches_only_ada(
+    e: &Engine,
+    db: &mut Db,
+    stream: EntityRef,
+    granter: &[u8; 32],
+    (ada, mallory): (&Recipient, &Recipient),
+) {
+    let (epoch, key) = live_epoch(e, db, stream);
+    let listed = shares(e, db, stream);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].epoch, epoch, "the share is at the live epoch");
+    assert_eq!(listed[0].recipient_id_d_pub, ada.dh.public_bytes());
+    let grant = decode_share_grant(&listed[0].grant).unwrap();
+    let opened = grant
+        .open(granter, &ada.identity_id(), &ada.dh, T0)
+        .unwrap();
+    assert_eq!(opened.key, key);
+    // Mallory holds the key she named, claiming Ada's identity.
+    assert!(grant
+        .open(granter, &ada.identity_id(), &mallory.dh, T0)
+        .is_err());
+}
+
+/// A device re-files the head's grant naming a key it holds, then the
+/// account device rotates while that device still reads, and only then is the
+/// device bounded and revoked. The signature covers the key the grant is
+/// sealed to, so the re-file counts for nothing from the start: neither the
+/// intervening re-seal nor the revocation's carries the device's key forward.
 #[test]
-fn a_bounded_sender_cannot_refile_the_heads_grant_to_its_own_key() {
+fn a_refiled_grant_naming_another_key_is_never_resealed_to_it() {
     let (ea, mut dba, eb, mut dbb) = founders();
     let stream = work_stream(&ea, &mut dba);
     let ada = Recipient::new(0x31);
@@ -590,7 +620,7 @@ fn a_bounded_sender_cannot_refile_the_heads_grant_to_its_own_key() {
     deliver(&ea, &dba, &eb, &mut dbb, true);
 
     // B re-files the grant A filed, which the head signed, naming a key B
-    // holds. The signature does not cover `recipient_id_d_pub`.
+    // holds, stamped after A's.
     let filed = shares(&eb, &dbb, stream).remove(0);
     let mallory = Recipient::new(0x32);
     log_share_op(
@@ -605,29 +635,30 @@ fn a_bounded_sender_cannot_refile_the_heads_grant_to_its_own_key() {
     );
     deliver(&eb, &dbb, &ea, &mut dba, true);
     assert_eq!(
-        shares(&ea, &dba, stream)[0].recipient_id_d_pub,
-        mallory.dh.public_bytes(),
-        "from an unbounded sender the re-file is the latest grant"
-    );
-
-    bound(&mut dba, &eb);
-    let listed = shares(&ea, &dba, stream);
-    assert_eq!(
-        listed,
+        shares(&ea, &dba, stream),
         vec![filed],
-        "a bounded sender's grant counts for nothing"
+        "from an unbounded sender, a grant beside a key it was not sealed to counts for nothing"
     );
 
+    // A rotation while B still reads.
+    let parties = (&ada, &mallory);
+    let granter = ea.keychain.identity_signing_pub();
     rotate(&ea, &mut dba, stream);
-    let (epoch, key) = live_epoch(&ea, &mut dba, stream);
-    let resealed = shares(&ea, &dba, stream);
-    assert_eq!(resealed[0].epoch, epoch);
-    assert_eq!(resealed[0].recipient_id_d_pub, ada.dh.public_bytes());
-    assert_eq!(
-        open(&ea, &resealed[0], &ada, T0),
-        key,
-        "the re-seal reaches the recipient A named"
-    );
+    reaches_only_ada(&ea, &mut dba, stream, &granter, parties);
+
+    // B is bounded, and its revocation rotates every Stream again, before the
+    // identity, so the re-seal is signed by the identity Ada already knows.
+    bound(&mut dba, &eb);
+    reaches_only_ada(&ea, &mut dba, stream, &granter, parties);
+    ea.apply(
+        &mut dba,
+        Command::RevokeDevice {
+            device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+            reason: RevokeReason::Lost,
+        },
+    )
+    .unwrap();
+    reaches_only_ada(&ea, &mut dba, stream, &granter, parties);
 }
 
 #[test]
@@ -710,7 +741,11 @@ fn retiring_the_recovery_code_reseals_each_share_under_the_successor() {
         "the fold takes the successor's re-seal as the share"
     );
     let grant = decode_share_grant(&listed[0].grant).unwrap();
-    assert!(grant.verify(&successor).is_ok(), "signed by the successor");
-    assert!(grant.verify(&retired).is_err());
+    let to = ada.dh.public_bytes();
+    assert!(
+        grant.verify(&successor, &to).is_ok(),
+        "signed by the successor"
+    );
+    assert!(grant.verify(&retired, &to).is_err());
     assert_eq!(open(&e, &listed[0], &ada, T0), key);
 }

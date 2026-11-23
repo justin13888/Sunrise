@@ -584,15 +584,19 @@ pub mod share_grant {
     /// Seed for the `ChaCha20Rng` that reproduces [`ENCODED`].
     pub const RNG_SEED: u64 = 0x0133_5EED;
     /// The whole canonical payload, fields 1 to 7.
+    ///
+    /// Re-frozen with #1318, before any op carried a grant: the signature
+    /// now covers the `ID_D_pub` the grant is sealed to (here
+    /// [`RECIPIENT_DH_PUBLIC`]), so field 7 moved and fields 1 to 6 did not.
     pub const ENCODED: [u8; 228] = super::hex(concat!(
         "a701502222222222222222222222222222222202030350284c6ded64230b663e",
         "86fc76156b088c0466766965776572051b000001ba60d33800065865cfb3dcc8",
         "d7cad92b6282ee8fab0931a9f50e47c2bec6c96138b1b93c2e6f6f08141d0f34",
         "6faf728795ccdbdf908273b9375437d45bf449384f852c1717509746c070a32a",
         "acfbce94f2a1a07c06c96f796e962b10fbda2d4597cf7c79758153c9fd08a34a",
-        "c8075840c8dde0b82367decacc7ed83a584338fa3607a0e4e3d7cc48b32a968f",
-        "3d1874288dd7773698d690d88f573643d14b85504e094ff5da3b5b19559a18e2",
-        "d203710a",
+        "c8075840187442f59caae2ee598e26f0a8fcd6d755dea0293dd3cc26c7cd6f64",
+        "ed70fe9be00588731092bf1822dbadd69579ff8e759486cd25f8a01a824c592c",
+        "7320120e",
     ));
 }
 

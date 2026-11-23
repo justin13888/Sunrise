@@ -4,7 +4,8 @@
 //! This module is the cryptographic half of a share and nothing else: the
 //! payload codec, the HPKE seal to the recipient identity, the owner's
 //! signature, the expiry check, and the re-seal a Stream-key rotation emits.
-//! No op kind carries it yet, no relay routes it, and no client offers it.
+//! The owner's account records a grant as a `ShareGrant` control op
+//! (`sunrise-core`'s `engine::share_grant`); no client offers it yet.
 //!
 //! # Wire shape
 //!
@@ -28,7 +29,10 @@
 //!   canonical_cbor({1..5})`. The plaintext is `canonical_cbor({1: stream_key,
 //!   2: {1: name, 2: color}})`.
 //! - `identity_sig` is `Ed25519(ID_S_priv, "sunrise.share_grant.v1" ||
-//!   canonical_cbor({1..6}))`, by the granting identity.
+//!   canonical_cbor({1..6}) || recipient_id_d_pub)`, by the granting identity.
+//!   `recipient_id_d_pub` is the 32-byte `ID_D_pub` the ciphertext is sealed
+//!   to. It is not on the wire: the recipient holds it as its own, and the
+//!   owner's account carries it beside the grant in the op that records it.
 //!
 //! # What binds what
 //!
@@ -44,6 +48,12 @@
 //! - **The role and the expiry.** Fields 4 and 5 are in the AAD and under the
 //!   signature, so neither can be changed without the grant failing to verify
 //!   and to open.
+//! - **The key it is sealed to.** HPKE Base cannot show anyone but the
+//!   recipient which `ID_D_pub` a ciphertext was sealed to, so the signature
+//!   covers it. The owner's account re-seals every later epoch to the key its
+//!   grants name; were that key not signed, any device able to write the
+//!   account's log could name its own key beside a grant the account signed,
+//!   and receive every epoch re-sealed after it.
 //!
 //! # Expiry and revocation
 //!
@@ -227,12 +237,19 @@ fn aad(
     Ok(out)
 }
 
-/// `"sunrise.share_grant.v1" || canonical({1..6})`: what the granter signs.
-fn signed_message(terms: &ShareGrantTerms, hpke_ct: &[u8]) -> Result<Vec<u8>, ShareGrantError> {
+/// `"sunrise.share_grant.v1" || canonical({1..6}) || recipient_id_d_pub`:
+/// what the granter signs. The canonical map is self-delimiting, so the key
+/// after it is unambiguous.
+fn signed_message(
+    terms: &ShareGrantTerms,
+    hpke_ct: &[u8],
+    recipient_id_d_pub: &[u8; 32],
+) -> Result<Vec<u8>, ShareGrantError> {
     let mut fields = terms.fields();
     fields.push((6, Value::Bytes(hpke_ct.to_vec())));
     let mut out = SIG_DOMAIN.to_vec();
     out.extend_from_slice(&encode(&map(&fields))?);
+    out.extend_from_slice(recipient_id_d_pub);
     Ok(out)
 }
 
@@ -287,7 +304,7 @@ pub fn seal_share_grant<R: CryptoRngCore>(
     );
     plain.zeroize();
     let hpke_ct = sealed?;
-    let identity_sig = granter.sign(&signed_message(&terms, &hpke_ct)?);
+    let identity_sig = granter.sign(&signed_message(&terms, &hpke_ct, recipient_id_d_pub)?);
     Ok(ShareGrant {
         terms,
         hpke_ct,
@@ -461,13 +478,20 @@ impl ShareGrant {
         encode(&map(&fields))
     }
 
-    /// Check the granter's signature under `granter_id_s_pub`: what a
-    /// recipient does before it asks its user to accept.
+    /// Check the granter's signature under `granter_id_s_pub`, for a grant
+    /// sealed to `recipient_id_d_pub`: what a recipient does before it asks
+    /// its user to accept, and what the owner's account does before it
+    /// re-seals a later epoch to that key.
     ///
     /// # Errors
-    /// [`ShareGrantError::BadSignature`].
-    pub fn verify(&self, granter_id_s_pub: &[u8; 32]) -> Result<(), ShareGrantError> {
-        let msg = signed_message(&self.terms, &self.hpke_ct)?;
+    /// [`ShareGrantError::BadSignature`], for a grant the granter did not
+    /// sign or did not seal to `recipient_id_d_pub`.
+    pub fn verify(
+        &self,
+        granter_id_s_pub: &[u8; 32],
+        recipient_id_d_pub: &[u8; 32],
+    ) -> Result<(), ShareGrantError> {
+        let msg = signed_message(&self.terms, &self.hpke_ct, recipient_id_d_pub)?;
         if verify_ed25519(granter_id_s_pub, &msg, &self.identity_sig) {
             Ok(())
         } else {
@@ -500,7 +524,7 @@ impl ShareGrant {
         if !ours {
             return Err(ShareGrantError::OtherRecipient);
         }
-        self.verify(granter_id_s_pub)?;
+        self.verify(granter_id_s_pub, &recipient_id_d.public_bytes())?;
         if self.terms.is_expired_at(now_ms) {
             return Err(ShareGrantError::Expired);
         }

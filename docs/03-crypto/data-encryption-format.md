@@ -212,7 +212,7 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 
 `hpke_ciphertext` is the byte string `enc || ct` produced by HPKE single-shot Base mode; see "HPKE single-shot" below.
 
-`identity_sig` inside a `share_grant`'s `grant` is `Ed25519_sign(ID_S_priv, "sunrise.share_grant.v1" || canonical_cbor(payload_without_identity_sig))`. Verification requires the granting identity's `ID_S_pub`, looked up from the server-published bundle.
+`identity_sig` inside a `share_grant`'s `grant` is `Ed25519_sign(ID_S_priv, "sunrise.share_grant.v1" || canonical_cbor(payload_without_identity_sig) || recipient_id_d_pub)`, where `recipient_id_d_pub` is the 32-byte `ID_D_pub` the grant is sealed to: the op's own field, and the recipient's own key. It is signed though not in the grant, so a `share_grant` op naming a key beside a grant that was not sealed to it verifies under no identity. Verification requires the granting identity's `ID_S_pub`, looked up from the server-published bundle.
 
 ### The six families that are implemented
 

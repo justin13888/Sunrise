@@ -20,14 +20,20 @@
 //!
 //! A `ShareGrant` op counts only where its `person` is a Person ref, its grant
 //! decodes as a `viewer` grant, the grant's signature verifies under an
-//! identity on the account's chain, and its sender's reads are not bounded.
-//! The chain rather than the head alone, so a share outlives an identity
-//! rotation. The bound on the sender whoever signed the grant, because the
-//! signature does not cover the op's `recipient_id_d_pub`: an evicted device
-//! could otherwise re-file a grant the account signed, naming its own key, and
-//! the next rotation would re-seal the new epoch to it. A share whose latest
-//! grant a now-bounded device filed therefore falls back to an earlier grant
-//! of the same recipient, or lapses until the owner shares it again.
+//! identity on the account's chain for the op's `recipient_id_d_pub`, and its
+//! sender's reads are not bounded. The chain rather than the head alone, so a
+//! share outlives an identity rotation.
+//!
+//! The signature covers the `ID_D_pub` the grant is sealed to, which the op
+//! carries beside it: a device that re-files a grant the account signed,
+//! naming its own key, files one that verifies under nobody, so no re-seal,
+//! the account's own included, ever copies that key forward.
+//!
+//! The bound on the sender holds whoever signed the grant: an evicted device
+//! may hold a retired identity's `ID_S_priv`, and can replay an older grant of
+//! the head's under a later stamp. A share whose latest grant a now-bounded
+//! device filed therefore falls back to an earlier grant of the same
+//! recipient, or lapses until the owner shares it again.
 //!
 //! Of the grants that count, each recipient's latest by envelope stamp
 //! (HLC, then device, then `seq`) is its share. A re-seal is a later grant of
@@ -333,15 +339,21 @@ impl Engine {
         let Ok(grant) = decode_share_grant(&p.grant) else {
             return Ok(Err(Refusal::Undecodable));
         };
-        if !chain.iter().any(|(_, pk)| grant.verify(pk).is_ok()) {
+        // The signature covers the op's `recipient_id_d_pub`, so a grant
+        // beside a key its signer did not seal it to verifies under nobody:
+        // no device, evicted or not, can name its own key beside a grant the
+        // account signed and have a re-seal carry it forward.
+        if !chain
+            .iter()
+            .any(|(_, pk)| grant.verify(pk, &p.recipient_id_d_pub).is_ok())
+        {
             return Ok(Err(Refusal::Signature));
         }
         // A sender whose reads are bounded is refused whoever signed the
-        // grant, the head included. The signature covers the grant and not
-        // the op's `recipient_id_d_pub`, so a device the account has evicted
-        // could re-file a grant the account signed under its own key, stamp
-        // it later than the account's, and have the next rotation re-seal the
-        // new epoch to that key.
+        // grant, the head included: it may still hold a retired identity's
+        // `ID_S_priv` and sign grants under it, and it could replay an older
+        // grant of the head's with a later stamp to restore an expiry the
+        // owner has since changed.
         if self.is_read_bounded(conn, sender)? {
             return Ok(Err(Refusal::BoundedSender));
         }

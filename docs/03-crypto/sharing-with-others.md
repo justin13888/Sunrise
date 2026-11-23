@@ -14,7 +14,7 @@ The "accept invite" and "view shared stream as editor" rows are MUST in the [par
 
 * the `ShareGrantPayload` codec below, canonical CBOR, refusing an unknown, repeated, missing or mis-sized field;
 * the HPKE Base seal of the Stream key, name and color to the recipient's `ID_D_pub`, and its open;
-* the granting identity's `identity_sig`, and its verification;
+* the granting identity's `identity_sig`, over the grant and the `ID_D_pub` it is sealed to, and its verification;
 * the recipient's `expires_at` check (§Share expiration);
 * the re-seal a Stream-key rotation emits: a grant of the new epoch to every recipient but the revoked and the expired (§Revoking access, step 2).
 
@@ -23,7 +23,7 @@ The only role it grants is `viewer`, the answer recorded for #133: a read-only g
 **Built** ([#1318](https://github.com/justin13888/Sunrise/issues/1318), `crates/sunrise-core/src/engine/share_grant.rs`): the grant as an op, at `DOC_SCHEMA_V = 32`.
 
 * `Engine::share_stream` seals the Stream's live epoch, name and color to a `Person`'s identity, signed by the account identity in force, and logs it as a `ShareGrant` control op on the vault-meta stream ([`data-encryption-format.md`](./data-encryption-format.md) §Control op payloads). Only a device holding `ID_S_priv` can share. It returns the encoded grant, which is what reaches the recipient.
-* Applying the op stores nothing beside it. `Engine::stream_shares` folds the op log into one share per recipient: the latest grant, by envelope stamp, that names a Person, decodes as a viewer grant, verifies under an identity on the account's chain, and comes from a sender whose reads are not bounded. The bound holds whoever signed the grant, the head included: the grant's signature does not cover the op's `recipient_id_d_pub`, so an evicted device could otherwise re-file a grant the account signed under its own key and receive every later re-seal. A share whose only grants a now-bounded device filed lapses until the owner shares it again.
+* Applying the op stores nothing beside it. `Engine::stream_shares` folds the op log into one share per recipient: the latest grant, by envelope stamp, that names a Person, decodes as a viewer grant, verifies under an identity on the account's chain for the op's `recipient_id_d_pub`, and comes from a sender whose reads are not bounded. The signature covers the key the grant is sealed to, so a device that re-files a grant the account signed beside its own key files one that verifies under nobody, and no re-seal ever carries that key forward. The bound on the sender holds whoever signed the grant, the head included: an evicted device may hold a retired identity's `ID_S_priv`, and can replay an older grant of the head's under a later stamp. A share whose only grants a now-bounded device filed lapses until the owner shares it again.
 * Every Stream-key rotation re-seals its new epoch to the Stream's shares through `reseal_share_grants`, beside the account's own key envelopes (§Revoking access, step 2).
 
 **Not built:**
@@ -63,12 +63,14 @@ There is no `admin` and no `commenter` role. Granting and revoking is a privileg
                              ;   aad  = granter_identity_id || canonical_cbor(fields_1_through_5)
                              ;   plaintext = canonical_cbor({1: stream_key (32 B), 2: stream_metadata})
        7: bstr .size 64      ; identity_sig: Ed25519_sign(ID_S_priv,
-                             ;     "sunrise.share_grant.v1" || canonical_cbor(fields_1_through_6))
+                             ;     "sunrise.share_grant.v1" || canonical_cbor(fields_1_through_6)
+                             ;     || recipient_id_d_pub)
    }
    ```
+   `recipient_id_d_pub` is the 32-byte `ID_D_pub` `hpke_ct` is sealed to. It is under the signature and not on the wire: HPKE Base shows nobody but the recipient which key a ciphertext was sealed to, and the owner's account re-seals every later epoch to the key its grant names, so an unsigned key would let any device that writes the account's log redirect every later epoch to itself. The recipient verifies with its own `ID_D_pub`.
    `stream_metadata` is `{1: name (tstr), 2: color (tstr)}`, the Stream's name and its color's wire spelling (so the recipient sees a meaningful entry before a full sync). Each is at most 1024 bytes, and an encoded grant at most 8 KiB.
 
-   The op that carries it is the account's own record, sealed on the vault-meta stream like every control op: `{ "ShareGrant": { "person", "recipient_id_d_pub", "grant" } }`, where `grant` is the payload above in its canonical encoding, `person` the `per_` ref of the Person shared with, and `recipient_id_d_pub` the key every later re-seal is sealed to, which the grant itself does not carry ([`data-encryption-format.md`](./data-encryption-format.md) §Control op payloads). The recipient never reads this op; it receives the encoded grant in step 4.
+   The op that carries it is the account's own record, sealed on the vault-meta stream like every control op: `{ "ShareGrant": { "person", "recipient_id_d_pub", "grant" } }`, where `grant` is the payload above in its canonical encoding, `person` the `per_` ref of the Person shared with, and `recipient_id_d_pub` the key every later re-seal is sealed to, which the grant itself does not carry but its signature covers ([`data-encryption-format.md`](./data-encryption-format.md) §Control op payloads). The recipient never reads this op; it receives the encoded grant in step 4.
 
    **Why the granter is in the AAD.** HPKE Base authenticates no sender, and `identity_sig` alone does not stop a third identity re-signing the owner's `hpke_ct` as its own grant: the recipient would then hold the owner's Stream key under the impostor's name. `granter_identity_id` is `identity_id_from_pub` of the `ID_S_pub` the recipient verifies `identity_sig` under, so a ciphertext opens only beside the signature of the identity that sealed it. It is not a field: the recipient derives it from the key it already checked.
 4. **Owner publishes the `share_grant` op and registers a relay viewer grant** ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md)): `POST /api/v1/sync/grants` on the Stream, under a claim token of 32 random bytes and the grant's `expires_at`. The recipient receives the claim token beside the sealed grant, claims it from its own account, and from then on reads the owner's channel by naming the grant in its subscription. The relay learns which account reads the Stream; it never learns the recipient's identity, and never holds the key.

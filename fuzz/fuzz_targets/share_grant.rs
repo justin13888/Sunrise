@@ -48,7 +48,10 @@ fuzz_target!(|data: &[u8]| {
     );
 
     // 2.
-    if grant.verify(&sg::GRANTER_SIGNING_PUBLIC).is_ok() {
+    if grant
+        .verify(&sg::GRANTER_SIGNING_PUBLIC, &sg::RECIPIENT_DH_PUBLIC)
+        .is_ok()
+    {
         let fields = map_of(data);
         let frozen = map_of(&sg::ENCODED);
         for key in 1..=6 {
