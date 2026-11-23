@@ -16,7 +16,7 @@ Each line names what exists; the section it points to holds the rule, and the AD
 - Backfill of every held epoch to a newly certified device: §A device certified after an epoch was minted.
 - §Slow peers and out-of-order epochs, as written: no per-epoch barrier, a keyless op waits in `deferred_ops`.
 - §Revocation steps 1 to 3: the read bound, per replica ([ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md)), and the relay write bound under the three conditions of step 3.
-- Peer-side refusal of two control ops, `device_revoke` and a read-bounded sender's recipient claim: §Revocation ([ADR-0041](../11-adr/0041-peer-side-revocation-is-a-fold.md)).
+- Peer-side refusal of two control ops, `device_revoke` and a read-bounded sender's recipient claim: §Revocation ([ADR-0041](../11-adr/0041-peer-side-revocation-is-a-fold.md)). The share fold also counts no read-bounded sender's `share_grant` ([`sharing-with-others.md`](./sharing-with-others.md)).
 - Disclosure of an incomplete rotation (`CommandResult::unrotated_streams`) and of a relay-pending revocation at the moment of the act: §Revocation steps 2 and 3.
 - §Identity rotation, in full, with the cert admission rule ([ADR-0037](../11-adr/0037-identity-transition.md)), and carrying or retiring the recovery code ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)).
 - Sponsor-issued certs, so no paired device holds `ID_S_priv`: [`pairing-and-onboarding.md`](./pairing-and-onboarding.md) ([ADR-0032](../11-adr/0032-revocation-cannot-bound-cert-issuance.md) records the rejected countersignature).
@@ -68,10 +68,12 @@ time-less binary flag on relay metadata the relay already holds, not a content
 check, and it refuses the *device's credential* rather than ops signed by a
 superseded key. In the vault, the matching check is the receiving client's, and
 since [ADR-0041](../11-adr/0041-peer-side-revocation-is-a-fold.md) it exists for
-two **control** ops and for nothing else: `device_revoke`, and a read-bounded
+three **control** ops and for nothing else: `device_revoke`, a read-bounded
 sender's claim that a third device has been keyed
-([#82](https://github.com/justin13888/Sunrise/issues/82), closed). That is the
-scope; §Revocation below states both gates in full. A revoked device's *entity*
+([#82](https://github.com/justin13888/Sunrise/issues/82), closed), and a
+read-bounded sender's `share_grant`, which the share fold counts for nothing
+([`sharing-with-others.md`](./sharing-with-others.md)). That is the
+scope; §Revocation below states the first two gates in full. A revoked device's *entity*
 ops a replica still applies like any other, which is a decision rather than a gap
 ([ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md)). The relay
 cannot make either check for it: it does not open envelopes, and
@@ -203,7 +205,8 @@ devices compare to decide they belong together. It lives in
    unchanged; only the granting identity has new keys, so the share
    signature changes. A rotation that keeps the code re-mints no Stream and
    so re-seals nothing, and a share whose grant the retired identity signed
-   still counts, from a sender whose reads are not bounded.
+   still counts. Either way a grant counts only from a sender whose reads are
+   not bounded ([`sharing-with-others.md`](./sharing-with-others.md)).
 
 **A `DeviceCert` is admitted if it verifies under any identity on the chain,
 and confers membership only while the device's row names the chain's head**

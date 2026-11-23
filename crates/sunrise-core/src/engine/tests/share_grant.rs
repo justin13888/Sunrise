@@ -518,3 +518,199 @@ fn the_share_grant_op_round_trips_with_unknown_fields() {
     assert_eq!(op.inner_kind(), "share.grant");
     assert!(op.is_control());
 }
+
+/// Bound `device`'s reads on the replica `db` holds, as applying its
+/// revocation would.
+fn bound(db: &mut Db, device: &Engine) {
+    db.with_tx(|tx| {
+        tx.execute(
+            "INSERT INTO device_read_bounds (device_id, first_bound_at_ms) VALUES (?, 1)",
+            params![&device.keychain.device_id()[..]],
+        )
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+/// A `ShareGrant` op sharing `stream` at `epoch` with `to`, signed by
+/// `signer`.
+fn grant_op(
+    signer: &IdentitySigningKeyPair,
+    stream: EntityRef,
+    (epoch, key): (u32, &StreamKey),
+    to: &Recipient,
+) -> ShareGrantOpPayload {
+    let terms = ShareGrantTerms {
+        stream_id: *stream.bytes(),
+        epoch,
+        recipient_identity_id: to.identity_id(),
+        role: ShareRole::Viewer,
+        expires_at_ms: None,
+    };
+    let metadata = StreamMetadata {
+        name: "Work".into(),
+        color: "sky".into(),
+    };
+    let grant = seal_share_grant(
+        signer,
+        terms,
+        &to.dh.public_bytes(),
+        key,
+        &metadata,
+        &mut rand::rngs::OsRng,
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    ShareGrantOpPayload {
+        person: to.person().id,
+        recipient_id_d_pub: to.dh.public_bytes(),
+        grant,
+        unknown: Unknowns::new(),
+    }
+}
+
+/// The recipient identities `stream`'s shares name on `db`'s replica.
+fn recipients(e: &Engine, db: &Db, stream: EntityRef) -> Vec<[u8; 16]> {
+    let mut ids: Vec<[u8; 16]> = shares(e, db, stream)
+        .iter()
+        .map(|s| s.recipient_identity_id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn a_bounded_sender_cannot_refile_the_heads_grant_to_its_own_key() {
+    let (ea, mut dba, eb, mut dbb) = founders();
+    let stream = work_stream(&ea, &mut dba);
+    let ada = Recipient::new(0x31);
+    ea.share_stream(&mut dba, stream, &ada.person(), ada.dh.public_bytes(), None)
+        .unwrap();
+    deliver(&ea, &dba, &eb, &mut dbb, true);
+
+    // B re-files the grant A filed, which the head signed, naming a key B
+    // holds. The signature does not cover `recipient_id_d_pub`.
+    let filed = shares(&eb, &dbb, stream).remove(0);
+    let mallory = Recipient::new(0x32);
+    log_share_op(
+        &eb,
+        &mut dbb,
+        ShareGrantOpPayload {
+            person: filed.person,
+            recipient_id_d_pub: mallory.dh.public_bytes(),
+            grant: filed.grant.clone(),
+            unknown: Unknowns::new(),
+        },
+    );
+    deliver(&eb, &dbb, &ea, &mut dba, true);
+    assert_eq!(
+        shares(&ea, &dba, stream)[0].recipient_id_d_pub,
+        mallory.dh.public_bytes(),
+        "from an unbounded sender the re-file is the latest grant"
+    );
+
+    bound(&mut dba, &eb);
+    let listed = shares(&ea, &dba, stream);
+    assert_eq!(
+        listed,
+        vec![filed],
+        "a bounded sender's grant counts for nothing"
+    );
+
+    rotate(&ea, &mut dba, stream);
+    let (epoch, key) = live_epoch(&ea, &mut dba, stream);
+    let resealed = shares(&ea, &dba, stream);
+    assert_eq!(resealed[0].epoch, epoch);
+    assert_eq!(resealed[0].recipient_id_d_pub, ada.dh.public_bytes());
+    assert_eq!(
+        open(&ea, &resealed[0], &ada, T0),
+        key,
+        "the re-seal reaches the recipient A named"
+    );
+}
+
+#[test]
+fn a_retired_identitys_grant_counts_only_from_an_unbounded_sender() {
+    let (ea, mut dba, eb, mut dbb) = founders();
+    let stream = work_stream(&ea, &mut dba);
+    let (epoch, key) = live_epoch(&ea, &mut dba, stream);
+    let ada = Recipient::new(0x31);
+    let bob = Recipient::new(0x33);
+    // `[0x5a; 32]` is every test keychain's `ID_S_priv`.
+    let retiring = IdentitySigningKeyPair::from_secret_bytes(&[0x5a; 32]);
+    assert_eq!(retiring.public_bytes(), ea.keychain.identity_signing_pub());
+
+    // A files Ada's grant and B files Bob's, both under the identity in force.
+    log_share_op(
+        &ea,
+        &mut dba,
+        grant_op(&retiring, stream, (epoch, &key), &ada),
+    );
+    log_share_op(
+        &eb,
+        &mut dbb,
+        grant_op(&retiring, stream, (epoch, &key), &bob),
+    );
+    deliver(&eb, &dbb, &ea, &mut dba, true);
+    ea.apply(
+        &mut dba,
+        Command::RotateIdentity {
+            keep_recovery_code: true,
+        },
+    )
+    .unwrap();
+    assert_ne!(
+        ea.keychain.identity_signing_pub(),
+        retiring.public_bytes(),
+        "the identity that signed both grants is retired"
+    );
+
+    let mut both = vec![ada.identity_id(), bob.identity_id()];
+    both.sort_unstable();
+    assert_eq!(
+        recipients(&ea, &dba, stream),
+        both,
+        "a retired identity's grant counts from an unbounded sender"
+    );
+    bound(&mut dba, &eb);
+    assert_eq!(
+        recipients(&ea, &dba, stream),
+        vec![ada.identity_id()],
+        "and not from a bounded one"
+    );
+}
+
+#[test]
+fn retiring_the_recovery_code_reseals_each_share_under_the_successor() {
+    let (e, mut db) = founder([1u8; 32]);
+    let stream = work_stream(&e, &mut db);
+    let ada = Recipient::new(0x31);
+    e.share_stream(&mut db, stream, &ada.person(), ada.dh.public_bytes(), None)
+        .unwrap();
+    let before = shares(&e, &db, stream)[0].epoch;
+    let retired = e.keychain.identity_signing_pub();
+
+    e.apply(
+        &mut db,
+        Command::RotateIdentity {
+            keep_recovery_code: false,
+        },
+    )
+    .unwrap();
+    let successor = e.keychain.identity_signing_pub();
+    assert_ne!(successor, retired);
+
+    let (epoch, key) = live_epoch(&e, &mut db, stream);
+    assert!(epoch > before, "retiring the code re-mints the Stream");
+    let listed = shares(&e, &db, stream);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0].epoch, epoch,
+        "the fold takes the successor's re-seal as the share"
+    );
+    let grant = decode_share_grant(&listed[0].grant).unwrap();
+    assert!(grant.verify(&successor).is_ok(), "signed by the successor");
+    assert!(grant.verify(&retired).is_err());
+    assert_eq!(open(&e, &listed[0], &ada, T0), key);
+}
