@@ -238,6 +238,57 @@ fn a_zone_change_moves_the_planner_day_and_rewrites_nothing() {
     assert_eq!(stored(&db), before);
 }
 
+/// In the last second of the timestamp range the planner day ends at the
+/// range's last instant (#1313), so the reads built on it answer there: the
+/// planner day, a task's lateness and Today. In UTC, and at +14 where the
+/// calendar's last date has instants; with a sleep past midnight, which falls
+/// after the range.
+#[test]
+fn the_planner_day_reads_answer_in_the_last_second_of_the_range() {
+    for (zone, local, day) in [
+        (
+            "UTC",
+            date(9999, 12, 30).at(22, 0, 0, 500_000_000),
+            date(9999, 12, 30),
+        ),
+        (
+            "Pacific/Kiritimati",
+            date(9999, 12, 31).at(12, 0, 0, 500_000_000),
+            date(9999, 12, 31),
+        ),
+    ] {
+        let (e, now) = engine_at(ROOT, zone, local);
+        let mut db = db_root(ROOT);
+        sleep_at_one(&e, &mut db);
+        let id = task(&e, &mut db, "last second", None, None);
+        let QueryResult::DaySchedule(d) = e.query(&db, Query::DaySchedule { at_ms: now }).unwrap()
+        else {
+            panic!("not a planner day");
+        };
+        // The engine carries the bounds to the millisecond.
+        let last_ms = jiff::Timestamp::MAX.as_millisecond();
+        assert_eq!((d.date, d.end.as_millisecond()), (day, last_ms), "{zone}");
+        let QueryResult::Lateness(l) = e.query(&db, Query::Lateness { ids: vec![id] }).unwrap()
+        else {
+            panic!("not lateness");
+        };
+        assert_eq!(l.len(), 1, "{zone}");
+        let QueryResult::TodayView(rows) = e
+            .query(
+                &db,
+                Query::TodayView {
+                    now_ms: now,
+                    contexts: vec![],
+                },
+            )
+            .unwrap()
+        else {
+            panic!("not Today");
+        };
+        assert!(rows.iter().all(|r| r.task.id == id), "{zone}");
+    }
+}
+
 // ---- a DST day is still a day ----
 
 /// An engine in New York whose clock reads the instant `at`.

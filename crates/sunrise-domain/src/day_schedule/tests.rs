@@ -529,3 +529,70 @@ fn the_next_brief_is_todays_until_it_fires_then_tomorrows() {
         (date(2026, 3, 3), ts("2026-03-04T03:45Z"))
     );
 }
+
+/// At the end of the timestamp range the planner day saturates (#1313): the
+/// last day holding an instant ends at `Timestamp::MAX`, so its last
+/// millisecond is inside it, and every later date is empty at `MAX`. West
+/// of UTC, at UTC and at +14, where the calendar's last date `9999-12-31`
+/// has instants and its `tomorrow` does not exist.
+#[test]
+fn the_last_planner_day_ends_at_the_ranges_last_instant() {
+    let last_ms = Timestamp::MAX
+        .checked_sub(SignedDuration::from_nanos(999_999))
+        .unwrap();
+    for name in ["America/New_York", "UTC", "Pacific/Kiritimati"] {
+        let z = tz(name);
+        for s in [
+            DaySchedule::default(),
+            daily(w((7, 0), (23, 0))),
+            daily(w((10, 0), (2, 0))),
+        ] {
+            let d = planner_date(&s, Timestamp::MAX, &z).unwrap();
+            let (start, end) = day_bounds(&s, d, &z).unwrap();
+            assert_eq!(end, Timestamp::MAX, "{d} in {name}");
+            assert!(start <= last_ms, "{d} in {name}");
+            assert_eq!(planner_date(&s, last_ms, &z).unwrap(), d, "{name}");
+            let before = d.yesterday().unwrap();
+            assert_eq!(day_bounds(&s, before, &z).unwrap().1, start, "{name}");
+            plannable(&s, d, &z).unwrap();
+            wind_down_at(&s, d, &z, 900).unwrap();
+            if let Ok(after) = d.tomorrow() {
+                let empty = (Timestamp::MAX, Timestamp::MAX);
+                assert_eq!(day_bounds(&s, after, &z).unwrap(), empty, "{name}");
+                assert_eq!(plannable(&s, after, &z).unwrap(), None, "{name}");
+            }
+        }
+    }
+    assert_eq!(
+        planner_date(
+            &DaySchedule::default(),
+            Timestamp::MAX,
+            &tz("Pacific/Kiritimati")
+        )
+        .unwrap(),
+        date(9999, 12, 31)
+    );
+}
+
+/// `next_wind_down` walks to the next planner date, so at the range's end,
+/// once the last dates' wind-downs are behind `now`, it has none to step to
+/// and refuses with `OutOfCalendar` rather than answering `None`.
+#[test]
+fn next_wind_down_refuses_at_the_ranges_end() {
+    let s = daily(w((7, 0), (23, 0)));
+    let z = tz("UTC");
+    let now = ts("9999-12-30T22:00:00.5Z");
+    let r = next_wind_down(&s, now, &z, 3600);
+    assert!(matches!(r, Err(OutOfCalendar(_))), "{r:?}");
+}
+
+/// The start of the range still refuses: a planner day there is
+/// `OutOfCalendar`, not saturated.
+#[test]
+fn the_first_dates_are_out_of_calendar() {
+    let s = DaySchedule::default();
+    assert!(matches!(
+        day_bounds(&s, Date::MIN, &tz("UTC")),
+        Err(OutOfCalendar(_))
+    ));
+}
