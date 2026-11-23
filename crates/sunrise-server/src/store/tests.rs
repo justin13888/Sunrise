@@ -303,6 +303,10 @@ fn open_composes_each_tenants_ddl_in_dependency_order() {
             "identity_chains",
             "retired_recovery_blobs",
             "retired_recovery_blobs_by_account",
+            // migration 0010 — the relay viewer grants
+            "viewer_grants",
+            "viewer_grants_by_owner",
+            "viewer_grants_by_recipient",
         ],
         "the DDL `open` composes, in the order it ran"
     );

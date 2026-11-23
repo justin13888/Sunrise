@@ -13,6 +13,7 @@ use crate::store::{
     KeyBundlePinned, MetadataError, MetadataStore, NewDevice, NewTombstone, PinnedIdentityChain,
     PinnedKeyBundle, PinnedSnapshot, Reinstatement, RetiredRecoveryBlob, SignedBy, StoreStats,
 };
+use crate::store::{GrantCreated, ViewerGrant};
 
 #[async_trait::async_trait]
 impl MetadataStore for PgStore {
@@ -267,6 +268,38 @@ impl MetadataStore for PgStore {
         account_id: &str,
     ) -> Result<Option<PinnedKeyBundle>, MetadataError> {
         Self::pinned_key_bundle(self, account_id).await
+    }
+    async fn create_viewer_grant(
+        &self,
+        grant: &ViewerGrant,
+        claim_h: &[u8; 32],
+        now_ms: u64,
+    ) -> Result<GrantCreated, MetadataError> {
+        Self::create_viewer_grant(self, grant, claim_h, now_ms).await
+    }
+    async fn claim_viewer_grant(
+        &self,
+        claim_h: &[u8; 32],
+        account_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<ViewerGrant>, MetadataError> {
+        Self::claim_viewer_grant(self, claim_h, account_id, now_ms).await
+    }
+    async fn viewer_grant(
+        &self,
+        grant_id: &[u8; 16],
+    ) -> Result<Option<ViewerGrant>, MetadataError> {
+        Self::viewer_grant(self, grant_id).await
+    }
+    async fn viewer_grants(&self, account_id: &str) -> Result<Vec<ViewerGrant>, MetadataError> {
+        Self::viewer_grants(self, account_id).await
+    }
+    async fn withdraw_viewer_grant(
+        &self,
+        grant_id: &[u8; 16],
+        account_id: &str,
+    ) -> Result<bool, MetadataError> {
+        Self::withdraw_viewer_grant(self, grant_id, account_id).await
     }
     async fn collectable_blobs(
         &self,

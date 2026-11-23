@@ -666,26 +666,48 @@ The client is `sunrise_sync::Transport::identity_chain_latest` and
 `crates/sunrise-core/src/identity_chain_sync.rs`; a recovery reads the record
 from `getRecoveryBlob` instead.
 
-### Sharing — NOT IMPLEMENTED
+### Viewer grants (sharing, the relay half)
 
-No `api/shares.rs` exists, no `shares` table is in `store/`'s schema, and
-`/api/v1/shares/*` is not mounted. Sharing is blocked upstream of the API:
-[ADR-0024](../11-adr/0024-key-hierarchy.md) records that under the implemented
-derived-key model there is no key unit smaller than the whole vault to grant,
-so the `share_envelope` this section posts has nothing to carry until that ADR
-lands.
+How a second account reads one of an owner's Streams
+([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md)).
+The grant is the relay's routing record and nothing more: the Stream key
+reaches the recipient HPKE-sealed to its identity, beside the claim token, and
+the relay holds neither.
 
-| Method | Path | Body | Returns | Status |
-|---|---|---|---|---|
-| POST | `/api/v1/shares` | `{ stream_id, recipient_idn, share_envelope }` | `{ share_id }` | **NOT IMPLEMENTED** |
-| DELETE | `/api/v1/shares/<share_id>` | — | 204 | **NOT IMPLEMENTED** |
-| GET | `/api/v1/shares/incoming` | — | `[{ share_id, granter_idn, share_envelope, created_at }]` | **NOT IMPLEMENTED** |
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | `/api/v1/sync/grants` | `{ stream_id, claim, expires_at_ms? }` | `201 { grant_id, stream_id, expires_at_ms?, created_ms }` |
+| POST | `/api/v1/sync/grants/claim` | `{ claim }` | `200 { grant_id, stream_id, expires_at_ms?, created_ms, claimed_ms }`, or `404 RELAY_GRANT_REVOKED` |
+| GET | `/api/v1/sync/grants` | — | `200 { owned: [grant…], held: [grant…] }` |
+| DELETE | `/api/v1/sync/grants/{grant_id}` | — | `204`, or `404 RELAY_GRANT_REVOKED` |
 
-`POST /api/v1/shares` is idempotent on `(stream_id, recipient_idn)`:
-- If a `pending` or `accepted` grant already exists, return `200 OK` with the existing `share_id`.
-- If only `revoked` or `declined` grants exist, create a new grant and return `201 Created`.
+- `claim` is 32 random bytes the owner's device draws, as 64 lowercase hex
+  characters. The relay stores only its BLAKE3 under
+  `sunrise.relay.viewer_grant.claim.v1`. The first account other than the
+  owner to present it is bound as the recipient and answered again on a later
+  claim; the owner, any other account, an unknown token and an expired grant
+  all get the same `404`.
+- Registering the same token again for the same Stream and expiry answers the
+  grant it made (`201`); a token another grant holds is `409`, and so is an
+  owner already holding 256 grants that have not expired. Registering first
+  deletes the owner's expired grants.
+- `DELETE` is the owner withdrawing or the recipient declining. A third account
+  gets `404`.
+- A session reads the Stream by naming the grant in its subscription:
+  `POST /api/v1/sync/subscribe` with `{ stream_id, grant, cursors }`. The grant
+  must be claimed by the caller's account, name that Stream, and not have
+  expired, or the subscribe is `403 RELAY_GRANT_REVOKED`; `GET /sync/events`
+  checks again on open and on every `device_recheck_ms` tick, and closes the
+  stream with `RELAY_GRANT_REVOKED` once the grant is gone. Publishing is
+  unchanged and always lands in the caller's own channel, so a viewer cannot
+  write.
 
-The `share_envelope` is opaque to the server.
+Account-level rate-limit group. Implemented in `api/sync/grants.rs`, over
+`store/viewer_grants.rs` (relay migration 0010, Postgres 0004). No client
+drives it yet ([#1320](https://github.com/justin13888/Sunrise/issues/1320)).
+
+The `/api/v1/shares/*` routes earlier revisions of this page specified were
+never built; ADR-0074 replaces them.
 
 ### Pairing rendezvous
 
@@ -861,7 +883,7 @@ refills continuously.
 | `probe` | `GET /api/v1/health`, `GET /metrics` (loopback bind only) | none | 120 / min (`probe_per_min`) |
 | `meta` | `GET /api/v1/meta` | none | 60 / min (`meta_per_min`) |
 | `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
-| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `PUT /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/by-vault-id/{vault_device_id}/reinstate`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
+| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `PUT /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/by-vault-id/{vault_device_id}/reinstate`, `POST /api/v1/devices/push-tokens`, `POST /api/v1/sync/grants`, `POST /api/v1/sync/grants/claim`, `GET /api/v1/sync/grants`, `DELETE /api/v1/sync/grants/{grant_id}` | bearer+sig | 60 / min (`account_per_min`) |
 | `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}`, `GET /api/v1/snapshots/{stream_id}`, `PUT /api/v1/snapshots/{stream_id}`, `GET /api/v1/accounts/me/key_bundle`, `PUT /api/v1/accounts/me/key_bundle`, `GET /api/v1/accounts/me/identity_chain`, `PUT /api/v1/accounts/me/identity_chain` | bearer+sig | 600 / min (`blob_per_min`) |
 | `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events`; the pairing rendezvous's `POST /api/v1/pairing/send`, `POST /api/v1/pairing/receive`, `POST /api/v1/pairing/abort`, `POST /api/v1/pairing/resolve` | bearer+sig (+session); pairing bearer only | 600 / min (`sync_per_min`) |
 
@@ -959,7 +981,7 @@ that have not been built.
 | `/api/v1/blobs/*` | yes (S3-backed) | yes (S3-backed) | **yes — local-disk-backed** |
 | `/api/v1/snapshots/*` | yes | yes | **yes — built; the record is a local-disk blob** |
 | `/api/v1/accounts/me/key_bundle` | yes | yes | **yes — built; the bundle is a local-disk blob** |
-| `/api/v1/shares/*` | yes | yes | **no route** |
+| `/api/v1/sync/grants/*` (viewer grants) | yes | yes | **yes — built ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md))** |
 | `/api/v1/pairing/*` | yes | yes | **yes — built, in memory** |
 | `/api/v1/meta`, `/api/v1/health` | yes | yes | **yes — built** |
 | `/metrics` (router root, not under `/api/v1`) | yes | yes | **yes — built, unauthenticated** |

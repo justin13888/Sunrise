@@ -61,6 +61,7 @@ mod pragmas;
 pub(crate) mod recovery;
 mod snapshots;
 mod tx;
+mod viewer_grants;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -88,6 +89,7 @@ pub use recovery::{
 };
 pub use snapshots::PinnedSnapshot;
 pub use tx::{metered, StoreTime};
+pub use viewer_grants::{GrantCreated, ViewerGrant, MAX_GRANTS_PER_OWNER};
 
 /// The main database file plus its write-ahead log, in bytes.
 ///

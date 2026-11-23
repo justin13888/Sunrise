@@ -12,11 +12,13 @@ use super::{
     KeyBundlePinned, MetadataError, MetadataStore, NewDevice, NewTombstone, PinnedIdentityChain,
     PinnedKeyBundle, PinnedSnapshot, Reinstatement, RetiredRecoveryBlob, SignedBy, StoreStats,
 };
+use super::{GrantCreated, ViewerGrant};
 use crate::account_ns::account_key;
 use crate::auth::Subject;
 use crate::relay::{FrameHead, StreamKey};
 use crate::relay_log::{Appended, DurableCaps, Replay};
 
+mod grants;
 mod pins;
 mod reinstatement;
 
@@ -227,6 +229,31 @@ impl MetadataStore for Unreachable {
     async fn pinned_key_bundle(&self, _: &str) -> Result<Option<PinnedKeyBundle>, MetadataError> {
         Err(down())
     }
+    async fn create_viewer_grant(
+        &self,
+        _: &ViewerGrant,
+        _: &[u8; 32],
+        _: u64,
+    ) -> Result<GrantCreated, MetadataError> {
+        Err(down())
+    }
+    async fn claim_viewer_grant(
+        &self,
+        _: &[u8; 32],
+        _: &str,
+        _: u64,
+    ) -> Result<Option<ViewerGrant>, MetadataError> {
+        Err(down())
+    }
+    async fn viewer_grant(&self, _: &[u8; 16]) -> Result<Option<ViewerGrant>, MetadataError> {
+        Err(down())
+    }
+    async fn viewer_grants(&self, _: &str) -> Result<Vec<ViewerGrant>, MetadataError> {
+        Err(down())
+    }
+    async fn withdraw_viewer_grant(&self, _: &[u8; 16], _: &str) -> Result<bool, MetadataError> {
+        Err(down())
+    }
     async fn collectable_blobs(
         &self,
         _: u64,
@@ -330,6 +357,10 @@ pub(crate) async fn run(store: &dyn MetadataStore) {
     pins::a_key_bundle_goes_with_its_account(store).await;
     pins::one_identity_chain_is_pinned_per_account(store).await;
     pins::a_replaced_recovery_blob_leaves_a_bounded_check(store).await;
+    grants::a_grant_is_claimed_once_by_another_account(store).await;
+    grants::a_grant_is_listed_and_withdrawn_by_either_party(store).await;
+    grants::expired_grants_do_not_count_toward_the_cap(store).await;
+    grants::a_grant_goes_with_either_account(store).await;
     erasure_is_whole_and_touches_no_other_account(store).await;
     store
         .ping(Duration::from_secs(2))

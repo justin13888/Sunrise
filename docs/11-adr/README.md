@@ -91,6 +91,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0071 | [Sunrise reads and writes external calendars: series in the vault, edits as synced intents, and no lease](./0071-calendar-read-write-through-synced-intents.md) | accepted (amends 0049 decisions 1 and 4, `non-goals.md`, and the accepted pages that restated them, listed in its header) |
 | 0072 | [Delight is functional motion on the shared motion tokens; a boredom screen and stress-relief tools are non-goals](./0072-delight-is-functional-motion-on-the-shared-tokens.md) | accepted (amends `non-goals.md` and the shared UI system's §What is not shared; depends on 0029; answers #13) |
 | 0073 | [A context shift is a synced `Shift` entity, and each routine's `shift_policy` is evaluated at generation time, never by rewriting history](./0073-context-shift.md) | accepted (amends `core-workflows.md` §5; depends on 0044, 0045, 0051 and 0066; answers #352; the domain rules are built, the entity and its surfaces are not) |
+| 0074 | [A viewer reads a shared Stream through a grant the relay routes, and the relay is never the confidentiality boundary](./0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md) | accepted (extends 0020 §(a) items 4 and 5 with the sharing threat model; amends `trust-and-server-role.md` and `sharing-with-others.md` §Revoking access; built by #1319) |
 
 ## When to write a new ADR
 

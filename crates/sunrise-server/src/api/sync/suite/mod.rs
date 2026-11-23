@@ -25,6 +25,7 @@ mod dedup;
 mod device_binding;
 mod extension;
 mod fanout;
+mod grants;
 mod handshake;
 mod invariants;
 mod push_wake;

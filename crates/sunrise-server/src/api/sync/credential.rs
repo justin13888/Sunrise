@@ -191,6 +191,7 @@ pub async fn session(
         streams: Vec::new(),
         subscribe_unserved: false,
         seen_ms: now_ms,
+        shared: Vec::new(),
     };
 
     let session_id = state

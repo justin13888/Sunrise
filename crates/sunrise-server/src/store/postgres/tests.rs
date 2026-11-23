@@ -79,6 +79,11 @@ fn session(deadline_ms: Option<u64>, seen_ms: u64) -> Session {
         }],
         subscribe_unserved: false,
         seen_ms,
+        shared: vec![crate::sync_session::SharedStream {
+            stream_id: [0x22; 16],
+            grant_id: [0x33; 16],
+            owner: [0x44; 16],
+        }],
     }
 }
 
@@ -90,8 +95,8 @@ async fn the_postgres_store_passes_the_metadata_conformance_suite() {
 }
 
 /// The session conformance suite, and a session whose every field survives
-/// the row: the streams, the cursors and a connection id with its top bit
-/// set.
+/// the row: the streams, the cursors, the streams read through a grant, and a
+/// connection id with its top bit set.
 #[tokio::test]
 async fn postgres_sessions_pass_the_session_conformance_suite() {
     let Some(url) = url() else { return };
@@ -106,6 +111,10 @@ async fn postgres_sessions_pass_the_session_conformance_suite() {
     let read = sessions.get("ses_x", 3).await.unwrap().unwrap();
     assert_eq!(read.conn, stored.conn);
     assert_eq!(read.streams, stored.streams);
+    assert_eq!(
+        read.shared, stored.shared,
+        "the streams read through a grant"
+    );
     assert_eq!(read.device_id, stored.device_id);
     assert_eq!(read.subject, stored.subject);
 }

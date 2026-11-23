@@ -53,6 +53,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "pairing_rendezvous",
         sql: PAIRING_RENDEZVOUS,
     },
+    Migration {
+        id: 4,
+        name: "viewer_grants",
+        sql: VIEWER_GRANTS,
+    },
 ];
 
 /// The version this binary migrates to, and the newest it will open.
@@ -280,6 +285,23 @@ CREATE TABLE pairing_attempts (
 CREATE INDEX pairing_attempts_by_idle ON pairing_attempts (idle_at_ms);
 ";
 
+/// 0004: the relay viewer grants, the counterpart of SQLite's migration 10
+/// (ADR-0074). Cascades from both account rows.
+const VIEWER_GRANTS: &str = r"
+CREATE TABLE viewer_grants (
+    grant_id      BYTEA PRIMARY KEY,
+    owner_id      TEXT NOT NULL REFERENCES accounts (account_id) ON DELETE CASCADE,
+    stream_id     BYTEA NOT NULL,
+    claim_h       BYTEA NOT NULL UNIQUE,
+    recipient_id  TEXT REFERENCES accounts (account_id) ON DELETE CASCADE,
+    expires_at_ms BIGINT,
+    created_ms    BIGINT NOT NULL,
+    claimed_ms    BIGINT
+);
+CREATE INDEX viewer_grants_by_owner ON viewer_grants (owner_id);
+CREATE INDEX viewer_grants_by_recipient ON viewer_grants (recipient_id);
+";
+
 /// The table the version lives in. Created by the runner, outside the
 /// history, because the runner reads it before any step.
 const VERSION_TABLE: &str = r"
@@ -366,7 +388,7 @@ pub(super) async fn stamp(client: &Client, v: i32) {
 /// list has its counterpart and this number moves with it: nothing else would
 /// notice the Postgres schema falling behind.
 #[cfg(test)]
-const SQLITE_COVERED: u32 = 9;
+const SQLITE_COVERED: u32 = 10;
 
 #[cfg(test)]
 mod tests {

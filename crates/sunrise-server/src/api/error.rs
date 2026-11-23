@@ -97,6 +97,15 @@ pub mod codes {
     /// Mirrors [`sunrise_error::ErrorCode::RelayPairSessionGone`] (registry id
     /// 602).
     pub const RELAY_PAIR_SESSION_GONE: &str = "RELAY_PAIR_SESSION_GONE";
+    /// The viewer grant a request named is not in force for the caller: it
+    /// was withdrawn, has expired, is claimed by another account, or never
+    /// existed, which the relay does not tell apart (ADR-0074). Also the code
+    /// a sync stream reading through the grant closes with. Not retryable;
+    /// the owner grants again.
+    ///
+    /// Mirrors [`sunrise_error::ErrorCode::RelayGrantRevoked`] (registry id
+    /// 600).
+    pub const RELAY_GRANT_REVOKED: &str = "RELAY_GRANT_REVOKED";
     /// `POST /accounts` offered a recovery blob for an account that already
     /// holds a different one. The column is write-once; re-sending the same
     /// bytes still succeeds.
