@@ -29,15 +29,17 @@ struct SearchView: View {
             suggestions
             resultCount
 
-            TaskRows(
-                model: model.results,
-                selection: selection,
-                sheets: sheets,
-                preferences: preferences,
-                escapes: escapes,
-                focus: focus
-            )
-            .environment(\.searchHighlights, model.taskHighlights)
+            if model.showsTaskRows {
+                TaskRows(
+                    model: model.results,
+                    selection: selection,
+                    sheets: sheets,
+                    preferences: preferences,
+                    escapes: escapes,
+                    focus: focus
+                )
+                .environment(\.searchHighlights, model.taskHighlights)
+            }
 
             otherGroups
         }
@@ -184,7 +186,9 @@ struct SearchView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
             }
-            .frame(maxHeight: 280)
+            // Beneath task rows the groups are a band; with no task rows
+            // they are the whole result.
+            .frame(maxHeight: model.showsTaskRows ? 280 : .infinity)
             .accessibilityIdentifier("search.groups")
         }
     }
@@ -236,22 +240,16 @@ private struct SearchGroupSection: View {
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
             ForEach(group.hits, id: \.entity) { hit in
-                Button {
-                    open(SearchModel.opening(hit, in: group.kind))
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(hit.title.attributed)
-                        if let snippet = hit.snippet {
-                            Text(snippet.attributed)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
+                if let opening = SearchModel.opening(hit, in: group.kind) {
+                    Button {
+                        open(opening)
+                    } label: {
+                        label(hit)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
+                    .buttonStyle(.plain)
+                } else {
+                    label(hit)
                 }
-                .buttonStyle(.plain)
             }
             if SearchModel.isTruncated(group) {
                 Button(L10n.Search.showAll(count: Int(group.total)), action: showAll)
@@ -259,5 +257,19 @@ private struct SearchGroupSection: View {
                     .font(.caption)
             }
         }
+    }
+
+    private func label(_ hit: SearchHitItem) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(hit.title.attributed)
+            if let snippet = hit.snippet {
+                Text(snippet.attributed)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.rect)
     }
 }

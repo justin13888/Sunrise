@@ -345,9 +345,12 @@ The empty state names the operators most likely to help ("Try `#stream` or
   from `Query::SearchGrouped` in the fixed order, titles and snippets
   highlighted, with "Show all N" appending `kind:` and lifting the limit to
   500. Both queries run without the typing prefix, so the rows and the
-  groups answer the same query. Activating a stream or a context opens its
-  list; any other hit is revealed where it lives, as a `sunrise://entity/`
-  link is. The field autocompletes, with a localized description per
+  groups answer the same query. When no task matches and another group
+  has hits, the task rows and their empty state give way to the groups.
+  Activating a stream or a context opens its list; a saved view is listed
+  but inert, because the Apple clients do not read the vault's saved views
+  and so have no recall to hand it to; any other hit is revealed where it
+  lives, as a `sunrise://entity/` link is. The field autocompletes, with a localized description per
   suggestion; Tab takes the first. ⌘S saves the canonical text as a saved
   search in the client's saved-view store (`views.toml`, which the Views
   menu reads and the one-time import carries into the `SavedView` entity),

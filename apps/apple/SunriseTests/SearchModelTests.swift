@@ -140,6 +140,37 @@ struct SearchModelTests {
         await vault.bridge.shutdown()
     }
 
+    /// The Tasks group's "Nothing matches" never sits above another group's
+    /// hits: with no task found and another kind found, the task rows give
+    /// way, and with nothing found at all they keep the empty state.
+    @Test
+    func theTaskEmptyStateGivesWayToOtherGroups() async throws {
+        let vault = try await TestVault()
+        await BrowseModel(bridge: vault.bridge).createStream(name: "Passport office", color: nil)
+        try await seed(vault, ["Renew passport"])
+        let model = SearchModel(bridge: vault.bridge, debounce: .milliseconds(1))
+
+        model.text = "passport"
+        try await settled(model)
+        #expect(model.showsTaskRows, "tasks and a stream: both are drawn")
+
+        model.text = "office"
+        try await settled(model)
+        #expect(model.results.tasks.isEmpty)
+        #expect(model.otherGroups.map(\.kind) == [.stream])
+        #expect(!model.showsTaskRows, "no task, a stream: the empty state gives way")
+
+        model.showAll(.stream)
+        try await settled(model)
+        #expect(!model.showsTaskRows, "Show all's kind: finds no task and shows no empty state")
+
+        model.text = "nonesuch"
+        try await settled(model)
+        #expect(model.otherGroups.isEmpty)
+        #expect(model.showsTaskRows, "nothing found anywhere: the empty state says so")
+        await vault.bridge.shutdown()
+    }
+
     /// ⌘S saves the canonical text, not the keystrokes, and recalling the
     /// saved search hands that query back to the field.
     @Test
@@ -186,6 +217,62 @@ struct SearchModelTests {
 
         model.text = "office"
         #expect(model.expandedKind == nil)
+        await vault.bridge.shutdown()
+    }
+
+    /// "Show all" asks the core for the group past its limit of 10: the
+    /// eleventh and twelfth streams arrive, under `expandedLimit` (500).
+    @Test
+    func showAllListsAGroupPastItsLimit() async throws {
+        let vault = try await TestVault()
+        let browse = BrowseModel(bridge: vault.bridge)
+        for index in 1...12 {
+            await browse.createStream(name: "Office \(index)", color: nil)
+        }
+        let model = SearchModel(bridge: vault.bridge, debounce: .milliseconds(1))
+
+        model.text = "office"
+        try await settled(model)
+        let limited = try #require(model.otherGroups.first { $0.kind == .stream })
+        #expect(limited.hits.count == 10)
+        #expect(limited.total == 12)
+        #expect(SearchModel.isTruncated(limited))
+
+        model.showAll(.stream)
+        try await settled(model)
+        let expanded = try #require(model.otherGroups.first { $0.kind == .stream })
+        #expect(expanded.hits.count == 12)
+        #expect(!SearchModel.isTruncated(expanded))
+        #expect(SearchModel.expandedLimit == 500)
+        await vault.bridge.shutdown()
+    }
+
+    /// While the view follows the change stream, a write that adds a hit
+    /// re-asks the groups, not only the task rows.
+    ///
+    /// The second write is made only once the model provably follows, as in
+    /// `TaskListModelTests.aWriteFromElsewhereRepaintsTheList`: the first
+    /// stream is written before `follow()` starts, so it can appear only
+    /// through the prime batch of `follow()`'s own subscription, and after
+    /// that the second can arrive by its notification alone.
+    @Test
+    func followingRefetchesTheGroupsOnAChange() async throws {
+        let vault = try await TestVault()
+        let browse = BrowseModel(bridge: vault.bridge)
+        let model = SearchModel(bridge: vault.bridge, debounce: .milliseconds(1))
+        model.text = "office"
+        try await settled(model)
+        #expect(model.otherGroups.isEmpty)
+
+        await browse.createStream(name: "Passport office", color: nil)
+        let following = Task { await model.follow() }
+        defer { following.cancel() }
+        try await until { model.otherGroups.first?.total == 1 }
+
+        await browse.createStream(name: "Office annex", color: nil)
+        try await until { model.otherGroups.first?.total == 2 }
+        let titles = model.otherGroups.first?.hits.map(\.title.text).sorted()
+        #expect(titles == ["Office annex", "Passport office"])
         await vault.bridge.shutdown()
     }
 
@@ -248,7 +335,11 @@ struct SearchModelTests {
         await vault.bridge.shutdown()
     }
 
-    // MARK: - Pure helpers
+}
+
+// MARK: - Pure helpers
+
+extension SearchModelTests {
 
     /// Ranges are Unicode-scalar offsets: a CJK title and one with an
     /// emoji are cut where the core said, and a hostile range is skipped
@@ -298,6 +389,10 @@ struct SearchModelTests {
             == .reveal("tsk_1"))
         #expect(SearchModel.opening(hit("blk_1", opens: "blk_1", "Deep work"), in: .block)
             == .reveal("blk_1"))
+        #expect(
+            SearchModel.opening(hit("svw_1", opens: "svw_1", "Renewals"), in: .view) == nil,
+            "a vault saved view has no recall here, so it opens nothing rather than Today"
+        )
     }
 
     // MARK: - Helpers

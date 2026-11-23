@@ -55,7 +55,12 @@ final class SearchModel {
     /// still holds its `kind:` operator. Lifts the per-group limit.
     private(set) var expandedKind: SearchKindItem?
 
-    /// How many hits "Show all" lists.
+    /// How many hits "Show all" lists: 500, the ceiling the core already
+    /// sets on a search's widest scan (a short CJK term's `LIKE` scan stops
+    /// at its first 500 matches, `docs/08-features/search.md` §Two indexes), so
+    /// "Show all" lists everything any path of the query can find. A bound
+    /// rather than none, because the whole group crosses the FFI in one
+    /// answer and is redrawn on every change batch.
     static let expandedLimit: UInt32 = 500
 
     private let bridge: CoreBridge
@@ -89,6 +94,14 @@ final class SearchModel {
     /// The groups other than Tasks, whose rows ``results`` draws.
     var otherGroups: [SearchGroupItem] {
         currentReport?.groups.filter { $0.kind != .task } ?? []
+    }
+
+    /// Whether the Tasks group is drawn. It gives way when it has no task
+    /// and no error to show and another group has hits, so "Nothing
+    /// matches" never sits above the hits it denies, as it would after every
+    /// "Show all", whose `kind:` operator finds no task.
+    var showsTaskRows: Bool {
+        !(results.showsNothing && results.errorMessage == nil && !otherGroups.isEmpty)
     }
 
     /// The Tasks group's highlighted titles, by task.
@@ -229,13 +242,18 @@ extension SearchModel {
         }
     }
 
-    /// What activating `hit` in a group of `kind` opens. A stream or a
-    /// context is a list of its own; everything else is shown where it
-    /// lives, through the same reveal a `sunrise://entity/` link takes.
-    static func opening(_ hit: SearchHitItem, in kind: SearchKindItem) -> SearchOpening {
+    /// What activating `hit` in a group of `kind` opens, or `nil` when it
+    /// opens nothing. A stream or a context is a list of its own; a saved
+    /// view is listed but inert, because the vault's saved views are not read
+    /// by this client (its Views menu is the device's `views.toml`), so there
+    /// is no recall to hand it to and a reveal would land on Today with
+    /// nothing open. Everything else is shown where it lives, through the
+    /// same reveal a `sunrise://entity/` link takes.
+    static func opening(_ hit: SearchHitItem, in kind: SearchKindItem) -> SearchOpening? {
         switch kind {
         case .stream: .destination(.list(.stream(id: hit.opens, name: hit.title.text)))
         case .context: .destination(.list(.context(id: hit.opens, name: hit.title.text)))
+        case .view: nil
         default: .reveal(hit.opens)
         }
     }
