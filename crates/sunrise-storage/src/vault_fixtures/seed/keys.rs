@@ -14,6 +14,7 @@ use super::{SeedRow, ATTACHMENT, BLOB_ID, HLC_MS};
 const DEFERRED_OP: [u8; 16] = [0x0d; 16];
 const PARKED_OP: [u8; 16] = [0x0e; 16];
 const NEXT_IDENTITY: [u8; 16] = [0x2a; 16];
+const SHARE_RELAY_GRANT: [u8; 16] = [0x3f; 16];
 
 pub(super) const ROWS: &[SeedRow] = &[
     SeedRow {
@@ -130,6 +131,31 @@ pub(super) const ROWS: &[SeedRow] = &[
             ("attempts", I(1)),
             ("last_attempt_ms", I(194)),
             ("refused_at_ms", I(195)),
+        ],
+    },
+    SeedRow {
+        // 0056: a key an accepted share sealed, held under its granter.
+        table: "held_share_keys",
+        values: &[
+            ("granter_identity_id", B(&NEXT_IDENTITY)),
+            ("stream_id", B(&STREAM_BETA)),
+            ("epoch", I(3)),
+            ("wrapped", B(WRAPPED_STREAM_KEY)),
+            ("relay_grant_id", B(&SHARE_RELAY_GRANT)),
+            ("name", T(b"Shared garden")),
+            ("color", T(b"teal")),
+            ("expires_at_ms", I(196)),
+            ("accepted_at_ms", I(197)),
+        ],
+    },
+    SeedRow {
+        // 0056: the relay grant this device registered for an outgoing share.
+        table: "share_relay_grants",
+        values: &[
+            ("stream_id", B(&STREAM_ALPHA)),
+            ("recipient_identity_id", B(&NEXT_IDENTITY)),
+            ("relay_grant_id", B(&SHARE_RELAY_GRANT)),
+            ("created_at_ms", I(198)),
         ],
     },
     SeedRow {

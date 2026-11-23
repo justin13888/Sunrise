@@ -198,6 +198,11 @@ pub(super) const TABLE_CLASSES: &[(&str, TableClass)] = {
         ("relay_reinstatement_intents", Source),
         ("vault_required_features", Source),
         ("device_features", Source),
+        // The keys accepted shares sealed to this account, and the relay
+        // grant ids this device registered for its own shares: no op
+        // carries either.
+        ("held_share_keys", Source),
+        ("share_relay_grants", Source),
         // Local-only state no op carries.
         ("device_preferences", Source),
         ("notes", Source),

@@ -627,3 +627,44 @@ fn a_v54_vault_gains_an_empty_reinstatement_queue_beside_its_revocation_queue() 
         .unwrap();
     assert_eq!((attempts, refused), (0, None));
 }
+
+/// Migration 0056 (#1335) over a real v55 vault: the held share keys and the
+/// outgoing shares' relay grant ids start empty, `stream_keys` keeps every
+/// row the fixture holds, and a held key at an epoch `stream_keys` also has
+/// for the same Stream id sits beside it rather than colliding with it.
+#[test]
+fn a_v55_vault_gains_empty_share_tables_beside_its_own_stream_keys() {
+    let (_dir, db) = open_migrated(&fixture_name(55));
+    assert_eq!(row_count(&db, "held_share_keys"), 0);
+    assert_eq!(row_count(&db, "share_relay_grants"), 0);
+    let own_keys = row_count(&db, "stream_keys");
+    assert!(own_keys > 0, "the fixture's own Stream keys survive");
+
+    let (stream_id, epoch, wrapped): (Vec<u8>, i64, Vec<u8>) = db
+        .conn()
+        .query_row(
+            "SELECT stream_id, epoch, wrapped FROM stream_keys LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO held_share_keys (granter_identity_id, stream_id, epoch, wrapped,
+                 relay_grant_id, name, color, expires_at_ms, accepted_at_ms)
+             VALUES (X'01', ?1, ?2, ?3, X'02', 'Garden', 'teal', NULL, 1)",
+            rusqlite::params![stream_id, epoch, wrapped],
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO share_relay_grants (stream_id, recipient_identity_id,
+                 relay_grant_id, created_at_ms)
+             VALUES (?1, X'03', X'04', 1)",
+            rusqlite::params![stream_id],
+        )
+        .unwrap();
+    assert_eq!(row_count(&db, "stream_keys"), own_keys);
+    assert_eq!(row_count(&db, "held_share_keys"), 1);
+    assert_eq!(row_count(&db, "share_relay_grants"), 1);
+}

@@ -679,7 +679,13 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// §5): `relay_reinstatement_intents`, the local queue that asks the relay to
 /// accept a device whose revocation this device withdrew. It starts empty; no
 /// row is rewritten and no projection moves.
-pub const STORAGE_V: u16 = 55;
+///
+/// `56` is migration `0056_share_keys_and_relay_grants.sql` (#1335):
+/// `held_share_keys`, the Stream keys accepted share grants sealed to this
+/// account, apart from `stream_keys`, and `share_relay_grants`, the relay
+/// viewer grant ids this device registered for its outgoing shares. Both
+/// start empty; no row is rewritten and no projection moves.
+pub const STORAGE_V: u16 = 56;
 
 #[cfg(test)]
 mod tests;
