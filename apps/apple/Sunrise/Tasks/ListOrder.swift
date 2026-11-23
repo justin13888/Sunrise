@@ -50,6 +50,28 @@ enum ListOrder {
         }
         return .moveTasks(ids: move.ids, after: move.after, before: move.before)
     }
+
+    /// The command for SwiftUI's `onMove(source, destination)` over `list`,
+    /// or `nil` when the move changes nothing.
+    ///
+    /// `destination` is an offset into `list` before the move: the rows land
+    /// immediately above the row at that offset, or at the bottom when it is
+    /// past the end. A row at the offset that is itself moving has no place
+    /// to be above, so the first unmoved row after it is the anchor instead,
+    /// which is where `Array.move(fromOffsets:toOffset:)` puts them too.
+    static func move(
+        from source: IndexSet,
+        to destination: Int,
+        in list: [TaskItem]
+    ) -> CoreCommand? {
+        let moved = source.filter(list.indices.contains).map { list[$0].id }
+        guard !moved.isEmpty else { return nil }
+        let staying = Set(moved)
+        let anchor = list.dropFirst(max(destination, 0)).first { !staying.contains($0.id) }
+        let drop: TaskDrop = anchor.map { .before(id: $0.id) } ?? .bottom
+        guard let move = planTaskMove(list: list, moved: moved, to: drop) else { return nil }
+        return .moveTasks(ids: move.ids, after: move.after, before: move.before)
+    }
 }
 
 /// The one-time import of the order this device kept for itself before a

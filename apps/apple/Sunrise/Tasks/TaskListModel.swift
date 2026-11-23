@@ -326,6 +326,20 @@ final class TaskListModel {
         return true
     }
 
+    /// **Drag-to-reorder** as a `List`'s own `onMove` reports it: the rows at
+    /// `source` land at `destination`, both offsets into ``tasks``. The same
+    /// `MoveTasks` write as ``reorder(_:before:)``, for iOS, where a row's
+    /// drop target never receives a drag another row of the same `List`
+    /// started (#1297). `false` when nothing was submitted.
+    @discardableResult
+    func move(from source: IndexSet, to destination: Int) async -> Bool {
+        guard kind.acceptsReordering,
+              let command = ListOrder.move(from: source, to: destination, in: tasks) else { return false }
+        let orderImport = orderImport
+        await runAll([command]) { orderImport.recordPlaced($0) }
+        return true
+    }
+
     /// Whether a row in this list can be dragged onto another to move it.
     var acceptsReordering: Bool { kind.acceptsReordering }
 
