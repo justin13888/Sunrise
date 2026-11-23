@@ -25,6 +25,24 @@ fn a_cipher_that_never_initialises_is_a_fatal_vault_error_with_its_detail() {
     assert_eq!(e.as_error_code(), ErrorCode::FatalInternal);
 }
 
+/// The bundled SQLite is built with its memory statistics off
+/// (`LIBSQLITE3_FLAGS` in `.cargo/config.toml`, #1279): with them on, every
+/// allocation takes one process-wide mutex.
+#[test]
+fn sqlite_is_built_without_memory_statistics() {
+    let db = Db::open_memory(&vault_key()).unwrap();
+    let mut stmt = db.conn().prepare("PRAGMA compile_options").unwrap();
+    let options: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        options.iter().any(|o| o == "DEFAULT_MEMSTATUS=0"),
+        "{options:?}"
+    );
+}
+
 #[test]
 fn open_in_memory_initializes_schema() {
     let db = Db::open_memory(&vault_key()).unwrap();

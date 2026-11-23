@@ -30,3 +30,14 @@
 
 [net]
 git-fetch-with-cli = true
+
+[env]
+# Compile flags for the SQLite that `libsqlite3-sys` bundles (SQLCipher), on
+# every build, tests and shipped binaries alike. `SQLITE_DEFAULT_MEMSTATUS=0`
+# turns off SQLite's memory statistics, which take one process-wide mutex on
+# every allocation and serialised the test threads on it (#1279). Nothing
+# reads them: no crate calls `sqlite3_memory_used`, `sqlite3_status` or a heap
+# limit, which are all it costs. SQLite lists it among its recommended
+# compile-time options. A builder that sets `LIBSQLITE3_FLAGS` itself keeps
+# its own value.
+LIBSQLITE3_FLAGS = "SQLITE_DEFAULT_MEMSTATUS=0"
