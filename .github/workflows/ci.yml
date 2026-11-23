@@ -144,7 +144,7 @@ jobs:
     #
     # Since #1117 this condition is no longer macOS-only: every slow job in
     # this file carries it (`rust-windows`, `kotlin-smoke`, `wasm-core`,
-    # `storage-fixtures`, `bun-test`, `web-build`, `openapi-current`,
+    # `storage-fixtures`, `bun-test`, `web-build`, `web-e2e`, `openapi-current`,
     # `deploy-test`, `tokens-current`, `fuzz-pr-plan`), and the `rust` job runs
     # its tests only outside a pull request. `master` is the development branch
     # and a release stabilises it, so a pull request gets the fast checks and
@@ -981,6 +981,93 @@ jobs:
         run: bun run --filter @sunrise/web build
       - name: The build default reaches the bundle
         run: grep -rqF 'https://relay.invalid' apps/web/dist/assets
+
+  # The web client in headless Chromium (#1257): the built page, the real
+  # `core.worker.ts`, the `sunrise-core-wasm` bundle and real OPFS together.
+  # `wasm-core` only lints the wasm build and `web-build` builds the page with
+  # no core in it; this is the one job that runs them as a user's browser
+  # does. `mise run web-e2e`, spelled out because no job here installs mise:
+  # the wasm build `web-wasm` runs, then the specs in `apps/web/e2e/`.
+  #
+  # Off the pull-request path with `wasm-core`, because the bundle is a cold
+  # Rust build. Nothing on a pull request depends on it, and without the
+  # bundle the specs skip and say why, so no pull-request check can fail on
+  # it. Not a required check.
+  web-e2e:
+    name: Web e2e (Chromium, wasm core, OPFS)
+    runs-on: ubuntu-latest
+    # No observation yet. `wasm-core`'s cold check-only build, plus the release
+    # build and `wasm-bindgen-cli` compiled from source, plus a Chromium
+    # download on a cold cache and a few seconds of specs.
+    timeout-minutes: 30
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - name: Add the wasm target to the pinned toolchain
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # Not `wasm-core`'s entry: that one holds a check build, this one a
+          # release build and the `wasm-bindgen-cli` under `target/tools/`.
+          shared-key: web-e2e
+          cache-directories: target/tools
+      - name: Build the web core bundle
+        # `mise run web-wasm`, with the CLI version read from `Cargo.lock` the
+        # way `release.yml` reads it: the CLI refuses a module built against
+        # any other `wasm-bindgen`.
+        env:
+          CC_wasm32_unknown_unknown: clang
+        run: |
+          cargo build -p sunrise-core-wasm --target wasm32-unknown-unknown --release
+          bindgen=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"$/\1/p;}' Cargo.lock)
+          [ -n "$bindgen" ] || { echo "::error::no wasm-bindgen version in Cargo.lock"; exit 1; }
+          cargo install --quiet --locked wasm-bindgen-cli --version "$bindgen" --root target/tools
+          target/tools/bin/wasm-bindgen --target web --no-typescript \
+            --out-dir apps/web/public/wasm \
+            target/wasm32-unknown-unknown/release/sunrise_core_wasm.wasm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: ./.github/actions/pinned-node
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
+      - name: Cache Playwright's browsers
+        id: playwright-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          # The Chromium revision is fixed by the exact `@playwright/test`
+          # version, which the lockfile pins.
+          key: ${{ runner.os }}-playwright-${{ hashFiles('bun.lock') }}
+      - name: Install Chromium and its system libraries
+        working-directory: apps/web
+        env:
+          BROWSERS_CACHED: ${{ steps.playwright-cache.outputs.cache-hit }}
+        run: |
+          if [ "$BROWSERS_CACHED" = true ]; then
+            bunx playwright install-deps chromium
+          else
+            bunx playwright install --with-deps chromium
+          fi
+      - name: Run the browser specs
+        working-directory: apps/web
+        run: bun run e2e
+      - name: Keep the traces of a failed spec
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: web-e2e-results
+          path: apps/web/node_modules/.cache/playwright-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   bench-regression:
     name: Bench regression (informational, ${{ matrix.platform }})
