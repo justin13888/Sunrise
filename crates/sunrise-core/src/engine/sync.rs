@@ -983,8 +983,8 @@ impl Engine {
                     now_ms,
                 )?;
                 // A rotation by a device without `ID_S_priv` reached no share
-                // recipient; a device that holds it re-seals the epoch to
-                // them now it has the key.
+                // recipient; a device that holds it re-seals the epoch to the
+                // shares its re-seal request names, now it has the key.
                 if learned {
                     self.backfill_share_grants(tx, &p.stream_id, now_ms)?;
                 }
@@ -1021,6 +1021,10 @@ impl Engine {
             }
             InnerOp::ShareRevoke(_) | InnerOp::ShareDecline(_) => {
                 self.apply_share_end(tx, sender)?;
+                Ok(Vec::new())
+            }
+            InnerOp::ShareResealRequest(p) => {
+                self.apply_share_reseal_request(tx, p, sender, now_ms)?;
                 Ok(Vec::new())
             }
             InnerOp::DeviceCertPublish(cert_cbor) => {

@@ -19,7 +19,8 @@ status: proposed
 > The relay viewer grant is built too
 > ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md)).
 > The `share_revoke` and `share_decline` op kinds end a share, and every
-> later re-seal leaves its recipient out
+> later re-seal leaves its recipient out; a device without `ID_S_priv`
+> asks a holder to re-seal its epoch by `share_reseal_request`
 > ([#1325](https://github.com/justin13888/Sunrise/issues/1325)). There is no
 > `api/shares.rs`, no `editor` role, and no client that offers, accepts or
 > reads a share.

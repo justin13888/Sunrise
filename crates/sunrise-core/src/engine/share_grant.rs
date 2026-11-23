@@ -55,25 +55,40 @@
 //!
 //! Every rotation re-seals its epoch to the shares in force, leaving out the
 //! ended and the expired. A device without `ID_S_priv` cannot sign that
-//! re-seal (`core.share.reseal_skipped`), so a holder fills the gap
-//! ([`Engine::backfill_share_grants`]): whenever a device that holds
-//! `ID_S_priv` learns a Stream key, or applies a share grant, it re-seals
-//! every held epoch above a share's own, up to the live one, to that share.
+//! re-seal (`core.share.reseal_skipped`). It logs a `ShareResealRequest`
+//! instead, naming the epoch, its key, and the shares its own re-seal would
+//! have reached, and a holder fills the gap ([`Engine::backfill_share_grants`]).
+//!
+//! The holder re-seals a requested epoch to the shares the request names and
+//! no others, less any its own fold has ended. It never re-seals an epoch to
+//! a share its own fold alone says is in force: the minter may have ended
+//! that share in the very transaction that minted the epoch (a revocation
+//! rotates), and a holder that learned the epoch before it applied the end
+//! would otherwise seal the new key to the recipient the rotation was for.
+//! A key, once sealed, is not taken back by any later op.
+//!
+//! An epoch a holder minted is re-sealed by its own rotation and has no
+//! request, so no other holder re-seals it: a backfill costs a `ShareGrant`
+//! per share per holder that sees the request, and only for an epoch a
+//! device without `ID_S_priv` minted.
 
 use super::merge::to_sql;
 use super::stream::read_stream;
 use super::{Engine, EngineError, META_STREAM};
 use crate::bytes::hex_short;
-use crate::control_op::{ShareDeclinePayload, ShareGrantOpPayload, ShareRevokePayload};
+use crate::control_op::{
+    ResealRecipient, ShareDeclinePayload, ShareGrantOpPayload, ShareResealRequestPayload,
+    ShareRevokePayload,
+};
 use crate::inner_op::{decode_inner_op, InnerOp};
-use crate::keychain::{Keychain, KeychainError};
-use rusqlite::{params, Connection, Transaction};
+use crate::keychain::KeychainError;
+use rusqlite::{params_from_iter, Connection, Transaction};
 use std::collections::BTreeMap;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
-    decode_envelope, decode_share_grant, ShareGrant, ShareGrantTerms, ShareRecipient, ShareRole,
-    SharedEpoch, StreamKey, StreamMetadata,
+    decode_envelope, decode_share_grant, stream_key_id, ShareGrant, ShareGrantTerms,
+    ShareRecipient, ShareRole, SharedEpoch, StreamKey, StreamMetadata,
 };
 use sunrise_domain::{Person, PRIVATE_DOMAIN_BYTES};
 use sunrise_id::{EntityKind, EntityRef};
@@ -85,6 +100,8 @@ const SHARE_GRANT_KIND: &str = "share.grant";
 const SHARE_REVOKE_KIND: &str = "share.revoke";
 /// The op-log `inner_kind` of a share decline.
 const SHARE_DECLINE_KIND: &str = "share.decline";
+/// The op-log `inner_kind` of a re-seal request.
+const SHARE_RESEAL_REQUEST_KIND: &str = "share.reseal_request";
 
 /// An op's envelope stamp, `(hlc, device, seq)`: the order a recipient's
 /// grants are told apart in.
@@ -475,33 +492,32 @@ impl Engine {
         Ok(self.share_fold(db.conn(), stream.bytes())?.ended)
     }
 
-    /// The share fold over the op log. See the [module docs](self).
-    fn share_fold(
+    /// Every vault-meta op of one of `kinds` this replica holds and can open,
+    /// with its envelope stamp. One whose sender this replica holds no key
+    /// for, or that does not open or decode, is passed over.
+    fn meta_ops(
         &self,
         conn: &Connection,
-        stream_id: &[u8; 16],
-    ) -> Result<ShareFold, EngineError> {
+        kinds: &[&str],
+    ) -> Result<Vec<(Stamp, InnerOp)>, EngineError> {
         let envelopes: Vec<Vec<u8>> = {
-            let mut stmt = conn.prepare(
-                "SELECT envelope FROM ops WHERE stream_id = ? AND inner_kind IN (?, ?, ?)",
-            )?;
-            let rows = stmt.query_map(
-                params![
-                    &META_STREAM[..],
-                    SHARE_GRANT_KIND,
-                    SHARE_REVOKE_KIND,
-                    SHARE_DECLINE_KIND
-                ],
-                |r| r.get(0),
-            )?;
+            let marks = vec!["?"; kinds.len()].join(", ");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT envelope FROM ops WHERE stream_id = ? AND inner_kind IN ({marks})"
+            ))?;
+            let args = std::iter::once(rusqlite::types::Value::Blob(META_STREAM.to_vec())).chain(
+                kinds
+                    .iter()
+                    .map(|k| rusqlite::types::Value::Text((*k).to_owned())),
+            );
+            let rows = stmt.query_map(params_from_iter(args), |r| r.get(0))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         if envelopes.is_empty() {
-            return Ok(ShareFold::default());
+            return Ok(Vec::new());
         }
         let signers = self.device_signing_keys(conn)?;
-        let chain = self.chain_identities(conn)?;
-        let mut events: BTreeMap<[u8; 16], RecipientEvents> = BTreeMap::new();
+        let mut ops = Vec::new();
         for bytes in envelopes {
             let Ok(env) = decode_envelope(&bytes) else {
                 continue;
@@ -517,11 +533,33 @@ impl Engine {
             else {
                 continue;
             };
-            let stamp = (env.hlc, env.device_id, env.seq);
-            let (recipient, end) = match decode_inner_op(&inner) {
-                Ok(InnerOp::ShareGrant(payload)) => {
-                    let Ok(grant) =
-                        self.believe_share_grant(conn, &chain, &payload, &env.device_id)?
+            if let Ok(op) = decode_inner_op(&inner) {
+                ops.push(((env.hlc, env.device_id, env.seq), op));
+            }
+        }
+        Ok(ops)
+    }
+
+    /// The share fold over the op log. See the [module docs](self).
+    fn share_fold(
+        &self,
+        conn: &Connection,
+        stream_id: &[u8; 16],
+    ) -> Result<ShareFold, EngineError> {
+        let ops = self.meta_ops(
+            conn,
+            &[SHARE_GRANT_KIND, SHARE_REVOKE_KIND, SHARE_DECLINE_KIND],
+        )?;
+        if ops.is_empty() {
+            return Ok(ShareFold::default());
+        }
+        let chain = self.chain_identities(conn)?;
+        let mut events: BTreeMap<[u8; 16], RecipientEvents> = BTreeMap::new();
+        for (stamp, op) in ops {
+            let sender = stamp.1;
+            let (recipient, end) = match op {
+                InnerOp::ShareGrant(payload) => {
+                    let Ok(grant) = self.believe_share_grant(conn, &chain, &payload, &sender)?
                     else {
                         continue;
                     };
@@ -547,17 +585,17 @@ impl Engine {
                         ));
                     continue;
                 }
-                Ok(InnerOp::ShareRevoke(p)) if p.stream_id == *stream_id => (
+                InnerOp::ShareRevoke(p) if p.stream_id == *stream_id => (
                     p.recipient_identity_id,
                     (ShareEnd::Revoked, p.effective_at_ms),
                 ),
-                Ok(InnerOp::ShareDecline(p)) if p.stream_id == *stream_id => (
+                InnerOp::ShareDecline(p) if p.stream_id == *stream_id => (
                     p.recipient_identity_id,
                     (ShareEnd::Declined, p.declined_at_ms),
                 ),
                 _ => continue,
             };
-            if self.is_read_bounded(conn, &env.device_id)? {
+            if self.is_read_bounded(conn, &sender)? {
                 continue;
             }
             events.entry(recipient).or_default().ends.push((
@@ -621,9 +659,10 @@ impl Engine {
     /// is logged, because a share that silently fails to reach its recipient
     /// is the failure nobody else would see.
     ///
-    /// One it believes may name an epoch below one this replica holds, as a
-    /// share made while a sibling without `ID_S_priv` rotated does; the
-    /// backfill carries it to the live epoch ([`Self::backfill_share_grants`]).
+    /// One it believes may name an epoch below one a re-seal request this
+    /// replica holds names it for, as a share the minter folded before this
+    /// replica did; the backfill carries it to that epoch
+    /// ([`Self::backfill_share_grants`]).
     pub(super) fn apply_share_grant(
         &self,
         tx: &Transaction<'_>,
@@ -665,16 +704,42 @@ impl Engine {
         Ok(())
     }
 
+    /// Apply a `ShareResealRequest` op: nothing is stored beside it. One from
+    /// a sender whose reads are bounded is logged and asks for nothing; any
+    /// other is backfilled at once where this device can
+    /// ([`Self::backfill_share_grants`]).
+    pub(super) fn apply_share_reseal_request(
+        &self,
+        tx: &Transaction<'_>,
+        p: &ShareResealRequestPayload,
+        sender: &[u8; 16],
+        now_ms: u64,
+    ) -> rusqlite::Result<()> {
+        if self.is_read_bounded(tx, sender)? {
+            tracing::warn!(
+                ev = "core.share.reseal_request_refused",
+                reason = Refusal::BoundedSender.as_str(),
+                sender_h = hex_short(sender),
+                "a share re-seal request is not believed; it is kept and asks for nothing"
+            );
+            return Ok(());
+        }
+        self.backfill_share_grants(tx, &p.stream_id, now_ms)
+    }
+
     /// Re-seal `(stream_id, epoch)`, which a rotation just minted, to every
     /// share of the Stream still in force, as `ShareGrant` ops sealed under
     /// `seal_under` beside the rotation's key envelopes.
     ///
-    /// A re-seal never fails its rotation. A device that does not hold
-    /// `ID_S_priv`, a Stream whose row has not arrived, and a re-seal that
-    /// does not seal each leave the epoch unsealed to the recipients and say
-    /// so (`core.share.reseal_skipped`): the rotation's purpose is the
-    /// account's own keys, and refusing it over a share would keep a revoked
-    /// device reading. A holder fills the gap when it learns the epoch
+    /// A re-seal never fails its rotation. A Stream whose row has not
+    /// arrived, and a re-seal that does not seal, each leave the epoch
+    /// unsealed to the recipients and say so (`core.share.reseal_skipped`):
+    /// the rotation's purpose is the account's own keys, and refusing it over
+    /// a share would keep a revoked device reading.
+    ///
+    /// A device that does not hold `ID_S_priv` cannot sign a re-seal. It logs
+    /// a `ShareResealRequest` naming the shares in force instead, sealed under
+    /// `seal_under`, and a holder re-seals the epoch to those
     /// ([`Self::backfill_share_grants`]).
     ///
     /// A share a revocation or a decline ended is left out, in the fold and
@@ -692,6 +757,34 @@ impl Engine {
             return Ok(());
         }
         let fold = self.share_fold(tx, stream_id).map_err(to_sql)?;
+        if fold.shares.is_empty() {
+            return Ok(());
+        }
+        if !self.keychain.can_rotate_identity() {
+            tracing::warn!(
+                ev = "core.share.reseal_skipped",
+                reason = "no_identity_signing_key",
+                stream_h = hex_short(stream_id),
+                epoch,
+                n_total = fold.shares.len(),
+                "a rotated epoch was not re-sealed to the Stream's share recipients; \
+                 a re-seal request was logged for a device that can"
+            );
+            let op = InnerOp::ShareResealRequest(ShareResealRequestPayload {
+                stream_id: *stream_id,
+                epoch,
+                key_id: stream_key_id(key),
+                recipients: fold
+                    .shares
+                    .iter()
+                    .map(|s| ResealRecipient {
+                        identity_id: s.recipient_identity_id,
+                    })
+                    .collect(),
+                unknown: sunrise_domain::Unknowns::new(),
+            });
+            return self.emit_control_op(tx, &op, now_ms, seal_under);
+        }
         self.reseal_to(
             tx,
             (stream_id, epoch, key),
@@ -702,17 +795,46 @@ impl Engine {
         )
     }
 
-    /// Carry every share of `stream_id` whose epoch is below the live one to
-    /// each held epoch above its own, up to the live one, in ascending order,
-    /// so the last grant of each is at the live epoch.
+    /// Every `ShareResealRequest` for `stream_id` from a sender whose reads
+    /// are not bounded, by epoch and then by stamp.
+    fn reseal_requests(
+        &self,
+        conn: &Connection,
+        stream_id: &[u8; 16],
+    ) -> Result<Vec<ShareResealRequestPayload>, EngineError> {
+        let mut requests = Vec::new();
+        for (stamp, op) in self.meta_ops(conn, &[SHARE_RESEAL_REQUEST_KIND])? {
+            let InnerOp::ShareResealRequest(p) = op else {
+                continue;
+            };
+            if p.stream_id == *stream_id && !self.is_read_bounded(conn, &stamp.1)? {
+                requests.push((p.epoch, stamp, p));
+            }
+        }
+        requests.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        Ok(requests.into_iter().map(|(_, _, p)| p).collect())
+    }
+
+    /// Re-seal each epoch of `stream_id` a `ShareResealRequest` names, whose
+    /// key this replica holds, to each share the request names whose own
+    /// epoch is below it, in ascending epoch order, so the last grant of each
+    /// share is at the newest requested epoch.
     ///
     /// This is how an epoch a device without `ID_S_priv` minted reaches the
-    /// Stream's share recipients: its rotation cannot sign a re-seal, and the
-    /// first device holding `ID_S_priv` to learn the epoch, or to apply a
-    /// share below it, re-seals it here. It runs on such a device only, and
-    /// not on one the register calls revoked or whose reads are bounded. Each
-    /// holder that learns the epoch re-seals it, so a recipient may be sent
-    /// the same epoch twice; the fold keeps the later grant.
+    /// Stream's share recipients. It runs on a device holding `ID_S_priv`
+    /// only, and not on one the register calls revoked or whose reads are
+    /// bounded, whenever that device learns a Stream key, applies a believed
+    /// share grant, or applies a request: whichever of the three arrives last
+    /// completes what the re-seal needs.
+    ///
+    /// A share this replica's fold holds in force and the request does not
+    /// name is never re-sealed here, for the [module docs](self)' reason: the
+    /// request is what the minter knew had not ended. A share this replica's
+    /// fold has ended is left out though the request names it. A share
+    /// already at or above a requested epoch is not re-sealed to it again, so
+    /// re-applying writes nothing; two holders that each see a request before
+    /// either sees the other's re-seal both re-seal it, and the fold keeps
+    /// the later grant.
     pub(super) fn backfill_share_grants(
         &self,
         tx: &Transaction<'_>,
@@ -726,44 +848,40 @@ impl Engine {
         if self.is_revoked(tx, &me)? || self.is_read_bounded(tx, &me)? {
             return Ok(());
         }
-        let Some((live, live_key)) = self.keychain.current_stream_key_tx(tx, stream_id)? else {
-            return Ok(());
-        };
         let fold = self.share_fold(tx, stream_id).map_err(to_sql)?;
-        let Some(lowest) = fold.shares.iter().map(|s| s.epoch).min() else {
-            return Ok(());
-        };
-        if lowest >= live {
+        if fold.shares.is_empty() {
             return Ok(());
         }
         let ended = fold.ended_ids();
-        let epochs: Vec<u32> = Keychain::held_epochs_tx(tx)?
-            .into_iter()
-            .filter(|(s, e)| s == stream_id && *e > lowest && *e < live)
-            .map(|(_, e)| e)
-            .chain(std::iter::once(live))
-            .collect();
-        for epoch in epochs {
-            let key = if epoch == live {
-                live_key.clone()
-            } else {
-                let Some(key) = self
-                    .keychain
-                    .stream_keys_at(stream_id, epoch)
-                    .into_iter()
-                    .next()
-                else {
-                    continue;
-                };
-                key
+        for request in self.reseal_requests(tx, stream_id).map_err(to_sql)? {
+            let Some(key) = self
+                .keychain
+                .stream_keys_at(stream_id, request.epoch)
+                .into_iter()
+                .find(|k| stream_key_id(k) == request.key_id)
+            else {
+                continue;
             };
             let behind: Vec<StreamShare> = fold
                 .shares
                 .iter()
-                .filter(|s| s.epoch < epoch)
+                .filter(|s| {
+                    s.epoch < request.epoch
+                        && request
+                            .recipients
+                            .iter()
+                            .any(|r| r.identity_id == s.recipient_identity_id)
+                })
                 .cloned()
                 .collect();
-            self.reseal_to(tx, (stream_id, epoch, &key), &behind, &ended, now_ms, None)?;
+            self.reseal_to(
+                tx,
+                (stream_id, request.epoch, &key),
+                &behind,
+                &ended,
+                now_ms,
+                None,
+            )?;
         }
         Ok(())
     }

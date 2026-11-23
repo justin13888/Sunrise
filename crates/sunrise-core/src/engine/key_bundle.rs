@@ -189,9 +189,9 @@ impl Engine {
                     learned.push((k.stream_id, k.epoch));
                 }
             }
-            // A restored device that holds `ID_S_priv` re-seals to a Stream's
-            // shares any epoch it now holds and they were never sealed, as
-            // it would on learning the key from an envelope.
+            // A restored device that holds `ID_S_priv` re-seals any epoch it
+            // now holds and a re-seal request names, as it would on learning
+            // the key from an envelope.
             let mut streams: Vec<[u8; 16]> = learned.iter().map(|(s, _)| *s).collect();
             streams.sort_unstable();
             streams.dedup();

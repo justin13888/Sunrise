@@ -1938,6 +1938,7 @@
         "RoutineUpdate",
         "ShareDecline",
         "ShareGrant",
+        "ShareResealRequest",
         "ShareRevoke",
         "StreamCreate",
         "StreamDelete",
@@ -1992,6 +1993,10 @@
         {
             "payload": "ShareGrantOpPayload",
             "variant": "ShareGrant"
+        },
+        {
+            "payload": "ShareResealRequestPayload",
+            "variant": "ShareResealRequest"
         },
         {
             "payload": "ShareRevokePayload",
@@ -2442,6 +2447,17 @@
         {
             "fields": [
                 {
+                    "name": "identity_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "ResealRecipient",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
                     "name": "completed",
                     "type": "u32"
                 },
@@ -2591,6 +2607,29 @@
             ],
             "keeps_unknowns": true,
             "name": "ShareGrantOpPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "epoch",
+                    "type": "u32"
+                },
+                {
+                    "name": "key_id",
+                    "type": "[u8;8]"
+                },
+                {
+                    "name": "recipients",
+                    "type": "Vec<ResealRecipient>"
+                },
+                {
+                    "name": "stream_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "ShareResealRequestPayload",
             "shape": "record"
         },
         {

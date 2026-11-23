@@ -207,6 +207,7 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 | `share_grant` | 1 | `{ person, recipient_id_d_pub, grant, reseal? }` — the account's record of one Stream shared with one Person; `grant` is the canonical `ShareGrantPayload` of [`sharing-with-others.md`](./sharing-with-others.md) (`{ stream_id, epoch, recipient_identity_id, role, expires_at?, hpke_ct, identity_sig }`); `reseal` is `true` on a grant a rotation or a backfill re-sealed, absent otherwise; see the CDDL below |
 | `share_revoke` | 1 | `{ stream_id, recipient_identity_id, effective_at_ms }` — the owner's account ends one share; the emitter rotates the Stream beside it; see the CDDL below |
 | `share_decline` | 1 | `{ stream_id, recipient_identity_id, declined_at_ms }` — the owner's account records that the recipient declined one share, which ends it with no rotation; see the CDDL below |
+| `share_reseal_request` | 1 | `{ stream_id, epoch, key_id, recipients }` — a device without `ID_S_priv` minted the epoch and asks a holder to re-seal it to the shares `recipients` names, those its own re-seal would have reached; see the CDDL below |
 | `snapshot` | 1 | `{ covers: { device_id => max_seq }, base_root, state_cbor }` (encrypted under Stream key) |
 | `checkpoint` | 1 | `{ root, covers: { device_id => max_seq } }` (encrypted under Stream key) |
 | `identity_transition` | 1 | `{ from_identity_id, to_identity_id, to_id_s_pub, to_id_d_pub, roster, device_shares, identity_share?, prev_sig, next_sig }` — no `effective_at`, for `device_revoke`'s reasons; see the CDDL below |
@@ -217,7 +218,7 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 
 ### The six families that are implemented
 
-[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `Patch`, an entity family rather than a control one, followed at `DOC_SCHEMA_V = 8` ([ADR-0044](../11-adr/0044-per-field-ops.md)), and the `StreamDigest` control family, a replica's frontier and digest in one stream, at `DOC_SCHEMA_V = 9` ([ADR-0043](../11-adr/0043-commit-tree.md)); it takes the place `checkpoint` was sketched for. [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 10`. [ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) added `device_revoke_by_identity` at `DOC_SCHEMA_V = 23`, behind the structural feature `core.revoke_authority`, and [ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md) added `device_revoke_withdraw` at `DOC_SCHEMA_V = 28`, behind the structural feature `core.revoke_withdraw`. ADR-0058 §6 added `device_revoke_withdraw_by_identity` at `DOC_SCHEMA_V = 30`, behind the structural feature `core.revoke_withdraw_authority`. [#1318](https://github.com/justin13888/Sunrise/issues/1318) added `share_grant` at `DOC_SCHEMA_V = 32`, behind no feature: it writes no entity, and a build that cannot read it parks it and fails only to re-seal the share. [#1325](https://github.com/justin13888/Sunrise/issues/1325) added `share_revoke` and `share_decline`, and `share_grant`'s optional `reseal`, at `DOC_SCHEMA_V = 33`, behind no feature for the same reason. `snapshot` remains unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
+[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `Patch`, an entity family rather than a control one, followed at `DOC_SCHEMA_V = 8` ([ADR-0044](../11-adr/0044-per-field-ops.md)), and the `StreamDigest` control family, a replica's frontier and digest in one stream, at `DOC_SCHEMA_V = 9` ([ADR-0043](../11-adr/0043-commit-tree.md)); it takes the place `checkpoint` was sketched for. [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 10`. [ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) added `device_revoke_by_identity` at `DOC_SCHEMA_V = 23`, behind the structural feature `core.revoke_authority`, and [ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md) added `device_revoke_withdraw` at `DOC_SCHEMA_V = 28`, behind the structural feature `core.revoke_withdraw`. ADR-0058 §6 added `device_revoke_withdraw_by_identity` at `DOC_SCHEMA_V = 30`, behind the structural feature `core.revoke_withdraw_authority`. [#1318](https://github.com/justin13888/Sunrise/issues/1318) added `share_grant` at `DOC_SCHEMA_V = 32`, behind no feature: it writes no entity, and a build that cannot read it parks it and fails only to re-seal the share. [#1325](https://github.com/justin13888/Sunrise/issues/1325) added `share_revoke`, `share_decline` and `share_reseal_request`, and `share_grant`'s optional `reseal`, at `DOC_SCHEMA_V = 33`, behind no feature for the same reason. `snapshot` remains unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
 
 The six are **not** the `OpKind`-tagged shape sketched above. The inner op is a Rust enum encoded externally tagged, so what is on the wire is a one-entry map from the variant name to its payload — the same shape the 21 domain variants already have. This is the encoder's shape, and it is normative:
 
@@ -234,6 +235,7 @@ InnerOp /= { "KeyEnvelope" => KeyEnvelopePayload }
          / { "ShareGrant" => ShareGrantOpPayload }
          / { "ShareRevoke" => ShareRevokePayload }
          / { "ShareDecline" => ShareDeclinePayload }
+         / { "ShareResealRequest" => ShareResealRequestPayload }
 
 FeatureList = {
     "features" => [ + feature-id ],   ; never emitted empty
@@ -291,6 +293,18 @@ ShareDeclinePayload = {
     "recipient_identity_id" => bstr .size 16,
     "declined_at_ms"        => uint,         ; the recording device's clock
     * tstr => any,
+}
+
+ShareResealRequestPayload = {
+    "stream_id"  => bstr .size 16,
+    "epoch"      => uint,                ; the epoch the sender minted
+    "key_id"     => bstr .size 8,        ; as key_envelope's: which key of that epoch
+    "recipients" => [ * ResealRecipient ], ; the shares in force on the sender when it minted
+    * tstr => any,
+}
+
+ResealRecipient = {
+    "identity_id" => bstr .size 16,
 }
 
 IdentityTransitionPayload = {

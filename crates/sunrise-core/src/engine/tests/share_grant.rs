@@ -2,7 +2,10 @@
 //! re-sealed by a rotation (#1318).
 
 use super::*;
-use crate::control_op::{ShareDeclinePayload, ShareGrantOpPayload, ShareRevokePayload};
+use crate::control_op::{
+    ResealRecipient, ShareDeclinePayload, ShareGrantOpPayload, ShareResealRequestPayload,
+    ShareRevokePayload,
+};
 use crate::engine::share_grant::{EndedShare, ShareEnd, StreamShare};
 use sunrise_crypto::keys::{IdentityDhKeyPair, IdentitySigningKeyPair};
 use sunrise_crypto::{
@@ -1032,6 +1035,222 @@ fn a_holders_backfill_leaves_out_a_share_the_paired_device_revoked() {
     assert_eq!(grants_at(&founder, &fdb, &bob, minted), 1);
 }
 
+/// Every op `from` logged whose `inner_kind` `pick` accepts, delivered to
+/// `to` in each stream's order: a relay that hands some ops over late, or
+/// drops them.
+fn deliver_where(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db, pick: fn(&str) -> bool) {
+    let device = from.keychain.device_id();
+    let envs: Vec<(String, Vec<u8>)> = {
+        let mut stmt = from_db
+            .conn()
+            .prepare(
+                "SELECT inner_kind, envelope FROM ops WHERE device_id = ?
+                 ORDER BY stream_id, seq",
+            )
+            .unwrap();
+        stmt.query_map(params![&device[..]], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    for (kind, env) in envs {
+        if pick(&kind) {
+            to.apply_remote_all(to_db, &env).unwrap();
+        }
+    }
+}
+
+/// The paired device revokes Ada and the founder never applies the
+/// revocation: the paired device's re-seal request names only Bob, so the
+/// founder's backfill seals the revocation's epoch to Bob alone, though its
+/// own fold still holds Ada's share in force.
+#[test]
+fn a_holder_that_has_not_seen_a_revocation_never_reseals_its_epoch_to_the_revoked() {
+    let (paired, mut db, founder, mut fdb) = paired_and_founder();
+    let stream = work_stream(&paired, &mut db);
+    let (ada, bob) = (Recipient::new(0x31), Recipient::new(0x33));
+    deliver(&paired, &db, &founder, &mut fdb, true);
+    for r in [&ada, &bob] {
+        founder
+            .share_stream(&mut fdb, stream, &r.person(), r.dh.public_bytes(), None)
+            .unwrap();
+    }
+    deliver(&founder, &fdb, &paired, &mut db, true);
+    let minted = paired
+        .revoke_share(&mut db, stream, ada.identity_id())
+        .unwrap();
+
+    deliver_where(&paired, &db, &founder, &mut fdb, |k| k != "share.revoke");
+    assert!(
+        recipients(&founder, &fdb, stream).contains(&ada.identity_id()),
+        "the founder has not applied the revocation"
+    );
+    assert_eq!(grants_at(&founder, &fdb, &ada, minted), 0);
+    assert_eq!(grants_at(&founder, &fdb, &bob, minted), 1);
+
+    // The revocation arriving late changes nothing already sealed.
+    deliver(&paired, &db, &founder, &mut fdb, true);
+    assert_eq!(recipients(&founder, &fdb, stream), vec![bob.identity_id()]);
+    assert_eq!(grants_at(&founder, &fdb, &ada, minted), 0);
+}
+
+/// A second founder of the account, the first founder, and a paired device,
+/// each trusting the others, every one holding the first founder's vault-meta
+/// key. The paired device has created a Stream every replica holds, and the
+/// first founder has shared it with `ada` at its first epoch, which the paired
+/// device has applied. The second founder has applied nothing of the first
+/// founder's.
+struct Trio {
+    holder: Engine,
+    hdb: Db,
+    founder: Engine,
+    fdb: Db,
+    paired: Engine,
+    pdb: Db,
+    stream: EntityRef,
+}
+
+fn trio(ada: &Recipient) -> Trio {
+    let (paired, mut pdb, founder, mut fdb) = paired_and_founder();
+    let (holder, mut hdb) = self::founder([3u8; 32]);
+    trust(&holder, &mut hdb, &founder);
+    trust(&holder, &mut hdb, &paired);
+    trust(&founder, &mut fdb, &holder);
+    trust(&paired, &mut pdb, &holder);
+    paired_meta(&holder, &mut hdb, &founder, &mut fdb);
+    let stream = work_stream(&paired, &mut pdb);
+    deliver(&paired, &pdb, &founder, &mut fdb, true);
+    deliver(&paired, &pdb, &holder, &mut hdb, true);
+    founder
+        .share_stream(&mut fdb, stream, &ada.person(), ada.dh.public_bytes(), None)
+        .unwrap();
+    deliver(&founder, &fdb, &paired, &mut pdb, true);
+    Trio {
+        holder,
+        hdb,
+        founder,
+        fdb,
+        paired,
+        pdb,
+        stream,
+    }
+}
+
+/// The paired device rotates; the epoch it minted, and the request naming
+/// Ada, are what the second founder is to re-seal.
+fn paired_rotates(t: &mut Trio) -> u32 {
+    rotate(&t.paired, &mut t.pdb, t.stream);
+    live_epoch(&t.paired, &mut t.pdb, t.stream).0
+}
+
+/// The second founder holds the key and the request, and the grant arrives
+/// last: applying the grant is what re-seals.
+#[test]
+fn applying_a_share_grant_backfills_a_requested_epoch() {
+    let ada = Recipient::new(0x31);
+    let mut t = trio(&ada);
+    let minted = paired_rotates(&mut t);
+    deliver(&t.paired, &t.pdb, &t.holder, &mut t.hdb, true);
+    assert_eq!(
+        grants_at(&t.holder, &t.hdb, &ada, minted),
+        0,
+        "no share yet"
+    );
+
+    deliver(&t.founder, &t.fdb, &t.holder, &mut t.hdb, true);
+    assert_eq!(grants_at(&t.holder, &t.hdb, &ada, minted), 1);
+    assert_eq!(shares(&t.holder, &t.hdb, t.stream)[0].epoch, minted);
+}
+
+/// The second founder holds the grant and the request, and the key arrives
+/// last, in a `KeyEnvelope`: learning it is what re-seals.
+#[test]
+fn learning_a_key_from_an_envelope_backfills_a_requested_epoch() {
+    let ada = Recipient::new(0x31);
+    let mut t = trio(&ada);
+    let minted = paired_rotates(&mut t);
+    deliver(&t.founder, &t.fdb, &t.holder, &mut t.hdb, true);
+    deliver_where(&t.paired, &t.pdb, &t.holder, &mut t.hdb, |k| {
+        k != "key.envelope"
+    });
+    assert_eq!(grants_at(&t.holder, &t.hdb, &ada, minted), 0, "no key yet");
+
+    deliver(&t.paired, &t.pdb, &t.holder, &mut t.hdb, true);
+    assert_eq!(grants_at(&t.holder, &t.hdb, &ada, minted), 1);
+}
+
+/// The second founder holds the grant and the request, and the key arrives
+/// last, in the paired device's key bundle: absorbing it is what re-seals.
+#[test]
+fn learning_a_key_from_a_key_bundle_backfills_a_requested_epoch() {
+    let ada = Recipient::new(0x31);
+    let mut t = trio(&ada);
+    let minted = paired_rotates(&mut t);
+    deliver(&t.founder, &t.fdb, &t.holder, &mut t.hdb, true);
+    deliver_where(&t.paired, &t.pdb, &t.holder, &mut t.hdb, |k| {
+        k != "key.envelope"
+    });
+    assert_eq!(grants_at(&t.holder, &t.hdb, &ada, minted), 0, "no key yet");
+
+    let plan = t
+        .paired
+        .key_bundle_plan(&mut t.pdb)
+        .unwrap()
+        .expect("the paired device publishes");
+    let bundle = t.paired.seal_key_bundle(&plan).unwrap();
+    t.holder.apply_key_bundle(&mut t.hdb, &bundle).unwrap();
+    assert_eq!(grants_at(&t.holder, &t.hdb, &ada, minted), 1);
+}
+
+/// The second founder holds the grant and the key, and the request arrives
+/// last: applying it is what re-seals.
+#[test]
+fn applying_a_reseal_request_backfills_its_epoch() {
+    let ada = Recipient::new(0x31);
+    let mut t = trio(&ada);
+    let minted = paired_rotates(&mut t);
+    deliver(&t.founder, &t.fdb, &t.holder, &mut t.hdb, true);
+    deliver_where(&t.paired, &t.pdb, &t.holder, &mut t.hdb, |k| {
+        k != "share.reseal_request"
+    });
+    assert_eq!(
+        grants_at(&t.holder, &t.hdb, &ada, minted),
+        0,
+        "no request yet"
+    );
+
+    deliver(&t.paired, &t.pdb, &t.holder, &mut t.hdb, true);
+    assert_eq!(grants_at(&t.holder, &t.hdb, &ada, minted), 1);
+}
+
+/// A holder's rotation re-seals its own epoch and asks nobody to: a sibling
+/// holder that learns the epoch re-seals nothing more.
+#[test]
+fn a_holders_rotation_is_resealed_once() {
+    let (ea, mut dba, eb, mut dbb) = founders();
+    let stream = work_stream(&ea, &mut dba);
+    let ada = Recipient::new(0x31);
+    ea.share_stream(&mut dba, stream, &ada.person(), ada.dh.public_bytes(), None)
+        .unwrap();
+    deliver(&ea, &dba, &eb, &mut dbb, true);
+    rotate(&ea, &mut dba, stream);
+    let minted = live_epoch(&ea, &mut dba, stream).0;
+
+    assert_eq!(grants_at(&ea, &dba, &ada, minted), 1, "A re-sealed");
+    deliver(&ea, &dba, &eb, &mut dbb, true);
+    assert_eq!(shares(&eb, &dbb, stream)[0].epoch, minted, "A's re-seal");
+    let me = eb.keychain.device_id();
+    let own: i64 = dbb
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM ops WHERE inner_kind = 'share.grant' AND device_id = ?",
+            params![&me[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(own, 0, "B re-seals nothing");
+}
+
 #[test]
 fn the_share_end_ops_round_trip_and_are_control_ops() {
     let revoke = InnerOp::ShareRevoke(ShareRevokePayload {
@@ -1046,7 +1265,20 @@ fn the_share_end_ops_round_trip_and_are_control_ops() {
         declined_at_ms: 3,
         unknown: Unknowns::new(),
     });
-    for (op, kind) in [(revoke, "share.revoke"), (decline, "share.decline")] {
+    let request = InnerOp::ShareResealRequest(ShareResealRequestPayload {
+        stream_id: [1; 16],
+        epoch: 2,
+        key_id: [3; 8],
+        recipients: vec![ResealRecipient {
+            identity_id: [4; 16],
+        }],
+        unknown: Unknowns::new(),
+    });
+    for (op, kind) in [
+        (revoke, "share.revoke"),
+        (decline, "share.decline"),
+        (request, "share.reseal_request"),
+    ] {
         let bytes = encode_inner_op(&op).unwrap();
         assert_eq!(
             encode_inner_op(&decode_inner_op(&bytes).unwrap()).unwrap(),

@@ -269,7 +269,8 @@ pub(super) fn materialize_member(
         | InnerOp::DeviceFeatures(_)
         | InnerOp::ShareGrant(_)
         | InnerOp::ShareRevoke(_)
-        | InnerOp::ShareDecline(_) => {}
+        | InnerOp::ShareDecline(_)
+        | InnerOp::ShareResealRequest(_) => {}
     }
     Ok(())
 }

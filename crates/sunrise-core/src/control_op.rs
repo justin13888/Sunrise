@@ -50,6 +50,9 @@
 //! `DOC_SCHEMA_V = 33`, with `ShareGrantOpPayload::reseal`: the account's
 //! record that a share ended, by the owner's revocation or the recipient's
 //! decline, and which grants only carry a share forward.
+//! [`ShareResealRequestPayload`] arrives beside them: a device without
+//! `ID_S_priv` that minted an epoch names the shares its re-seal would have
+//! reached, so a holder re-seals it to those and no others.
 //!
 //! These are **not** entities. They have no row, no LWW stamp and no
 //! materialization: `inner_op`'s `OpEffect::Control` variant exists so the
@@ -533,6 +536,42 @@ pub struct ShareDeclinePayload {
     pub unknown: sunrise_domain::Unknowns,
 }
 
+/// A device without `ID_S_priv` minted `(stream_id, epoch)` and could not
+/// re-seal it, and asks a device that holds `ID_S_priv` to re-seal it to
+/// `recipients` (`docs/03-crypto/sharing-with-others.md` §Revoking access,
+/// `DOC_SCHEMA_V = 33`).
+///
+/// `recipients` is the share fold on the minting device when it minted: the
+/// shares its own re-seal would have reached. A holder re-seals the epoch to
+/// no one else, so a share the minter knew had ended is never re-sealed by a
+/// holder that has not yet applied the end.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShareResealRequestPayload {
+    /// The Stream whose epoch was minted.
+    #[serde(with = "serde_bytes")]
+    pub stream_id: [u8; 16],
+    /// The epoch minted.
+    pub epoch: u32,
+    /// `BLAKE3.derive_key("sunrise.stream_key_id.v1", stream_key, 8)` of the
+    /// key minted, as a `KeyEnvelope` carries it: which of two keys minted
+    /// at the same epoch is meant.
+    #[serde(with = "serde_bytes")]
+    pub key_id: [u8; 8],
+    /// The recipients the minter's re-seal would have reached.
+    pub recipients: Vec<ResealRecipient>,
+    /// Fields this build does not know, kept byte for byte.
+    #[serde(flatten)]
+    pub unknown: sunrise_domain::Unknowns,
+}
+
+/// One recipient a [`ShareResealRequestPayload`] names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResealRecipient {
+    /// The recipient identity whose share was in force.
+    #[serde(with = "serde_bytes")]
+    pub identity_id: [u8; 16],
+}
+
 // The payloads above, and the two `inner_op` keeps beside the op family it
 // defines, described field by field for the canonical document schema
 // (`crate::doc_schema`). A field or variant added to one of these types and
@@ -623,6 +662,16 @@ sunrise_id::describe_value_types! {
             declined_at_ms: u64;
             ..unknown
         }
+        ShareResealRequestPayload {
+            stream_id: [u8; 16];
+            epoch: u32;
+            key_id: [u8; 8];
+            recipients: Vec<ResealRecipient>;
+            ..unknown
+        }
+        ResealRecipient {
+            identity_id: [u8; 16];
+        }
         PatchPayload {
             target as "ref": EntityRef;
             create: bool;
@@ -700,6 +749,7 @@ op_payloads! {
     ShareGrant(ShareGrantOpPayload),
     ShareRevoke(ShareRevokePayload),
     ShareDecline(ShareDeclinePayload),
+    ShareResealRequest(ShareResealRequestPayload),
 }
 
 #[cfg(test)]
@@ -885,6 +935,17 @@ mod tests {
             },
             &[],
         );
+        let request = ShareResealRequestPayload {
+            stream_id: [1u8; 16],
+            epoch: 2,
+            key_id: [3u8; 8],
+            recipients: vec![ResealRecipient {
+                identity_id: [4u8; 16],
+            }],
+            unknown: Unknowns::new(),
+        };
+        assert_wire_names("ShareResealRequestPayload", &request, &[]);
+        assert_wire_names("ResealRecipient", &request.recipients[0], &[]);
     }
 
     /// Every described record is reached by the wire tests above.
@@ -904,6 +965,8 @@ mod tests {
             "ShareGrantOpPayload",
             "ShareRevokePayload",
             "ShareDeclinePayload",
+            "ShareResealRequestPayload",
+            "ResealRecipient",
             "PatchPayload",
             "GroupWire",
             "StreamDigestPayload",
