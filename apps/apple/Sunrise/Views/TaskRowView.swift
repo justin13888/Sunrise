@@ -23,6 +23,17 @@ struct TaskRowView: View {
     var onDrag: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.searchHighlights) private var highlights
+
+    /// The title, with what a search matched in it marked. Plain outside
+    /// search, and plain when the highlight was computed for a title the
+    /// row no longer carries — a rename that synced in between.
+    private var title: AttributedString {
+        guard let highlighted = highlights[facets.id], highlighted.text == facets.title else {
+            return AttributedString(facets.title)
+        }
+        return highlighted.attributed
+    }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -60,7 +71,7 @@ struct TaskRowView: View {
                             .foregroundStyle(priority <= 2 ? .orange : .secondary)
                             .accessibilityLabel(L10n.TaskRow.priority(priority: Int(priority)))
                     }
-                    Text(facets.title)
+                    Text(title)
                         .strikethrough(facets.isDone)
                         .foregroundStyle(facets.isDone ? .secondary : .primary)
                     if facets.isBlocked {

@@ -376,6 +376,19 @@ extension Keymap {
     /// Return on the capture bar's Add button.
     static let submitCapture = KeyChord(.returnKey)
 
+    /// ⌘S on the search view's Save Search button
+    /// (`docs/08-features/search.md` §Saved searches). The button's, not an
+    /// ``AppAction``: it saves the query in one field, which only that view
+    /// has.
+    static let saveSearch = KeyChord("s", [.command])
+
+    /// Tab in the search field: take the first autocomplete suggestion.
+    static let acceptSuggestion = KeyChord(.tab)
+
+    /// Backspace in the search field while it holds only the scope token a
+    /// list prefilled: remove the token whole.
+    static let removeScope = KeyChord(.deleteKey)
+
     /// The planning keys on a calendar block that has focus — the keyboard
     /// path of every drag, `docs/08-features/planner.md` §Client contract.
     /// Each previews the plan the same drag would, and nothing is written

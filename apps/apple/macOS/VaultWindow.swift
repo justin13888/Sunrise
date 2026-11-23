@@ -124,7 +124,7 @@ struct VaultWindow: View {
                 await savedViews.save(
                     name: newViewName,
                     destination: selection,
-                    query: search.text,
+                    query: search.canonical,
                     contexts: currentContextNames
                 )
                 newViewName = ""
@@ -290,11 +290,13 @@ struct VaultWindow: View {
         case .search:
             SearchView(
                 model: search,
+                savedViews: savedViews,
                 selection: rows,
                 sheets: sheets,
                 preferences: keys,
                 escapes: escapes,
-                focus: $pane
+                focus: $pane,
+                open: openSearchHit
             )
         case .calendar:
             calendarDetail
@@ -447,7 +449,9 @@ extension VaultWindow {
             pane = .rows
         case .searchInView:
             // This client has one search surface. ⌘F carries the query over —
-            // "keep looking" — and ⌘K starts a fresh one.
+            // "keep looking" — or, from a stream's or a context's list,
+            // starts from that list's scope token; ⌘K starts a fresh one.
+            search.open(from: selection)
             selection = .search
             pane = .search
         case .searchGlobal:
@@ -460,6 +464,13 @@ extension VaultWindow {
         default: return false
         }
         return true
+    }
+
+    /// A search hit other than a task: a stream or a context opens its list,
+    /// anything else is shown where it lives, through the reveal a
+    /// `sunrise://entity/` link takes.
+    private func openSearchHit(_ opening: SearchOpening) {
+        opening.route(show: { selection = $0 }, reveal: { surfaces.open(.entity($0)) })
     }
 
     /// Start (or re-point) the sync driver. Safe to call again: the driver

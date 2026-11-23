@@ -60,6 +60,11 @@ struct KeyHintTests {
     func theControlChordsAreTheConventionalOnes() {
         #expect(Keymap.quit == press("q", [.command]))
         #expect(Keymap.submitCapture == press(.returnKey))
+        // `docs/08-features/search.md` §Saved searches: ⌘S saves the search.
+        #expect(Keymap.saveSearch == press("s", [.command]))
+        #expect(Keymap.help("Save Search", chord: Keymap.saveSearch) == "Save Search (⌘S)")
+        #expect(Keymap.acceptSuggestion == press(.tab))
+        #expect(Keymap.removeScope == press(.deleteKey))
     }
 }
 

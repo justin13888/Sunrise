@@ -1956,6 +1956,122 @@ enum L10n {
         static func matchesCapped(count: Int) -> String {
             L10n.tr("apple.search.matches_capped", count)
         }
+        /// Save Search
+        static var save: String { L10n.tr("apple.search.save") }
+        /// Search for {query}
+        static func saveSummary(query: String) -> String {
+            L10n.tr("apple.search.save_summary", query)
+        }
+        /// {count, plural, one {Tasks (#)} other {Tasks (#)}}
+        static func groupTask(count: Int) -> String {
+            L10n.tr("apple.search.group_task", count)
+        }
+        /// {count, plural, one {Notes (#)} other {Notes (#)}}
+        static func groupNote(count: Int) -> String {
+            L10n.tr("apple.search.group_note", count)
+        }
+        /// {count, plural, one {Calendar events (#)} other {Calendar events (#)}}
+        static func groupEvent(count: Int) -> String {
+            L10n.tr("apple.search.group_event", count)
+        }
+        /// {count, plural, one {Blocks (#)} other {Blocks (#)}}
+        static func groupBlock(count: Int) -> String {
+            L10n.tr("apple.search.group_block", count)
+        }
+        /// {count, plural, one {Streams (#)} other {Streams (#)}}
+        static func groupStream(count: Int) -> String {
+            L10n.tr("apple.search.group_stream", count)
+        }
+        /// {count, plural, one {Contexts (#)} other {Contexts (#)}}
+        static func groupContext(count: Int) -> String {
+            L10n.tr("apple.search.group_context", count)
+        }
+        /// {count, plural, one {Places (#)} other {Places (#)}}
+        static func groupPlace(count: Int) -> String {
+            L10n.tr("apple.search.group_place", count)
+        }
+        /// {count, plural, one {Attachments (#)} other {Attachments (#)}}
+        static func groupAttachment(count: Int) -> String {
+            L10n.tr("apple.search.group_attachment", count)
+        }
+        /// {count, plural, one {Saved views (#)} other {Saved views (#)}}
+        static func groupView(count: Int) -> String {
+            L10n.tr("apple.search.group_view", count)
+        }
+        /// {count, plural, one {People (#)} other {People (#)}}
+        static func groupPerson(count: Int) -> String {
+            L10n.tr("apple.search.group_person", count)
+        }
+        /// {count, plural, one {Show all #} other {Show all #}}
+        static func showAll(count: Int) -> String {
+            L10n.tr("apple.search.show_all", count)
+        }
+        /// Suggestions
+        static var suggestions: String { L10n.tr("apple.search.suggestions") }
+        /// Tasks and blocks in a stream or any stream under it
+        static var opStream: String { L10n.tr("apple.search.op_stream") }
+        /// Tasks carrying a context
+        static var opContext: String { L10n.tr("apple.search.op_context") }
+        /// Tasks in a state: todo, in progress, done, cancelled or open
+        static var opState: String { L10n.tr("apple.search.op_state") }
+        /// Only results of these kinds
+        static var opKind: String { L10n.tr("apple.search.op_kind") }
+        /// Late, stale, blocked, recurring, unplanned or in the Inbox
+        static var opIs: String { L10n.tr("apple.search.op_is") }
+        /// Results with an attachment, a note, an estimate, a deadline or a dependency
+        static var opHas: String { L10n.tr("apple.search.op_has") }
+        /// Tasks of a priority, 1 (highest) to 5
+        static var opPriority: String { L10n.tr("apple.search.op_priority") }
+        /// When the task is planned for
+        static var opPlanned: String { L10n.tr("apple.search.op_planned") }
+        /// The soft deadline
+        static var opTarget: String { L10n.tr("apple.search.op_target") }
+        /// The hard deadline
+        static var opHard: String { L10n.tr("apple.search.op_hard") }
+        /// The earlier of the two deadlines
+        static var opDue: String { L10n.tr("apple.search.op_due") }
+        /// When it was created
+        static var opCreated: String { L10n.tr("apple.search.op_created") }
+        /// When the task was completed
+        static var opDone: String { L10n.tr("apple.search.op_done") }
+        /// Tasks that need a place
+        static var opPlace: String { L10n.tr("apple.search.op_place") }
+        /// A day or a period, in your time zone
+        static var opDate: String { L10n.tr("apple.search.op_date") }
+        /// Past a deadline, soft or hard, and still open
+        static var isLate: String { L10n.tr("apple.search.is_late") }
+        /// Past the hard deadline and still open
+        static var isLateHard: String { L10n.tr("apple.search.is_late_hard") }
+        /// Open, with no deadline, and untouched for a while
+        static var isStale: String { L10n.tr("apple.search.is_stale") }
+        /// Waiting on another open task
+        static var isBlocked: String { L10n.tr("apple.search.is_blocked") }
+        /// Made by a routine
+        static var isRecurring: String { L10n.tr("apple.search.is_recurring") }
+        /// Open, with no planned time
+        static var isUnplanned: String { L10n.tr("apple.search.is_unplanned") }
+        /// In the Inbox: no stream, no plan, no deadline
+        static var isInbox: String { L10n.tr("apple.search.is_inbox") }
+        /// A block that does not move
+        static var isFixed: String { L10n.tr("apple.search.is_fixed") }
+        /// A block that may move
+        static var isFlexible: String { L10n.tr("apple.search.is_flexible") }
+        /// With an attachment
+        static var hasAttachment: String { L10n.tr("apple.search.has_attachment") }
+        /// With a note
+        static var hasNote: String { L10n.tr("apple.search.has_note") }
+        /// With an estimate
+        static var hasEstimate: String { L10n.tr("apple.search.has_estimate") }
+        /// With a deadline
+        static var hasDeadline: String { L10n.tr("apple.search.has_deadline") }
+        /// Needing a place
+        static var hasPlace: String { L10n.tr("apple.search.has_place") }
+        /// Waiting on another task
+        static var hasDependency: String { L10n.tr("apple.search.has_dependency") }
+        /// Stream
+        static var nameStream: String { L10n.tr("apple.search.name_stream") }
+        /// Context
+        static var nameContext: String { L10n.tr("apple.search.name_context") }
     }
 
     enum Activity {

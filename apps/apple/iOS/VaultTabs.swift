@@ -137,7 +137,7 @@ struct VaultTabs: View {
                 await models.savedViews.save(
                     name: name,
                     destination: destination,
-                    query: models.search.text,
+                    query: models.search.canonical,
                     contexts: destination.contextNames(in: models.list.names)
                 )
             }
@@ -178,12 +178,9 @@ struct VaultTabs: View {
 
     private var searchRoot: some View {
         SearchView(
-            model: models.search,
-            selection: rows,
-            sheets: sheets,
-            preferences: keys,
-            escapes: escapes,
-            focus: $pane
+            model: models.search, savedViews: models.savedViews,
+            selection: rows, sheets: sheets, preferences: keys, escapes: escapes, focus: $pane,
+            open: { $0.route(show: show, reveal: { surfaces.open(.entity($0)) }) }
         )
         .navigationTitle(L10n.Tabs.search)
         .toolbar {
@@ -377,7 +374,8 @@ extension VaultTabs {
         case .endOfDay: show(.evening)
         // ⌘F keeps the query, ⌘K starts afresh; both land in the field, as the Mac does.
         case .searchInView, .searchGlobal:
-            if action == .searchGlobal { models.search.clear() }
+            let from = TabRoute.showing(tab: tab, todayPath: todayPath, browsePath: browsePath)
+            if action == .searchGlobal { models.search.clear() } else { models.search.open(from: from) }
             tab = .search
             pane = .search
         case .importCalendar: importingIcal = true

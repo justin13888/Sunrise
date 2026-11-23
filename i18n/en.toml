@@ -1434,6 +1434,62 @@ clear = "Clear"
 matches = "{count, plural, one {# match} other {# matches}}"
 # Above the results when the result cap was hit.
 matches_capped = "{count, plural, one {First # match — narrow it further} other {First # matches — narrow it further}}"
+# Button beside the field that saves the query as a saved view (⌘S).
+save = "Save Search"
+# Under the save sheet's title: {query} is the query being saved, as the
+# field holds it after the app tidied it.
+save_summary = "Search for {query}"
+# Each result group's heading. # is how many hits the group has in all.
+group_task = "{count, plural, one {Tasks (#)} other {Tasks (#)}}"
+group_note = "{count, plural, one {Notes (#)} other {Notes (#)}}"
+group_event = "{count, plural, one {Calendar events (#)} other {Calendar events (#)}}"
+group_block = "{count, plural, one {Blocks (#)} other {Blocks (#)}}"
+group_stream = "{count, plural, one {Streams (#)} other {Streams (#)}}"
+group_context = "{count, plural, one {Contexts (#)} other {Contexts (#)}}"
+group_place = "{count, plural, one {Places (#)} other {Places (#)}}"
+group_attachment = "{count, plural, one {Attachments (#)} other {Attachments (#)}}"
+group_view = "{count, plural, one {Saved views (#)} other {Saved views (#)}}"
+group_person = "{count, plural, one {People (#)} other {People (#)}}"
+# Under a group that lists fewer hits than it has; re-runs the search for
+# that kind alone. # is how many there are in all.
+show_all = "{count, plural, one {Show all #} other {Show all #}}"
+# Heading of the autocomplete list under the field. The suggestions themselves
+# are operators such as `is:late`, which are not translated.
+suggestions = "Suggestions"
+# Beside an autocomplete suggestion: what the operator matches. The operator
+# itself (`stream:`, `#work`) is shown beside it and is not translated.
+op_stream = "Tasks and blocks in a stream or any stream under it"
+op_context = "Tasks carrying a context"
+op_state = "Tasks in a state: todo, in progress, done, cancelled or open"
+op_kind = "Only results of these kinds"
+op_is = "Late, stale, blocked, recurring, unplanned or in the Inbox"
+op_has = "Results with an attachment, a note, an estimate, a deadline or a dependency"
+op_priority = "Tasks of a priority, 1 (highest) to 5"
+op_planned = "When the task is planned for"
+op_target = "The soft deadline"
+op_hard = "The hard deadline"
+op_due = "The earlier of the two deadlines"
+op_created = "When it was created"
+op_done = "When the task was completed"
+op_place = "Tasks that need a place"
+op_date = "A day or a period, in your time zone"
+is_late = "Past a deadline, soft or hard, and still open"
+is_late_hard = "Past the hard deadline and still open"
+is_stale = "Open, with no deadline, and untouched for a while"
+is_blocked = "Waiting on another open task"
+is_recurring = "Made by a routine"
+is_unplanned = "Open, with no planned time"
+is_inbox = "In the Inbox: no stream, no plan, no deadline"
+is_fixed = "A block that does not move"
+is_flexible = "A block that may move"
+has_attachment = "With an attachment"
+has_note = "With a note"
+has_estimate = "With an estimate"
+has_deadline = "With a deadline"
+has_place = "Needing a place"
+has_dependency = "Waiting on another task"
+name_stream = "Stream"
+name_context = "Context"
 
 [apple.activity]
 title = "Activity"
