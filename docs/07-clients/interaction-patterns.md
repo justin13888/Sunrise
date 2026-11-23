@@ -155,8 +155,8 @@ undo step; dropped back where it started, or after Esc, it commits nothing.
 The keyboard path is the planning keys on a block with focus (Mac): ⌥↑/⌥↓,
 ⇧⌥↑/⇧⌥↓, ⌥←/⌥→, Return and Esc (`Keymap.planning`). A drag of one event of a
 repeating block names that event, previews it alone, and on its drop (or
-Return) asks how far it reaches, *this event* or *all events*, and commits the
-plan for the answer; *this and following* is the block editor's
+Return) asks how far it reaches, *this event*, *this and following* or *all
+events*, and commits the plan for the answer
 ([#1324](https://github.com/justin13888/Sunrise/issues/1324)).
 
 **A task dropped on the grid is planned there; it does not become a block.**
