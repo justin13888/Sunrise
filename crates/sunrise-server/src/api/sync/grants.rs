@@ -139,23 +139,26 @@ pub(crate) fn not_in_force() -> ApiError {
     )
 }
 
-/// The grant under `grant_id` if `account_id` may read `stream_id` through
-/// it at `now_ms`: claimed by that account, naming that Stream, unexpired.
+/// The grant under `grant_id` if `account_id` may read through it at
+/// `now_ms`: claimed by that account, unexpired, and, where `stream_id` is
+/// given, naming that Stream. A blob read passes `None`: a blob id names no
+/// Stream (ADR-0074).
 ///
 /// `None` for every other case, which the caller refuses or ends a stream on
-/// with `RELAY_GRANT_REVOKED`, never saying which case it was.
-pub(super) async fn in_force(
+/// with `RELAY_GRANT_REVOKED`, never saying which case it was. The one check
+/// every grant-routed read and stream makes, so none can drift from another.
+pub(crate) async fn in_force(
     state: &ServerState,
     grant_id: &[u8; 16],
     account_id: &str,
-    stream_id: &[u8; 16],
+    stream_id: Option<&[u8; 16]>,
     now_ms: u64,
 ) -> Result<Option<ViewerGrant>, ApiError> {
     Ok(state
         .store
         .viewer_grant(grant_id)
         .await?
-        .filter(|g| g.stream_id == *stream_id && g.serves(account_id, now_ms)))
+        .filter(|g| stream_id.is_none_or(|s| g.stream_id == *s) && g.serves(account_id, now_ms)))
 }
 
 /// Register a viewer grant on one of the caller's Streams.

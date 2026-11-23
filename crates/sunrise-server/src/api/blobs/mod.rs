@@ -199,9 +199,9 @@ pub struct GrantQuery {
 }
 
 /// The account a read is served from: the caller's own without a grant, and
-/// with one, the account that registered it, once the grant is claimed by the
-/// caller's account, unexpired, and, where `stream_id` is given, names that
-/// Stream.
+/// with one, the account that registered it, once
+/// [`in_force`](crate::api::sync::grants::in_force) holds the grant in force
+/// for the caller's account and, where `stream_id` is given, that Stream.
 ///
 /// Every grant that fails is the one `403 RELAY_GRANT_REVOKED` a subscription
 /// naming it gets, so the read is no oracle for which grants exist, and it is
@@ -218,11 +218,8 @@ pub(crate) async fn reader_account(
     };
     let grant_id = parse_hex16(&grant.0, "grant")?;
     let now_ms = state.clock.now_ms();
-    state
-        .store
-        .viewer_grant(&grant_id)
+    crate::api::sync::grants::in_force(state, &grant_id, account_id, stream_id, now_ms)
         .await?
-        .filter(|g| stream_id.is_none_or(|s| g.stream_id == *s) && g.serves(account_id, now_ms))
         .map(|g| g.owner_id)
         .ok_or_else(crate::api::sync::grants::not_in_force)
 }
