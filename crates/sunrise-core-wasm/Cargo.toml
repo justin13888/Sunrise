@@ -43,7 +43,16 @@ sunrise-id = { workspace = true }
 rusqlite = { workspace = true, features = ["ffi-sqlite-wasm-rs"] }
 # 0.6 is the line `rusqlite` 0.43 binds (`>=0.6.3, <0.7`); `WasmOsCallback` is
 # the clock, sleep and randomness the SAHPool VFS asks its host for.
-sqlite-wasm-rs = { version = "0.6.3", default-features = false }
+#
+# `wasm-bindgen` is what defines those host hooks for a browser. 0.6 moved them
+# behind it, and without it the five `rust_sqlite_wasm_host_*` symbols the C
+# side calls are left undefined, so the linker turns them into imports from a
+# module named `env` that no browser has, and the bundle fails to load. Nothing
+# but a browser notices: the wasm32 build and clippy both pass without it.
+# `mise run web-e2e` is what does.
+sqlite-wasm-rs = { version = "0.6.3", default-features = false, features = [
+    "wasm-bindgen",
+] }
 # The OPFS `SyncAccessHandle` pool VFS. 0.3 is the line built against
 # `sqlite-wasm-rs` 0.6, and it puts the pool behind the `sahpool` feature.
 sqlite-wasm-vfs = { version = "0.3.0", features = ["sahpool"] }
