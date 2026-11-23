@@ -4000,14 +4000,6 @@ pub mod devices {
         out
     }
 
-    /// this cannot be undone: to use that device again, pair it as a new device
-    #[must_use]
-    pub fn irreversible() -> String {
-        let mut out = String::new();
-        out.push_str("this cannot be undone: to use that device again, pair it as a new device");
-        out
-    }
-
     /// only this device can withdraw this revocation, with `sunrise device withdraw {id}`; if the account identity rotated with it, or the relay has been told, the device must be paired again instead
     #[must_use]
     pub fn withdrawable(id: &str) -> String {

@@ -387,13 +387,10 @@ async fn revoke(core: &Core, args: &[String]) -> CmdResult {
     println!("  - {}", strings::devices::no_recertify());
     // Said on the effective branch only: a gated revocation revoked nothing,
     // so there is nothing to undo. An ordinary revocation is withdrawn by
-    // this device (ADR-0056); one signed by the account identity is not, so
-    // for it pairing again is the only way back.
-    if outcome.revoked_by_authority {
-        println!("  - {}", strings::devices::irreversible());
-    } else {
-        println!("  - {}", strings::devices::withdrawable(&hex16(&target)));
-    }
+    // this device (ADR-0056). One signed by the account identity was signed
+    // by this device too, since it holds that identity's key, so it is
+    // withdrawn the same way and the same line is true of both.
+    println!("  - {}", strings::devices::withdrawable(&hex16(&target)));
     print_revocation_unwound(&outcome.revocation_unwound);
     let pending = core.relay_revocation_pending(&target)?;
     if pending {

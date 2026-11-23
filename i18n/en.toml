@@ -2954,9 +2954,9 @@ revoked_some_unrotated = "the account identity rotated, and every Stream key BUT
 unrotated_row = "(not a 16-byte stream id; nothing to rotate)"
 unrotated_note = "that device may still read them. This is a corrupt row in the local vault, not something the revocation can retry."
 no_recertify = "that device cannot certify itself back in under a new id"
-irreversible = "this cannot be undone: to use that device again, pair it as a new device"
-# Replaces `irreversible` under an ordinary revocation (ADR-0056). {id} is the
-# device's id.
+# Said under every effective revocation, including one signed by the account
+# identity: the device running the command holds that identity (ADR-0056).
+# {id} is the device's id.
 withdrawable = "only this device can withdraw this revocation, with `sunrise device withdraw {id}`; if the account identity rotated with it, or the relay has been told, the device must be paired again instead"
 # The report of `sunrise device withdraw`. {id} is the device's id.
 withdraw_not_author = "Nothing withdrawn: this device holds no revocation of {id} it can withdraw. A revocation another device made is withdrawn from that device, and one signed by the account identity is withdrawn only from the device holding that identity; otherwise pair {id} again as a new device."

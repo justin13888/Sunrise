@@ -1039,9 +1039,9 @@ pub struct CommandResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub revocation_unwound: Vec<String>,
     /// This `RevokeDevice` was signed by the account identity, so it is an
-    /// **authority revocation** (ADR-0058): no op from any device can unwind
-    /// it while the identity that signed it is in force, and a rotation
-    /// carries it forward.
+    /// **authority revocation** (ADR-0058): only the device holding the
+    /// identity that signed it can withdraw it, while that identity is in
+    /// force, and a rotation carries it forward.
     ///
     /// `false` for every other command, and for a revocation from a device
     /// that does not hold the account's signing key, which is every device
