@@ -96,7 +96,7 @@ still stands, and is kept here:
   [#1333](https://github.com/justin13888/Sunrise/issues/1333)), but nothing
   reads or writes the `persons` table, no other client offers or accepts a
   share, and no client reads a shared Stream
-  ([#1334](https://github.com/justin13888/Sunrise/issues/1334)). Closing it is a
+  ([#1336](https://github.com/justin13888/Sunrise/issues/1336)). Closing it is a
   second, security-critical epic — a sharing model that is almost right in an
   end-to-end-encrypted product is a vulnerability, not a partial feature.
 - **Calendar integration.** Only the Google client logic exists, with no

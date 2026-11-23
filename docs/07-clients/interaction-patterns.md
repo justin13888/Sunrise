@@ -379,8 +379,9 @@ The CLI makes and takes the link
 > list. The Apple app's parser still refuses the shape, because a sheet that
 > accepted the link with nowhere to take it would be the one failure this
 > section rules out: a link that goes somewhere plausible and wrong. Holding
-> the key, reading through the grant and the Apple accept sheet are
-> [#1334](https://github.com/justin13888/Sunrise/issues/1334).
+> the key is [#1335](https://github.com/justin13888/Sunrise/issues/1335);
+> reading through the grant and the Apple accept sheet are
+> [#1336](https://github.com/justin13888/Sunrise/issues/1336).
 
 ## Conflict-of-shortcut handling
 
