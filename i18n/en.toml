@@ -2360,6 +2360,20 @@ USAGE:
     sunrise identity new-code    print a new recovery code for the identity in
                                  force and retire the old one
 
+  sharing
+    sunrise share key            print this account's share key: what someone
+                                 who shares a Stream with you needs. Only the
+                                 device that created the account can open a
+                                 share
+    sunrise share <stream> <share-key> [--days <n>]
+                                 share a Stream, read-only, with the account
+                                 whose key it is, for n days or for good, and
+                                 print the sunrise://share link to send them.
+                                 Needs SUNRISE_SYNC_URL and a sign-in
+    sunrise accept <link>        check that a sunrise://share link was made
+                                 for this account, show who shared which
+                                 Stream, and claim it on the relay
+
   views and preferences
     sunrise views                list saved views
     sunrise views save <name> <view> [--query <q>] [--contexts a,b]
@@ -2510,6 +2524,42 @@ unrecorded = "registered as {device} but could not record it at {path}: {error}"
 # {identity} and {device} are ids; {email} the account's address.
 ready = "Account {identity} ({email}) ready; this device is {device}."
 paired_no_code = "this vault was paired into an existing account, so it holds no identity key and cannot produce a recovery code. The device that created the account is the one that can."
+
+[cli.share]
+usage = "usage: share key | share <stream> <share-key> [--days <n>] | accept <sunrise://share/...>"
+# {var} is the environment variable that names the relay.
+needs_relay = "set {var} to the relay origin, and run `sunrise bootstrap` once"
+not_signed_in = "not signed in; run `sunrise login` first, or set SUNRISE_SYNC_TOKEN"
+bad_key = "that is not a share key; ask for the output of `sunrise share key`"
+bad_days = "--days takes a whole number of days, 1 or more"
+not_a_link = "that is not a sunrise://share link"
+# stderr, after `sunrise share key` prints the key. {identity} is this
+# account's identity id, in hex.
+key_note = "Send this key to whoever will share a Stream with you. They will see your identity as {identity}; read it to them over another channel."
+# stderr, after `sunrise share` prints the link. {stream} is the Stream's id,
+# {identity} the recipient's identity id in hex, {mine} this account's.
+shared = "Shared {stream}, read-only, with identity {identity}. Send them the link above; they will see this account as {mine}."
+# {days} is the share's length in days.
+shared_until = "The share ends in {days, plural, one {# day} other {# days}}."
+# The share op is written but the relay refused or could not be reached.
+# {error} is what the relay said.
+unregistered = "the share is recorded, but the relay did not register it, so no link was made: {error}. Run the same command again."
+# {name} is the Stream's name as the owner sealed it, {identity} the owner's
+# identity id in hex.
+offered = "\"{name}\" is shared with you, read-only, by identity {identity}. Check that id with them over another channel."
+# {date} is the instant the share ends, as YYYY-MM-DD HH:MM in the reader's zone.
+offered_until = "The share ends at {date}."
+# {grant} is the relay's id for the grant, in hex.
+claimed = "Accepted: the relay grant {grant} now names this account."
+mismatch = "the relay's grant is for another Stream than the link's; nothing is accepted"
+not_held = "the relay holds no share under this link for this account: it was withdrawn, it expired, another account accepted it first, or it is your own"
+not_yet_read = "Reading a shared Stream is not built yet: this account holds the grant, and no Stream appears in your lists."
+# Why a link did not open for this account.
+other_recipient = "this link was made for another account"
+bad_signature = "this link's grant was not signed by the key it carries; do not trust it"
+expired = "this link's share has expired"
+no_identity_key = "this device does not hold the account's identity key, so it cannot open a share; accept on the device that created the account"
+unopenable = "this link's grant does not open: {error}"
 
 [cli.vaults]
 # stderr, when `sunrise vaults` has nothing to list. {dir} is a path.
