@@ -392,8 +392,11 @@ pub enum CoreCommand {
     },
     /// Withdraw this device's own revocation of a device (ADR-0056). Offer it
     /// only on a row whose `withdrawable` is true; the outcome's `withdrawal`
-    /// says whether the device is back. See
-    /// [`sunrise_core::Command::WithdrawRevocation`].
+    /// says whether the device is back. Refused with
+    /// [`crate::BindingError::FeatureUnsupportedByDevices`] while a device to
+    /// update lacks `core.revoke_withdraw` or, for a removal the account
+    /// identity made, `core.revoke_withdraw_authority`; there is no override.
+    /// See [`sunrise_core::Command::WithdrawRevocation`].
     WithdrawRevocation {
         /// The device, as the row's `deviceRef`.
         device_id: EntityRef,

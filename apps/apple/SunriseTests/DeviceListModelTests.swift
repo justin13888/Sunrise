@@ -428,39 +428,6 @@ struct DeviceListModelTests {
         }
     }
 
-    /// **The feature refusal** (ADR-0056 §7). A vault with a device that would
-    /// drop the op refuses the withdrawal, with no override; the user is told
-    /// how many devices to update rather than the core's English.
-    ///
-    /// Synthetic, because the refusal needs a second device without the
-    /// feature. The message is `EngineError::FeatureUnsupportedByDevices`'s
-    /// display as `BindingError.Core` carries it. Anything else falls back to
-    /// the error's own description, never to a withdrawal.
-    @Test
-    func aWithdrawalTheFeatureGateRefusesSaysWhatToUpdate() {
-        let refusal = BindingError.Core(
-            message: "enabling `core.revoke_withdraw` needs 2 other device(s) to update first"
-        )
-        #expect(DeviceListModel.withdrawalRefusal(refusal) == L10n.Devices.withdrawAwaitsUpdate(count: 2))
-
-        let other = BindingError.Core(
-            message: "a device cannot withdraw a revocation of itself: it never made one"
-        )
-        #expect(DeviceListModel.withdrawalRefusal(other) == other.localizedDescription)
-    }
-
-    /// **The authority feature's refusal** (ADR-0056 §7). Withdrawing a
-    /// removal the account identity made is gated by its own feature,
-    /// `core.revoke_withdraw_authority`; its refusal says what to update just
-    /// as the device feature's does, not the core's English.
-    @Test
-    func anIdentityWithdrawalTheFeatureGateRefusesSaysWhatToUpdate() {
-        let refusal = BindingError.Core(
-            message: "enabling `core.revoke_withdraw_authority` needs 3 other device(s) to update first"
-        )
-        #expect(DeviceListModel.withdrawalRefusal(refusal) == L10n.Devices.withdrawAwaitsUpdate(count: 3))
-    }
-
     /// The disclosure is dismissible and the error is too, so neither becomes
     /// a permanent fixture of the settings screen.
     @Test

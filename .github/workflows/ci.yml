@@ -1296,15 +1296,26 @@ jobs:
     # 12-core M3 Pro at `aa1629b` and at #1203's head with
     # `cargo test -p sunrise-core --all-features`, the unit-test binary went
     # from 609 s to 151 s (141 s under `SUNRISE_PROPTEST_DEPTH=full`, as this
-    # workflow runs it: depth is not what costs). That is still far above
+    # workflow runs it: depth is not what costs). That was still far above
     # about 60 s a mutant, rebuild included, which a shard of about 105
-    # mutants needs to finish under 120 minutes, so expect `sunrise-core`'s
-    # shards to keep timing out. What is left is the rebuild-identity check
-    # after every write, 64% of a sampled run's test-thread time and
-    # quadratic in a test's log length (one 200-write test alone is 38 s),
-    # and the threads waiting on SQLite's global allocator mutex beneath it.
-    # Bounding proptest case counts would not reach that floor. #1279 tracks
-    # it.
+    # mutants needs to finish under 120 minutes. What was left was the
+    # rebuild-identity check after every write, 64% of a sampled run's
+    # test-thread time and quadratic in a test's log length (one 200-write
+    # test alone was 34-38 s), and the threads waiting beneath it on the
+    # mutex SQLite's memory statistics take on every allocation. #1279 checks
+    # a long test setup once at its end instead of after each write (that
+    # test is now 0.9 s), and builds the bundled SQLite with
+    # `SQLITE_DEFAULT_MEMSTATUS=0` (`.cargo/config.toml`). Measured on the
+    # same M3 Pro under `SUNRISE_PROPTEST_DEPTH=full`, the unit-test binary
+    # went from 199 s at `5fbcfc6` to 39-52 s over two runs, and its system
+    # time from 491 s to 3-5 s, with other builds loading the machine
+    # throughout. The run cannot end sooner than its slowest test alone, and
+    # the task-order property test, whose every write stays checked, takes
+    # about 28 s. With the ~13 s incremental rebuild a mutant is 52-65 s
+    # here, about the 60 s budget, and a runner has fewer cores than this
+    # laptop: no runner has measured it yet. Read the
+    # next nightly's baseline phase before trusting the 24-shard split, and
+    # raise the shard count if it is still over.
     #
     # The rates are shard averages over the first third of each slice, not
     # over the whole crate: cargo-mutants' default `slice` sharding gives each

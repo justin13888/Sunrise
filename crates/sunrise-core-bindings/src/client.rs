@@ -474,7 +474,8 @@ impl SunriseCore {
     ///
     /// A command does this itself once every paired device has said it
     /// supports the feature. Unless `confirmed`, this refuses while one has
-    /// not, with a [`BindingError::Core`] naming them; ask the user, since
+    /// not, with a [`BindingError::FeatureUnsupportedByDevices`] naming them
+    /// (read them with [`crate::feature_refusal`]); ask the user, since
     /// such a device goes read-only until it is updated, and call again with
     /// `confirmed: true`.
     pub fn enable_field_ops(&self, confirmed: bool) -> Result<Vec<String>, BindingError> {

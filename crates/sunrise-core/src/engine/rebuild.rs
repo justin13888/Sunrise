@@ -550,7 +550,8 @@ fn pending_ops(tx: &Transaction<'_>) -> Result<Vec<Pending>, EngineError> {
 /// engine built by the tests' `engine_seeded`, which turns it on for its
 /// thread ([`enable`]), as does the tests' plain `engine`. A test that builds
 /// rows no op wrote, as a vault older than the merge holds them, turns it off
-/// ([`disable`]).
+/// ([`disable`]). A long setup pauses it ([`pause`]) and checks once at its
+/// end.
 #[cfg(test)]
 pub(super) mod check {
     use super::{TableClass, TABLE_CLASSES};
@@ -564,6 +565,39 @@ pub(super) mod check {
     thread_local! {
         /// Whether a command or a delivery checks the rebuild after it.
         static AFTER_EVERY_WRITE: Cell<bool> = const { Cell::new(false) };
+        /// How many [`Paused`] guards are live on this thread. The check
+        /// after a write is skipped while any is.
+        static PAUSED: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Skips the after-every-write check on this thread while it lives,
+    /// without turning it off: once it is dropped, a check [`enable`] turned
+    /// on runs after every write again, and one [`disable`] turned off,
+    /// before or while it lived, stays off. See [`pause`].
+    #[must_use = "the check is paused only while the guard lives"]
+    pub(crate) struct Paused(());
+
+    impl Drop for Paused {
+        fn drop(&mut self) {
+            PAUSED.with(|c| c.set(c.get() - 1));
+        }
+    }
+
+    /// Pause the after-every-write check for a long setup the test does not
+    /// assert on, such as creating hundreds of rows one command at a time:
+    /// each write's check rebuilds the whole log, so the setup is quadratic
+    /// (#1279). The test checks the rebuild once when the setup is done,
+    /// with [`Engine::assert_rebuild_identity`]. A property test's own
+    /// writes are never paused.
+    pub(crate) fn pause() -> Paused {
+        PAUSED.with(|c| c.set(c.get() + 1));
+        Paused(())
+    }
+
+    /// Whether a write on this thread is checked after it: [`enable`]d, not
+    /// [`disable`]d since, and no [`Paused`] guard live.
+    fn after_every_write() -> bool {
+        AFTER_EVERY_WRITE.with(Cell::get) && PAUSED.with(Cell::get) == 0
     }
 
     /// Check the rebuild after every command and delivery on this thread.
@@ -666,12 +700,33 @@ pub(super) mod check {
         }
 
         /// [`Self::assert_rebuild_identity`], when this thread checks after
-        /// every write ([`enable`]) and the write left a transaction-free
-        /// connection to check on.
+        /// every write ([`enable`]), no [`Paused`] guard is live, and the
+        /// write left a transaction-free connection to check on.
         pub(in crate::engine) fn check_rebuild_after_write(&self, db: &Db) {
-            if AFTER_EVERY_WRITE.with(Cell::get) && db.conn().is_autocommit() {
+            if after_every_write() && db.conn().is_autocommit() {
                 self.assert_rebuild_identity(db);
             }
         }
+    }
+
+    #[test]
+    fn a_pause_skips_the_check_only_while_it_lives() {
+        enable();
+        let outer = pause();
+        let inner = pause();
+        assert!(!after_every_write());
+        drop(inner);
+        assert!(!after_every_write(), "the outer pause still holds");
+        drop(outer);
+        assert!(after_every_write(), "the enabled check resumes");
+    }
+
+    #[test]
+    fn a_disable_inside_a_pause_outlives_it() {
+        enable();
+        let setup = pause();
+        disable();
+        drop(setup);
+        assert!(!after_every_write(), "a disabled check stays off");
     }
 }
