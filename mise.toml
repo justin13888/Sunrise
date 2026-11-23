@@ -227,6 +227,22 @@ target/tools/bin/wasm-bindgen --target web --no-typescript \
   target/wasm32-unknown-unknown/release/sunrise_core_wasm.wasm
 '''
 
+# The web client in a headless browser (#1257): the built page, the real
+# `core.worker.ts`, the bundle `web-wasm` just built, and real OPFS together.
+# `apps/web/playwright.config.ts` builds the app and serves it with `vite
+# preview`; the specs are `apps/web/e2e/*.e2e.ts`. `playwright install` is a
+# no-op once the pinned Chromium is in Playwright's cache, and fetches it
+# otherwise. CI's `web-e2e` job runs the same three steps.
+[tasks.web-e2e]
+description = "Build the web core bundle, then run the browser specs against the built app"
+depends = ["web-wasm"]
+run = '''
+set -euo pipefail
+cd apps/web
+bunx playwright install chromium
+bun run e2e
+'''
+
 # `--all-targets` is load-bearing beyond "run the tests in the tree", and the
 # reason is `crates/sunrise-log/tests/event_catalog/`. That gate reads the
 # dep-info rustc leaves beside each artefact to learn which files the compiler
