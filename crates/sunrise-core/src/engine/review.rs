@@ -622,6 +622,9 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::VaultRequires(_)
         | InnerOp::DeviceFeatures(_)
         | InnerOp::ShareGrant(_)
+        | InnerOp::ShareRevoke(_)
+        | InnerOp::ShareDecline(_)
+        | InnerOp::ShareResealRequest(_)
         // A digest says what a replica holds, not what anyone did.
         | InnerOp::StreamDigest(_)
         // A field-level write of a task is replayed onto the task before

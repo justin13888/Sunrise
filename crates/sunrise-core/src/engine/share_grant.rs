@@ -35,31 +35,60 @@
 //! device filed therefore falls back to an earlier grant of the same
 //! recipient, or lapses until the owner shares it again.
 //!
-//! Of the grants that count, each recipient's latest by envelope stamp
-//! (HLC, then device, then `seq`) is its share. A re-seal is a later grant of
-//! the same recipient, so the share moves to the newest epoch with it.
+//! A `ShareRevoke` or `ShareDecline` op ends a recipient's share
+//! ([`Engine::revoke_share`], [`Engine::record_share_decline`]). It counts
+//! where its sender's reads are not bounded; it carries no identity
+//! signature, because only the account's own devices write the vault-meta
+//! stream, and ending a share hands nobody a key.
 //!
-//! # What is not here
+//! Each recipient's events are ordered by envelope stamp (HLC, then device,
+//! then `seq`). The **cut** is the latest fresh grant or end. Where the cut
+//! is an end, the share has ended, and no re-seal stamped after it revives
+//! it: a sibling that rotated before it saw the revocation re-sealed to a
+//! share it did not know had ended, and the next rotation must still leave
+//! the recipient out. Otherwise the share is the latest grant stamped at or
+//! after the cut, fresh or re-sealed, so it moves to the newest epoch with
+//! each re-seal. Where a recipient has no believed fresh grant and no end,
+//! its latest re-seal is its share.
 //!
-//! No `share_revoke` or `share_decline` op exists yet, so a re-seal leaves
-//! nobody out but the expired; and a rotation on a device that does not hold
-//! `ID_S_priv` cannot sign one, so its epoch reaches no recipient
-//! (`core.share.reseal_skipped`).
+//! # Re-sealing
+//!
+//! Every rotation re-seals its epoch to the shares in force, leaving out the
+//! ended and the expired. A device without `ID_S_priv` cannot sign that
+//! re-seal (`core.share.reseal_skipped`). It logs a `ShareResealRequest`
+//! instead, naming the epoch, its key, and the shares its own re-seal would
+//! have reached, and a holder fills the gap ([`Engine::backfill_share_grants`]).
+//!
+//! The holder re-seals a requested epoch to the shares the request names and
+//! no others, less any its own fold has ended. It never re-seals an epoch to
+//! a share its own fold alone says is in force: the minter may have ended
+//! that share in the very transaction that minted the epoch (a revocation
+//! rotates), and a holder that learned the epoch before it applied the end
+//! would otherwise seal the new key to the recipient the rotation was for.
+//! A key, once sealed, is not taken back by any later op.
+//!
+//! An epoch a holder minted is re-sealed by its own rotation and has no
+//! request, so no other holder re-seals it: a backfill costs a `ShareGrant`
+//! per share per holder that sees the request, and only for an epoch a
+//! device without `ID_S_priv` minted.
 
 use super::merge::to_sql;
 use super::stream::read_stream;
 use super::{Engine, EngineError, META_STREAM};
 use crate::bytes::hex_short;
-use crate::control_op::ShareGrantOpPayload;
+use crate::control_op::{
+    ResealRecipient, ShareDeclinePayload, ShareGrantOpPayload, ShareResealRequestPayload,
+    ShareRevokePayload,
+};
 use crate::inner_op::{decode_inner_op, InnerOp};
 use crate::keychain::KeychainError;
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params_from_iter, Connection, Transaction};
 use std::collections::BTreeMap;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
-    decode_envelope, decode_share_grant, ShareGrant, ShareGrantTerms, ShareRecipient, ShareRole,
-    SharedEpoch, StreamKey, StreamMetadata,
+    decode_envelope, decode_share_grant, stream_key_id, ShareGrant, ShareGrantTerms,
+    ShareRecipient, ShareRole, SharedEpoch, StreamKey, StreamMetadata,
 };
 use sunrise_domain::{Person, PRIVATE_DOMAIN_BYTES};
 use sunrise_id::{EntityKind, EntityRef};
@@ -67,6 +96,12 @@ use sunrise_storage::Db;
 
 /// The op-log `inner_kind` of a share grant.
 const SHARE_GRANT_KIND: &str = "share.grant";
+/// The op-log `inner_kind` of a share revocation.
+const SHARE_REVOKE_KIND: &str = "share.revoke";
+/// The op-log `inner_kind` of a share decline.
+const SHARE_DECLINE_KIND: &str = "share.decline";
+/// The op-log `inner_kind` of a re-seal request.
+const SHARE_RESEAL_REQUEST_KIND: &str = "share.reseal_request";
 
 /// An op's envelope stamp, `(hlc, device, seq)`: the order a recipient's
 /// grants are told apart in.
@@ -88,6 +123,72 @@ pub struct StreamShare {
     /// The newest grant, in its canonical encoding: what reaches the
     /// recipient beside the relay grant's claim token.
     pub grant: Vec<u8>,
+}
+
+/// How a share ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareEnd {
+    /// The owner revoked it (`ShareRevoke`).
+    Revoked,
+    /// The recipient declined it (`ShareDecline`).
+    Declined,
+}
+
+/// A share of a Stream that has ended, as the share fold reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndedShare {
+    /// The recipient identity whose share ended.
+    pub recipient_identity_id: [u8; 16],
+    /// Whether the owner revoked it or the recipient declined it.
+    pub end: ShareEnd,
+    /// The op's own time: `effective_at_ms` or `declined_at_ms`.
+    pub at_ms: u64,
+}
+
+/// One Stream's shares: those in force and those that ended.
+#[derive(Debug, Default)]
+struct ShareFold {
+    shares: Vec<StreamShare>,
+    ended: Vec<EndedShare>,
+}
+
+impl ShareFold {
+    fn ended_ids(&self) -> Vec<[u8; 16]> {
+        self.ended.iter().map(|e| e.recipient_identity_id).collect()
+    }
+}
+
+/// One recipient's believed events, as the fold collects them.
+#[derive(Default)]
+struct RecipientEvents {
+    /// Every grant: its stamp, whether it is a re-seal, and the share.
+    grants: Vec<(Stamp, bool, StreamShare)>,
+    /// Every end, with its stamp.
+    ends: Vec<(Stamp, EndedShare)>,
+}
+
+impl RecipientEvents {
+    /// The share in force, or how it ended. See the [module docs](self).
+    fn resolve(self) -> Option<Result<StreamShare, EndedShare>> {
+        let fresh = self
+            .grants
+            .iter()
+            .filter(|(_, r, _)| !r)
+            .map(|(s, _, _)| *s);
+        let last_fresh = fresh.max();
+        let last_end = self.ends.into_iter().max_by_key(|(s, _)| *s);
+        let cut = match (last_fresh, last_end) {
+            (_, Some((end_at, end))) if last_fresh.is_none_or(|f| f < end_at) => {
+                return Some(Err(end));
+            }
+            (cut, _) => cut,
+        };
+        self.grants
+            .into_iter()
+            .filter(|(s, _, _)| cut.is_none_or(|c| *s >= c))
+            .max_by_key(|(s, _, _)| *s)
+            .map(|(_, _, share)| Ok(share))
+    }
 }
 
 /// Why the fold does not believe a `ShareGrant` op, as its log line spells it.
@@ -230,10 +331,132 @@ impl Engine {
                 person: recipient.id,
                 recipient_id_d_pub,
                 grant: bytes.clone(),
+                reseal: false,
                 unknown: sunrise_domain::Unknowns::new(),
             });
             self.emit_control_op(tx, &op, now_ms, None)?;
             Ok(bytes)
+        });
+        match (written, refused) {
+            (_, Some(e)) => Err(e),
+            (written, None) => Ok(written?),
+        }
+    }
+
+    /// Revoke `stream`'s share with `recipient_identity_id`, and rotate the
+    /// Stream key so the recipient reads nothing written from now on
+    /// (`docs/03-crypto/sharing-with-others.md` §Revoking access).
+    ///
+    /// Logs a `ShareRevoke` op, then mints the Stream's next epoch and
+    /// distributes it in the same transaction. The rotation's re-seal reads
+    /// the revocation, so it leaves the recipient out, and so does every
+    /// later rotation on every replica that holds the op. A device without
+    /// `ID_S_priv` can revoke: its rotation re-seals to nobody, and a device
+    /// that holds `ID_S_priv` re-seals the epoch to the shares still in force
+    /// once it learns it ([`Self::backfill_share_grants`]). Returns the
+    /// epoch the rotation minted.
+    ///
+    /// Withdrawing the relay viewer grant (step 3) is the caller's.
+    ///
+    /// # Errors
+    /// [`EngineError::Invalid`] for a ref that is not a shareable Stream, a
+    /// device the register calls revoked, or a recipient with no share of
+    /// the Stream in force on this replica. Nothing is written on any of
+    /// them. Storage failures otherwise.
+    pub fn revoke_share(
+        &self,
+        db: &mut Db,
+        stream: EntityRef,
+        recipient_identity_id: [u8; 16],
+    ) -> Result<u32, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let stream_id = *stream.bytes();
+        let op = InnerOp::ShareRevoke(ShareRevokePayload {
+            stream_id,
+            recipient_identity_id,
+            effective_at_ms: now_ms,
+            unknown: sunrise_domain::Unknowns::new(),
+        });
+        self.end_share(db, stream, recipient_identity_id, &op, true)
+    }
+
+    /// Record that `recipient_identity_id` declined `stream`'s share
+    /// (`docs/03-crypto/sharing-with-others.md` §Granting access step 7).
+    ///
+    /// The recipient's decline reaches the owner out of band, as the grant
+    /// reached it. This logs the account's record of it as a `ShareDecline`
+    /// op, which ends the share as a revocation does: no later re-seal
+    /// reaches the recipient. It rotates nothing, because the recipient chose
+    /// not to read; the next rotation leaves it out.
+    ///
+    /// # Errors
+    /// As [`Self::revoke_share`].
+    pub fn record_share_decline(
+        &self,
+        db: &mut Db,
+        stream: EntityRef,
+        recipient_identity_id: [u8; 16],
+    ) -> Result<(), EngineError> {
+        let now_ms = self.clock.now_ms();
+        let op = InnerOp::ShareDecline(ShareDeclinePayload {
+            stream_id: *stream.bytes(),
+            recipient_identity_id,
+            declined_at_ms: now_ms,
+            unknown: sunrise_domain::Unknowns::new(),
+        });
+        self.end_share(db, stream, recipient_identity_id, &op, false)
+            .map(|_| ())
+    }
+
+    /// Log `end`, which ends `stream`'s share with `recipient_identity_id`,
+    /// and rotate the Stream key beside it where `rotate` says so. Returns
+    /// the minted epoch, or the live one where nothing rotated.
+    fn end_share(
+        &self,
+        db: &mut Db,
+        stream: EntityRef,
+        recipient_identity_id: [u8; 16],
+        end: &InnerOp,
+        rotate: bool,
+    ) -> Result<u32, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let stream_id = *stream.bytes();
+        if stream.kind() != EntityKind::Stream || unshareable(&stream_id) {
+            return Err(EngineError::Invalid(format!(
+                "{stream} is not a Stream that can be shared"
+            )));
+        }
+        let mut refused: Option<EngineError> = None;
+        let abort = || rusqlite::Error::InvalidQuery;
+        let written = db.with_tx(|tx| -> rusqlite::Result<u32> {
+            // A revoked device holds no pen, for `rotate_stream_key`'s reason.
+            if self.is_revoked(tx, &self.keychain.device_id())? {
+                refused = Some(EngineError::Invalid(
+                    "this device is revoked and cannot end a share".into(),
+                ));
+                return Err(abort());
+            }
+            let fold = self.share_fold(tx, &stream_id).map_err(to_sql)?;
+            if !fold
+                .shares
+                .iter()
+                .any(|s| s.recipient_identity_id == recipient_identity_id)
+            {
+                refused = Some(EngineError::Invalid(format!(
+                    "{stream} has no share in force with that identity"
+                )));
+                return Err(abort());
+            }
+            let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+            self.emit_control_op(tx, end, now_ms, Some(&seal_under))?;
+            if !rotate {
+                return Ok(self.keychain.current_epoch_tx(tx, &stream_id)?.unwrap_or(0));
+            }
+            let (epoch, key) =
+                self.keychain
+                    .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
+            self.emit_key_envelopes(tx, &stream_id, epoch, &key, now_ms, Some(&seal_under))?;
+            Ok(epoch)
         });
         match (written, refused) {
             (_, Some(e)) => Err(e),
@@ -252,27 +475,49 @@ impl Engine {
         db: &Db,
         stream: EntityRef,
     ) -> Result<Vec<StreamShare>, EngineError> {
-        self.stream_shares_in(db.conn(), stream.bytes())
+        Ok(self.share_fold(db.conn(), stream.bytes())?.shares)
     }
 
-    /// The share fold over the op log. See the [module docs](self).
-    fn stream_shares_in(
+    /// Every share of `stream` that a revocation or a decline ended on this
+    /// replica, and was not shared again since, ordered by recipient
+    /// identity: what the owner's UI shows as revoked or declined.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub fn ended_stream_shares(
+        &self,
+        db: &Db,
+        stream: EntityRef,
+    ) -> Result<Vec<EndedShare>, EngineError> {
+        Ok(self.share_fold(db.conn(), stream.bytes())?.ended)
+    }
+
+    /// Every vault-meta op of one of `kinds` this replica holds and can open,
+    /// with its envelope stamp. One whose sender this replica holds no key
+    /// for, or that does not open or decode, is passed over.
+    fn meta_ops(
         &self,
         conn: &Connection,
-        stream_id: &[u8; 16],
-    ) -> Result<Vec<StreamShare>, EngineError> {
+        kinds: &[&str],
+    ) -> Result<Vec<(Stamp, InnerOp)>, EngineError> {
         let envelopes: Vec<Vec<u8>> = {
-            let mut stmt =
-                conn.prepare("SELECT envelope FROM ops WHERE stream_id = ? AND inner_kind = ?")?;
-            let rows = stmt.query_map(params![&META_STREAM[..], SHARE_GRANT_KIND], |r| r.get(0))?;
+            let marks = vec!["?"; kinds.len()].join(", ");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT envelope FROM ops WHERE stream_id = ? AND inner_kind IN ({marks})"
+            ))?;
+            let args = std::iter::once(rusqlite::types::Value::Blob(META_STREAM.to_vec())).chain(
+                kinds
+                    .iter()
+                    .map(|k| rusqlite::types::Value::Text((*k).to_owned())),
+            );
+            let rows = stmt.query_map(params_from_iter(args), |r| r.get(0))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         if envelopes.is_empty() {
             return Ok(Vec::new());
         }
         let signers = self.device_signing_keys(conn)?;
-        let chain = self.chain_identities(conn)?;
-        let mut latest: BTreeMap<[u8; 16], (Stamp, StreamShare)> = BTreeMap::new();
+        let mut ops = Vec::new();
         for bytes in envelopes {
             let Ok(env) = decode_envelope(&bytes) else {
                 continue;
@@ -288,40 +533,89 @@ impl Engine {
             else {
                 continue;
             };
-            let Ok(InnerOp::ShareGrant(payload)) = decode_inner_op(&inner) else {
-                continue;
-            };
-            let Ok(grant) = self.believe_share_grant(conn, &chain, &payload, &env.device_id)?
-            else {
-                continue;
-            };
-            let terms = grant.terms();
-            if terms.stream_id != *stream_id {
-                continue;
+            if let Ok(op) = decode_inner_op(&inner) {
+                ops.push(((env.hlc, env.device_id, env.seq), op));
             }
-            let stamp = (env.hlc, env.device_id, env.seq);
-            if latest
-                .get(&terms.recipient_identity_id)
-                .is_some_and(|(held, _)| *held >= stamp)
-            {
-                continue;
-            }
-            latest.insert(
-                terms.recipient_identity_id,
-                (
-                    stamp,
-                    StreamShare {
-                        person: payload.person,
-                        recipient_identity_id: terms.recipient_identity_id,
-                        recipient_id_d_pub: payload.recipient_id_d_pub,
-                        epoch: terms.epoch,
-                        expires_at_ms: terms.expires_at_ms,
-                        grant: payload.grant,
-                    },
-                ),
-            );
         }
-        Ok(latest.into_values().map(|(_, share)| share).collect())
+        Ok(ops)
+    }
+
+    /// The share fold over the op log. See the [module docs](self).
+    fn share_fold(
+        &self,
+        conn: &Connection,
+        stream_id: &[u8; 16],
+    ) -> Result<ShareFold, EngineError> {
+        let ops = self.meta_ops(
+            conn,
+            &[SHARE_GRANT_KIND, SHARE_REVOKE_KIND, SHARE_DECLINE_KIND],
+        )?;
+        if ops.is_empty() {
+            return Ok(ShareFold::default());
+        }
+        let chain = self.chain_identities(conn)?;
+        let mut events: BTreeMap<[u8; 16], RecipientEvents> = BTreeMap::new();
+        for (stamp, op) in ops {
+            let sender = stamp.1;
+            let (recipient, end) = match op {
+                InnerOp::ShareGrant(payload) => {
+                    let Ok(grant) = self.believe_share_grant(conn, &chain, &payload, &sender)?
+                    else {
+                        continue;
+                    };
+                    let terms = grant.terms();
+                    if terms.stream_id != *stream_id {
+                        continue;
+                    }
+                    events
+                        .entry(terms.recipient_identity_id)
+                        .or_default()
+                        .grants
+                        .push((
+                            stamp,
+                            payload.reseal,
+                            StreamShare {
+                                person: payload.person,
+                                recipient_identity_id: terms.recipient_identity_id,
+                                recipient_id_d_pub: payload.recipient_id_d_pub,
+                                epoch: terms.epoch,
+                                expires_at_ms: terms.expires_at_ms,
+                                grant: payload.grant,
+                            },
+                        ));
+                    continue;
+                }
+                InnerOp::ShareRevoke(p) if p.stream_id == *stream_id => (
+                    p.recipient_identity_id,
+                    (ShareEnd::Revoked, p.effective_at_ms),
+                ),
+                InnerOp::ShareDecline(p) if p.stream_id == *stream_id => (
+                    p.recipient_identity_id,
+                    (ShareEnd::Declined, p.declined_at_ms),
+                ),
+                _ => continue,
+            };
+            if self.is_read_bounded(conn, &sender)? {
+                continue;
+            }
+            events.entry(recipient).or_default().ends.push((
+                stamp,
+                EndedShare {
+                    recipient_identity_id: recipient,
+                    end: end.0,
+                    at_ms: end.1,
+                },
+            ));
+        }
+        let mut fold = ShareFold::default();
+        for recipient in events.into_values() {
+            match recipient.resolve() {
+                Some(Ok(share)) => fold.shares.push(share),
+                Some(Err(ended)) => fold.ended.push(ended),
+                None => {}
+            }
+        }
+        Ok(fold)
     }
 
     /// Whether the fold believes `p` from `sender`, and the grant it carries
@@ -364,34 +658,92 @@ impl Engine {
     /// fold decides what it counts for. One the fold would not believe today
     /// is logged, because a share that silently fails to reach its recipient
     /// is the failure nobody else would see.
+    ///
+    /// One it believes may name an epoch below one a re-seal request this
+    /// replica holds names it for, as a share the minter folded before this
+    /// replica did; the backfill carries it to that epoch
+    /// ([`Self::backfill_share_grants`]).
     pub(super) fn apply_share_grant(
         &self,
         tx: &Transaction<'_>,
         p: &ShareGrantOpPayload,
         sender: &[u8; 16],
+        now_ms: u64,
     ) -> rusqlite::Result<()> {
         let chain = self.chain_identities(tx)?;
-        if let Err(why) = self.believe_share_grant(tx, &chain, p, sender)? {
+        match self.believe_share_grant(tx, &chain, p, sender)? {
+            Ok(grant) => self.backfill_share_grants(tx, &grant.terms().stream_id, now_ms),
+            Err(why) => {
+                tracing::warn!(
+                    ev = "core.share.grant_refused",
+                    reason = why.as_str(),
+                    sender_h = hex_short(sender),
+                    "a share grant op is not believed; it is kept and counts for no share"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Apply a `ShareRevoke` or `ShareDecline` op: as for a grant, nothing is
+    /// stored beside it, and one from a sender whose reads are bounded is
+    /// logged, because the fold will not count it.
+    pub(super) fn apply_share_end(
+        &self,
+        tx: &Transaction<'_>,
+        sender: &[u8; 16],
+    ) -> rusqlite::Result<()> {
+        if self.is_read_bounded(tx, sender)? {
             tracing::warn!(
-                ev = "core.share.grant_refused",
-                reason = why.as_str(),
+                ev = "core.share.end_refused",
+                reason = Refusal::BoundedSender.as_str(),
                 sender_h = hex_short(sender),
-                "a share grant op is not believed; it is kept and counts for no share"
+                "a share revocation or decline is not believed; it is kept and ends no share"
             );
         }
         Ok(())
+    }
+
+    /// Apply a `ShareResealRequest` op: nothing is stored beside it. One from
+    /// a sender whose reads are bounded is logged and asks for nothing; any
+    /// other is backfilled at once where this device can
+    /// ([`Self::backfill_share_grants`]).
+    pub(super) fn apply_share_reseal_request(
+        &self,
+        tx: &Transaction<'_>,
+        p: &ShareResealRequestPayload,
+        sender: &[u8; 16],
+        now_ms: u64,
+    ) -> rusqlite::Result<()> {
+        if self.is_read_bounded(tx, sender)? {
+            tracing::warn!(
+                ev = "core.share.reseal_request_refused",
+                reason = Refusal::BoundedSender.as_str(),
+                sender_h = hex_short(sender),
+                "a share re-seal request is not believed; it is kept and asks for nothing"
+            );
+            return Ok(());
+        }
+        self.backfill_share_grants(tx, &p.stream_id, now_ms)
     }
 
     /// Re-seal `(stream_id, epoch)`, which a rotation just minted, to every
     /// share of the Stream still in force, as `ShareGrant` ops sealed under
     /// `seal_under` beside the rotation's key envelopes.
     ///
-    /// A re-seal never fails its rotation. A device that does not hold
-    /// `ID_S_priv`, a Stream whose row has not arrived, and a re-seal that
-    /// does not seal each leave the epoch unsealed to the recipients and say
-    /// so (`core.share.reseal_skipped`): the rotation's purpose is the
-    /// account's own keys, and refusing it over a share would keep a revoked
-    /// device reading.
+    /// A re-seal never fails its rotation. A Stream whose row has not
+    /// arrived, and a re-seal that does not seal, each leave the epoch
+    /// unsealed to the recipients and say so (`core.share.reseal_skipped`):
+    /// the rotation's purpose is the account's own keys, and refusing it over
+    /// a share would keep a revoked device reading.
+    ///
+    /// A device that does not hold `ID_S_priv` cannot sign a re-seal. It logs
+    /// a `ShareResealRequest` naming the shares in force instead, sealed under
+    /// `seal_under`, and a holder re-seals the epoch to those
+    /// ([`Self::backfill_share_grants`]).
+    ///
+    /// A share a revocation or a decline ended is left out, in the fold and
+    /// again in the revoked list the re-seal is handed.
     pub(super) fn reseal_shares(
         &self,
         tx: &Transaction<'_>,
@@ -404,7 +756,148 @@ impl Engine {
         if unshareable(stream_id) {
             return Ok(());
         }
-        let shares = self.stream_shares_in(tx, stream_id).map_err(to_sql)?;
+        let fold = self.share_fold(tx, stream_id).map_err(to_sql)?;
+        if fold.shares.is_empty() {
+            return Ok(());
+        }
+        if !self.keychain.can_rotate_identity() {
+            tracing::warn!(
+                ev = "core.share.reseal_skipped",
+                reason = "no_identity_signing_key",
+                stream_h = hex_short(stream_id),
+                epoch,
+                n_total = fold.shares.len(),
+                "a rotated epoch was not re-sealed to the Stream's share recipients; \
+                 a re-seal request was logged for a device that can"
+            );
+            let op = InnerOp::ShareResealRequest(ShareResealRequestPayload {
+                stream_id: *stream_id,
+                epoch,
+                key_id: stream_key_id(key),
+                recipients: fold
+                    .shares
+                    .iter()
+                    .map(|s| ResealRecipient {
+                        identity_id: s.recipient_identity_id,
+                    })
+                    .collect(),
+                unknown: sunrise_domain::Unknowns::new(),
+            });
+            return self.emit_control_op(tx, &op, now_ms, seal_under);
+        }
+        self.reseal_to(
+            tx,
+            (stream_id, epoch, key),
+            &fold.shares,
+            &fold.ended_ids(),
+            now_ms,
+            seal_under,
+        )
+    }
+
+    /// Every `ShareResealRequest` for `stream_id` from a sender whose reads
+    /// are not bounded, by epoch and then by stamp.
+    fn reseal_requests(
+        &self,
+        conn: &Connection,
+        stream_id: &[u8; 16],
+    ) -> Result<Vec<ShareResealRequestPayload>, EngineError> {
+        let mut requests = Vec::new();
+        for (stamp, op) in self.meta_ops(conn, &[SHARE_RESEAL_REQUEST_KIND])? {
+            let InnerOp::ShareResealRequest(p) = op else {
+                continue;
+            };
+            if p.stream_id == *stream_id && !self.is_read_bounded(conn, &stamp.1)? {
+                requests.push((p.epoch, stamp, p));
+            }
+        }
+        requests.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        Ok(requests.into_iter().map(|(_, _, p)| p).collect())
+    }
+
+    /// Re-seal each epoch of `stream_id` a `ShareResealRequest` names, whose
+    /// key this replica holds, to each share the request names whose own
+    /// epoch is below it, in ascending epoch order, so the last grant of each
+    /// share is at the newest requested epoch.
+    ///
+    /// This is how an epoch a device without `ID_S_priv` minted reaches the
+    /// Stream's share recipients. It runs on a device holding `ID_S_priv`
+    /// only, and not on one the register calls revoked or whose reads are
+    /// bounded, whenever that device learns a Stream key, applies a believed
+    /// share grant, or applies a request: whichever of the three arrives last
+    /// completes what the re-seal needs.
+    ///
+    /// A share this replica's fold holds in force and the request does not
+    /// name is never re-sealed here, for the [module docs](self)' reason: the
+    /// request is what the minter knew had not ended. A share this replica's
+    /// fold has ended is left out though the request names it. A share
+    /// already at or above a requested epoch is not re-sealed to it again, so
+    /// re-applying writes nothing; two holders that each see a request before
+    /// either sees the other's re-seal both re-seal it, and the fold keeps
+    /// the later grant.
+    pub(super) fn backfill_share_grants(
+        &self,
+        tx: &Transaction<'_>,
+        stream_id: &[u8; 16],
+        now_ms: u64,
+    ) -> rusqlite::Result<()> {
+        if unshareable(stream_id) || !self.keychain.can_rotate_identity() {
+            return Ok(());
+        }
+        let me = self.keychain.device_id();
+        if self.is_revoked(tx, &me)? || self.is_read_bounded(tx, &me)? {
+            return Ok(());
+        }
+        let fold = self.share_fold(tx, stream_id).map_err(to_sql)?;
+        if fold.shares.is_empty() {
+            return Ok(());
+        }
+        let ended = fold.ended_ids();
+        for request in self.reseal_requests(tx, stream_id).map_err(to_sql)? {
+            let Some(key) = self
+                .keychain
+                .stream_keys_at(stream_id, request.epoch)
+                .into_iter()
+                .find(|k| stream_key_id(k) == request.key_id)
+            else {
+                continue;
+            };
+            let behind: Vec<StreamShare> = fold
+                .shares
+                .iter()
+                .filter(|s| {
+                    s.epoch < request.epoch
+                        && request
+                            .recipients
+                            .iter()
+                            .any(|r| r.identity_id == s.recipient_identity_id)
+                })
+                .cloned()
+                .collect();
+            self.reseal_to(
+                tx,
+                (stream_id, request.epoch, &key),
+                &behind,
+                &ended,
+                now_ms,
+                None,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Re-seal `(stream_id, epoch, key)` to `shares`, leaving out `ended`
+    /// and the expired, as re-seal `ShareGrant` ops sealed under
+    /// `seal_under`. Never fails over a share; see [`Self::reseal_shares`].
+    fn reseal_to(
+        &self,
+        tx: &Transaction<'_>,
+        (stream_id, epoch, key): (&[u8; 16], u32, &StreamKey),
+        shares: &[StreamShare],
+        ended: &[[u8; 16]],
+        now_ms: u64,
+        seal_under: Option<&(u32, StreamKey)>,
+    ) -> rusqlite::Result<()> {
         if shares.is_empty() {
             return Ok(());
         }
@@ -442,6 +935,7 @@ impl Engine {
                 metadata: &metadata,
             },
             &recipients,
+            ended,
             now_ms,
             self.rng.as_ref(),
         ) {
@@ -470,6 +964,7 @@ impl Engine {
                 person: share.person,
                 recipient_id_d_pub: share.recipient_id_d_pub,
                 grant: bytes,
+                reseal: true,
                 unknown: sunrise_domain::Unknowns::new(),
             });
             self.emit_control_op(tx, &op, now_ms, seal_under)?;

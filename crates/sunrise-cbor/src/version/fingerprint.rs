@@ -140,6 +140,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
         32,
         hex32("ec0dc7290af1db0ecfc1501eaf2ad6f31a9139d68b80c02bec4ee163f2f0a474"),
     ),
+    (
+        33,
+        hex32("6c7c0cb5311f7c7a64f148aff800c1b7402bfe5536fb16f912c3d78074201ea5"),
+    ),
 ];
 
 /// The registered fingerprint of document schema `v`, or `None` for a version
