@@ -22,6 +22,14 @@ where the amendment reaches. A section list in this field would have been read
 as exhaustive for the whole file, and nothing in `docs/11-adr/` sanctions
 reading one that way.
 
+**Amended by:** [ADR-0075](./0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md)
+§9, decided and not built — for the devices of an editor identity writing
+into a shared Stream, and for no other writer, every replica checks standing
+and a revocation cut bounds writes. It does so as this record's alternative
+(c), refusal as a derived view: a held-back op is parked, retried when the
+evidence lands, and re-derived when a cut moves, so corollaries 1 to 3 hold.
+Every device of the owner's account is as this record decides.
+
 **Precedence:** where this record restates a rule that
 [`../03-crypto/key-rotation.md`](../03-crypto/key-rotation.md) or
 [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) states operationally,

@@ -62,7 +62,7 @@ An editor is never a device of the owner's account.
 3. It is under an epoch the editor was sealed and inside any revocation cut.
 4. Its content stays inside the editor's authority.
 
-An op that fails any of them, though its signature verifies, is acknowledged and not applied: it is not a sync failure. An editor's authority ends at a frontier cut its `share_revoke` carries, never at a time compared with the editor's own HLC (ADR-0075 §4).
+An op that fails any of them, though its signature verifies, is parked ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §4), not dropped and not a sync failure: it counts as received and nothing of it is materialized. Whether it applies is a function of the Stream's retained log, never of delivery order. An attestation, a cut or a writer cert landing in the Stream retries every op parked for want of one, and a cut that lands after ops past it were applied re-derives the Stream without them (ADR-0075 §3, §4, §9). An editor's authority ends at a frontier cut its `share_revoke` carries, never at a time compared with the editor's own HLC (ADR-0075 §4).
 
 **What stays enforced until then.** `share_grant.rs` decodes `editor` as `ShareGrantError::UnsupportedRole`, and nothing seals one. The ADR's §8 lists what must all be built before that changes, behind a structural feature.
 
@@ -132,7 +132,7 @@ When sharing a Stream, the recipient gets:
 
 ## Egress scrubbing
 
-A Note in a shared Stream may contain `{kind: "ref", ref: entity-ref}` pointing to a Task or Note in a Stream the recipient does not have. The **owner is the only origin of cross-stream references in shared content**. That does not rest on an editor's UI. An editor's op that names an entity outside the shared Stream is outside its authority, and every replica leaves it unapplied ([ADR-0075](../11-adr/0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md) §2–§3). Cross-stream refs in shared content therefore always come from the owner.
+A Note in a shared Stream may contain `{kind: "ref", ref: entity-ref}` pointing to a Task or Note in a Stream the recipient does not have. The **owner is the only origin of cross-stream references in shared content**. That does not rest on an editor's UI. An editor's op that names an entity outside the shared Stream is outside its authority, and every replica parks it unapplied ([ADR-0075](../11-adr/0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md) §2–§3). Cross-stream refs in shared content therefore always come from the owner.
 
 On op emission, the **owner's device** runs egress scrubbing per recipient cohort as part of constructing the op:
 
@@ -162,7 +162,7 @@ Decided by [ADR-0075](../11-adr/0075-an-editor-writes-a-shared-streams-contents-
 
 There is no "merge request" model. An editor's op that passes §Roles' checks applies on arrival and merges by per-field ops ([ADR-0044](../11-adr/0044-per-field-ops.md)), exactly as the owner's do. A future "review mode" toggle is not designed or built.
 
-Revoking an editor also cuts its writes: the `share_revoke` op carries the last `(seq, op_hash)` the owner accepted from each of the editor's devices. Every replica applies that chain and nothing past or beside it (ADR-0075 §4). An honest op still in flight when the cut is made is lost, and the revoke UI says so.
+Revoking an editor also cuts its writes: the `share_revoke` op carries the last `(seq, op_hash)` the owner accepted from each of the editor's devices. Every replica applies that chain and nothing past or beside it, and one that had already applied an op past the cut takes it back out when the cut lands (ADR-0075 §4). An honest op still in flight when the cut is made is lost, an op past the cut that a replica already showed disappears from it, and the revoke UI says both.
 
 ## Privacy implications
 

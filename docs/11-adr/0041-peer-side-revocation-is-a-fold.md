@@ -24,6 +24,12 @@ read single-tenant self-host and a multi-tenant relay with the flag set
 relay with the default config it is defence in depth. §Alternatives (a) still
 fails and the decision is unchanged.
 
+**Amended by:** [ADR-0075](./0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md)
+§9, decided and not built — §3's "entity writes are not gated" keeps its
+reason, the missing projection rebuild, everywhere but a shared Stream. There,
+ADR-0075 builds a rebuild scoped to the one Stream and gates an editor's
+entity ops on it. The fold, its gate and the read bound are unchanged.
+
 **Amends** [ADR-0034](./0034-revocation-bounds-reads-not-writes.md) §Decision
 corollary 3, which reserved peer-side enforcement for after the relay bound and
 required that it not reintroduce order dependence. This is that enforcement,

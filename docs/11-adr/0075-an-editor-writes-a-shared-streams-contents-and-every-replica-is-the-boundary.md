@@ -8,7 +8,17 @@ decision in its §3 and its revisit item 1, and
 [ADR-0020](./0020-v1-must-demotions.md) §Addendum (a read-only grant per
 Stream, with expiry, revocable by key rotation).
 **Amends** [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
-§Roles, §Egress scrubbing and §Edits by editors.
+§Roles, §Egress scrubbing and §Edits by editors, and
+[`../01-architecture/threat-model.md`](../01-architecture/threat-model.md)
+§A5's reference scrubbing semantics, which rested the same rule on the
+editor's UI.
+**Amends, for editor ops in a shared Stream only,**
+[ADR-0034](./0034-revocation-bounds-reads-not-writes.md) (no replica refuses
+an entity op), [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) §3
+(entity writes stay ungated) and
+[ADR-0045](./0045-schema-identity-and-feature-gating.md) §4 (an op is applied
+or parked): §9 says what each amendment is and what it leaves standing.
+[ADR-0043](./0043-commit-tree.md) §3 is not amended, and §9 says why.
 **Depends on** [ADR-0016](./0016-hlc-timestamps.md) (HLC),
 [ADR-0043](./0043-commit-tree.md) (each device's ops chain by `prev_hash`),
 [ADR-0044](./0044-per-field-ops.md) (per-field ops) and
@@ -110,13 +120,29 @@ cannot read. An op applies only if all four of these hold:
   sets for its device.
 - **(d) Its content is inside §1 and §2.**
 
-An op whose envelope signature verifies but which fails (a) to (d) is **not
-applied, and is not a sync failure**. The replica acknowledges it like any
-other op, applies nothing from it, and keeps it as a refused fact. Every
-replica that holds the same log therefore reaches the same state, and no
-cursor freezes against relay retention, for the same reason §Signature key
-resolution keeps "is the signature valid" apart from "is the signer still a
-member". An envelope whose signature does not verify stays the hard reject the
+An op whose envelope signature verifies but which fails (a) to (d) is
+**parked, not dropped and not a sync failure**
+([ADR-0045](./0045-schema-identity-and-feature-gating.md) §4). It is written
+to `ops` like any other op, under a new parking reason, `editor_authority`. It
+counts as received, so it advances the sync cursor and no cursor freezes
+against relay retention. It is not `LossEvidence`. Nothing of it is
+materialized.
+
+Whether an editor op applies is **a function of the Stream's retained log**,
+never of the order that log arrived in. A replica decides (a) to (d) from the
+attestations, cuts and certs it holds, and every one of those is an op in the
+same log. So the decision is re-taken whenever one of them lands: an
+attestation, a cut or a writer cert arriving in the Stream retries every op
+parked there as `editor_authority`, through the full apply path, in
+`(hlc, device_id, seq)` order, exactly as ADR-0045 §4's replay does. An editor
+op that arrives before its attestation is parked, and applies when the
+attestation arrives. One that arrives after it applies at once. A replica
+that met the two in one order and a replica that met them in the other end in
+the same state. A cut that lands after ops past it were applied takes
+them back out (§4). Two replicas that hold the same log therefore hold the
+same Stream, whatever order either received it in.
+
+An envelope whose signature does not verify stays the hard reject the
 verification order already makes it.
 
 ### 4. An editor's authority ends at a frontier, never at a time
@@ -130,10 +156,23 @@ For a revoked editor's device, every replica applies only the op the cut
 names and that op's `prev_hash` ancestors (ADR-0043 §1), and nothing else,
 whatever its HLC. A later `seq` is past the cut. A second envelope at a `seq`
 the chain already holds is off it. The editor cannot write either kind and
-have it land below the cut. This is stricter than the general rule today,
-which records a fork as evidence and applies the op anyway
-([`audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)).
-For a revoked editor, an op off the chain fails §3(c).
+have it land below the cut. An op past the cut or off the chain fails §3(c)
+and is parked like any other op that fails §3. The chain check that decides
+it is an authority check, which a cut makes possible. It is not a link check,
+and [ADR-0043](./0043-commit-tree.md) §3–§4 are unchanged (§9).
+
+A cut can land after ops past it were applied: a replica received the
+editor's later ops before the owner's revoke reached it. When the cut lands,
+the replica **re-derives the shared Stream**: it rebuilds the Stream's
+materialized entities from its retained log, applied and parked ops alike,
+with §3's checks read against the attestations and cuts it now holds. An op
+past the cut is then un-materialized and parked. Where the cut names the
+half of a fork that this replica holds only as fork evidence (ADR-0043 §4),
+that half is the one applied. The rebuild throws nothing away, so a later cut
+that moves the frontier, or the withdrawal of a cut, re-derives again and
+brings back what it now admits. A cut correction is lossless, as ADR-0034's
+corollary 2 requires of one. No such rebuild exists in the engine today, and
+§8 item 5 builds it.
 
 Expiry ends an editor's writes the same way. When a device of the owner's sees
 an editor grant expire at its own clock, it emits the same revoke with its
@@ -142,8 +181,9 @@ cut. Until that cut lands, the editor's writes apply. The recipient's own
 
 The cost is honest ops that were in flight. An op the editor wrote before the
 revocation, but that the owner's device had not yet received when it cut, is
-outside the cut and never applies. That is the price of a cut the editor
-cannot move, and the revoke UI says so.
+outside the cut and never applies. An op a replica had already shown, but
+that is past the cut, disappears from it when the cut lands. That is the price
+of a cut the editor cannot move, and the revoke UI says both.
 
 ### 5. Editors merge like the owner, with authorship kept
 
@@ -162,7 +202,7 @@ with the role `editor`. The owner states the role when registering, just as it
 states the expiry, because the relay cannot read `ShareGrantPayload`. That
 check is hygiene against a third account filling the owner's channel, and
 nothing more. A hostile relay can put any envelope into any channel today, and
-§3 drops whatever it adds that no editor wrote. This ends ADR-0074 §3's "a
+§3 parks, unapplied, whatever it adds that no editor wrote. This ends ADR-0074 §3's "a
 viewer cannot write, by construction" for editor grants only. A viewer grant
 keeps no write route.
 
@@ -189,13 +229,60 @@ together:
 2. **The in-Stream attestation** of §3(b), and its cut (§4).
 3. **`share_revoke` with the frontier cut**, which the viewer's revocation
    also still lacks.
-4. **The replica-side refusal** of §3, with tests for each of (a) to (d) and
-   each item of §2.
-5. **The relay's editor write route** of §6.
-6. **A structural feature** (ADR-0045 §7), named when it is built and listed
+4. **The replica-side check** of §3: the `editor_authority` parking reason,
+   and the retry of a Stream's parked editor ops when an attestation, a cut or
+   a writer cert lands in it. Tested for each of (a) to (d) and each item of
+   §2.
+5. **The shared Stream's re-derivation** of §4: a rebuild of one Stream's
+   materialized entities from its retained log, run when a cut lands, which
+   un-materializes ops past it. Tested by delivering one log to two replicas
+   in different orders, the cut before and after the ops past it, and
+   asserting the two Streams are equal.
+6. **The relay's editor write route** of §6.
+7. **A structural feature** (ADR-0045 §7), named when it is built and listed
    in `vault_requires` before any device seals an editor grant. Until then, no
    device of the owner's account can hold a grant that another of its devices
    cannot enforce.
+
+### 9. What this amends, and what it leaves standing
+
+§3 and §4 hold an entity op back on account of who signed it, and take one
+back out after a cut. Four records speak to that, and each is read here
+rather than past.
+
+- **[ADR-0034](./0034-revocation-bounds-reads-not-writes.md)** decides that
+  no replica refuses an entity op on account of its sender's revocation, and
+  that the effect converges because of it. This record amends it for one
+  population: the devices of an editor identity, writing into a Stream they
+  hold a grant on. For them, standing is checked at every replica, and a
+  revocation cut bounds writes as well as reads. What ADR-0034 guards is kept.
+  Delivery order is not an input (its corollary 1, and corollary 3's
+  condition on any peer-side enforcement), because §3 derives standing from
+  the retained log and retries a parked op when the evidence lands. A cut
+  correction is lossless (corollary 2), because §4's rebuild throws nothing
+  away. And no cursor stalls, which is the #82 dilemma, because a parked op
+  counts as received. This is ADR-0034's alternative (c), refusal as a derived
+  view, which that record names as the shape to reconsider. Every device of
+  the owner's account, and every entity op outside a shared Stream, stays
+  exactly as ADR-0034 decides.
+- **[ADR-0041](./0041-peer-side-revocation-is-a-fold.md) §3** leaves entity
+  writes ungated because the engine has no projection rebuild. That reason
+  stands for every stream but a shared one. §8 item 5 builds a rebuild scoped
+  to one shared Stream, and editor ops are gated there only once it exists.
+  The fold, its gate and the read bound are untouched.
+- **[ADR-0045](./0045-schema-identity-and-feature-gating.md) §4** says an op
+  that verifies is applied or parked. That holds: an editor op that fails §3
+  is parked. This record adds one parking reason, `editor_authority`, and one
+  replay trigger beside `Core::open`'s: an attestation, a cut or a writer cert
+  landing in the Stream retries the ops parked there for that reason. §4's
+  rebuild adds the one path by which an applied op becomes parked. Parked ops
+  stay in the digest and in snapshots, as §4 of that record requires.
+- **[ADR-0043](./0043-commit-tree.md) §3** is not amended. Receivers still
+  never refuse on a link: a gap, a fork or a legacy op from any writer applies
+  or is recorded as that record says. What holds back a revoked editor's op
+  past its cut, or off the chain the cut names, is §3(c), an authority check
+  the cut makes. A fork by a revoked editor is still recorded as fork
+  evidence, and only the half the cut names applies.
 
 ## Alternatives considered
 
@@ -230,6 +317,9 @@ together:
 - The `editor` role has a fixed meaning. Building it is §8 and nothing beyond.
   Any change to what an editor may do is a new ADR, not an implementation
   choice.
+- ADR-0034, ADR-0041 §3 and ADR-0045 §4 each gain one scoped exception or
+  addition for editor ops in a shared Stream, and keep everything else (§9).
+  Each carries an `Amended by` line pointing here.
 - The viewer stays exactly as built. `share_grant.rs` refuses `editor`, and its
   docs cite this ADR as the reason.
 - Item 1 of §8 is also a precondition for any recipient, viewer or editor, to
