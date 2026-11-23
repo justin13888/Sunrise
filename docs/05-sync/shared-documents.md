@@ -18,8 +18,11 @@ status: proposed
 > ([`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)).
 > The relay viewer grant is built too
 > ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md)).
-> There is no `share_revoke` / `share_decline` op kind, no `api/shares.rs`,
-> no `editor` role, and no client that offers, accepts or reads a share.
+> The `share_revoke` and `share_decline` op kinds end a share, and every
+> later re-seal leaves its recipient out
+> ([#1325](https://github.com/justin13888/Sunrise/issues/1325)). There is no
+> `api/shares.rs`, no `editor` role, and no client that offers, accepts or
+> reads a share.
 >
 > **Why it is not built:** beyond ADR-0020's security-review argument, two things
 > in this file are structurally at odds with the relay as built. The relay
