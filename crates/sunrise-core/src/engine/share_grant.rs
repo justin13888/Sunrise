@@ -400,7 +400,7 @@ impl Engine {
                 reason,
                 stream_h = hex_short(stream_id),
                 epoch,
-                shares = shares.len(),
+                n_total = shares.len(),
                 "a rotated epoch was not re-sealed to the Stream's share recipients"
             );
         };
