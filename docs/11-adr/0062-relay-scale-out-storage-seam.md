@@ -141,10 +141,12 @@ frame bytes, so the 8000-byte `NOTIFY` payload limit never binds.
 What is guaranteed, against the existing cursor and `CursorGap` contract:
 
 - **Cursors come from the durable log, never from the bus.** An SSE event id is
-  a `relay_frames.id`, on every node, for replayed and live frames alike: a live
-  frame carries its log id (`RelayFrame` gains the field). A client that
-  reconnects to a different node resumes on that id or on its per-device
-  cursors, and the replay is the same query on any node.
+  built from `relay_frames.id`, on every node, for replayed and live frames
+  alike: a live frame carries its log id (`RelayFrame` gains the field). For a
+  session with one stream the id is that number; for two or more it is the
+  per-stream position of ADR-0023's third amendment, whose pairs are such
+  numbers. A client that reconnects to a different node resumes on that id or
+  on its per-device cursors, and the replay is the same query on any node.
 - **Ordering** is frame-id order per channel. Across channels nothing is
   ordered, as today.
 - **Delivery is at least once.** A frame can reach a subscriber through the

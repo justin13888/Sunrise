@@ -361,7 +361,8 @@ rendezvous and rate limits all live in Postgres:
 - An op batch accepted on any node reaches every stream subscribed to its
   channel on every node: the append notifies `sunrise_relay` when it commits,
   and each node reads the frames it has not published yet out of the shared
-  log. Each live event carries its log id, the same number on every node, so a
+  log. Each live event's id is built from its log id, the same number on every
+  node (a session on several streams carries one such number per stream), so a
   client whose node stops resumes on another from its `Last-Event-ID` with no
   gap and nothing applied twice.
 - A device revoked through one node is shut out by every node at once for new

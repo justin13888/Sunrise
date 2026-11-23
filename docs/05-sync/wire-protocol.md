@@ -351,12 +351,12 @@ GET  /sync/events           X-Sunrise-Session, optional Last-Event-ID
   ← data: {"kind":"gap", …}        only where the cursor predates retention,
                                    always before that stream's replay
   ← data: {"kind":"ops", …}        retained frames, replayed verbatim, each
-                                   event carrying `id: <relay_frames.id>`;
+                                   event carrying `id: <resume position>`;
                                    after the first, {"kind":"backlog", …}
                                    with the ops the rest will send
   ← data: {"kind":"caught_up", …}  per stream, once its backlog is drained
   ← data: {"kind":"ops", …}        live frames as peers publish them, each
-                                   carrying `id: <relay_frames.id>` too
+                                   carrying `id: <resume position>` too
   ← : sunrise                      sent after 15 s of silence, not on a
                                    15 s interval: see below
   ← data: {"kind":"closed", …}     terminal; the body ends after it
@@ -416,16 +416,41 @@ replaced or the app restarts. A refused
 `GET /sync/events` is not a close — its code may be derived from an HTTP status
 — so the client logs the relay's code and reconnects as it does for a drop.
 
-**A non-zero `Last-Event-ID` takes precedence over the cursors for frame
-selection.** Replayed and live `ops` events carry the relay's durable id, the
-same number on every relay node (ADR-0062 §2), so
-a reconnect that presents the last id it saw resumes after that frame instead of
-replaying the retained backlog from the start. When it does, the cursors stop
-selecting anything: `relay_replay_after` sends every frame with
+**The resume position is per stream.** Replayed and live `ops` events carry a
+position built from the relay's durable `relay_frames.id`, the same number on
+every relay node (ADR-0062 §2). That id is one sequence across every channel,
+so one number cannot say where each stream of a session got to: a session
+replayed stream A's frames 1, 5, 9 and then stream B's 2, 3, which dropped
+after 9, would resume B past the two frames it never received
+([ADR-0023's third amendment](../11-adr/0023-sse-sync-transport.md#amendment-2026-11-a-resume-position-per-stream)).
+The `id:` is therefore:
+
+| Session subscribed to | `id:` |
+|---|---|
+| one stream | that frame's `relay_frames.id`, in decimal |
+| two or more streams | `<set>:<i>=<id>[,<i>=<id>…]` |
+
+`<set>` is 16 lowercase hex characters naming the session's stream set — the
+first 8 bytes of a BLAKE3 key derivation, context
+`sunrise sync resume stream set`, over the stream ids in `Subscribe` order —
+and each `<i>=<id>` is a stream's zero-based index in that list with the
+highest `relay_frames.id` of it the client has been sent. A stream with no pair
+has had nothing sent since the `Subscribe`. The position is opaque to a client:
+it presents the last one it saw, verbatim
+(`crates/sunrise-server/src/api/sync/resume.rs` holds the grammar).
+
+**A non-zero position takes precedence over the cursors for frame selection,
+stream by stream.** A reconnect resumes each stream after its own id instead of
+replaying the retained backlog from the start. Where it does, the cursors stop
+selecting anything for that stream: `relay_replay_after` sends every frame with
 `id > after_id` and never consults `covered(&heads, cursors)` at all
 (`crates/sunrise-server/src/relay_log/replay.rs`, whose own rustdoc states the
-precedence). Only `after_id == 0` — a first connection — replays what the
-cursors do not cover.
+precedence). A stream the position names no id for — and every stream of a
+first connection — replays what the cursors do not cover. So does every stream
+where the position cannot be applied: a set name that is not the session's
+current set, an index outside it, or a bare id presented to a session with two
+or more streams. Each of those over-delivers to the op-log gate rather than
+skipping.
 
 **Cursor gaps are reported either way.** The `relay_evicted` watermark check runs
 on the cursors regardless of `after_id`, so a resumed stream still learns that

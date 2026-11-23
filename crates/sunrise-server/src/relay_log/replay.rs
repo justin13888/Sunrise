@@ -13,8 +13,11 @@ use crate::store::{Store, StoreError};
 pub struct ReplayFrame {
     /// Its durable `relay_frames.id`.
     ///
-    /// The id is what an SSE `id:` field carries, so `Last-Event-ID` resumes
-    /// from a position the server can act on rather than one it has to guess.
+    /// For a session subscribed to one stream this id is what an SSE `id:`
+    /// field carries. For two or more, the field carries a per-stream
+    /// position (ADR-0023, third amendment) built from these ids, so
+    /// `Last-Event-ID` resumes each stream from a position the server can act
+    /// on rather than one it has to guess.
     pub id: u64,
     /// The frame, verbatim.
     pub bytes: Vec<u8>,
@@ -53,11 +56,13 @@ impl Store {
     /// over-delivery costs one idempotent no-op and under-delivery is data
     /// loss.
     ///
-    /// The id is `relay_frames.id`: durable, per-channel and monotonic in
-    /// arrival order, which is exactly what an SSE `id:` field has to be for
-    /// `Last-Event-ID` to mean anything. ADR-0023 calls resumption "a rename of
-    /// machinery that exists", and this is the rename — the filtering rule below
-    /// is untouched.
+    /// The id is `relay_frames.id`: durable and monotonic in arrival order,
+    /// but one sequence across every channel rather than one per channel. So
+    /// `after_id` is a position in **this** channel only, and a caller serving
+    /// several channels owes each its own: the SSE stream keeps one per stream
+    /// (`crate::api::sync`'s `resume` module, ADR-0023's third amendment),
+    /// because one id applied to every channel skips the frames of one that
+    /// were numbered below what another had reached.
     ///
     /// `after_id` of 0 replays everything the cursors do not cover, which is a
     /// first connection. A non-zero one is a reconnect saying where it got to,

@@ -25,6 +25,7 @@ use sunrise_error::ErrorCode;
 use sunrise_telemetry::{Attr, Count};
 
 use super::credential::{resolve, SessionHeader};
+use super::resume::{Positions, ResumeId};
 
 /// How often the stream emits a keep-alive comment.
 ///
@@ -158,13 +159,11 @@ pub async fn events(
         .limiter
         .open_stream(&state, "/api/v1/sync/events", &caller)?;
     // A zero is not a resume point: `relay_replay_after` already reads 0 as
-    // "first connection", so it carries no claim to conflict with.
-    let after = resume
-        .as_deref()
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|n| *n > 0);
+    // "first connection", so it carries no claim to conflict with. An id of
+    // either form is a claim here, whether or not it would apply below.
+    let claim = resume.as_deref().and_then(ResumeId::parse);
 
-    if after.is_some() && session.subscribe_unserved {
+    if claim.is_some() && session.subscribe_unserved {
         state.metrics.incr("sunrise_sync_resume_conflict_total");
         tracing::warn!(
             ev = "srv.sync.resume_conflict",
@@ -192,6 +191,11 @@ pub async fn events(
             .map_err(ApiError::from)?;
     }
 
+    // Each stream resumes on its own position, never on another stream's: a
+    // single id across several streams is what skipped frames (#1263).
+    let sids: Vec<[u8; 16]> = session.streams.iter().map(|e| e.stream_id).collect();
+    let positions = Positions::open(&sids, claim.as_ref());
+
     state.metrics.incr("sunrise_sync_stream_total");
     // `resumed` is the reason this event is worth emitting rather than
     // deleting from the catalogue: a stream that opens cold is a client that
@@ -201,17 +205,22 @@ pub async fn events(
     tracing::info!(
         ev = "srv.sync.stream_open",
         account_h = %crate::logging::account_h(&session.account_id),
-        resumed = after.is_some(),
+        resumed = claim.is_some(),
         "sync event stream opened"
     );
 
-    Ok(
-        Sse::new(spawn_stream(state, id, session, after, slot)).keep_alive(
-            KeepAlive::new()
-                .interval(std::time::Duration::from_secs(KEEP_ALIVE_SECS))
-                .comment("sunrise"),
-        ),
-    )
+    Ok(Sse::new(spawn_stream(
+        state,
+        id,
+        session,
+        (positions, claim.is_some()),
+        slot,
+    ))
+    .keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(KEEP_ALIVE_SECS))
+            .comment("sunrise"),
+    ))
 }
 
 /// The stream [`events`] returns.
@@ -229,6 +238,14 @@ pub type EventStream =
 /// `slot` is the device's stream permit, moved into the task so it is held
 /// exactly as long as the task runs.
 ///
+/// `resumed` is whether a resume id was presented, as `srv.sync.stream_open`
+/// records it: a statement about the header, not about whether it applied.
+///
+/// `positions` is where each stream resumes, and the task carries it on: every
+/// `ops` event it sends, replayed or live, is stamped with every stream's
+/// position after that event, so a client that drops anywhere resumes each
+/// stream on its own id rather than on whichever stream it heard from last.
+///
 /// Traced as one long-lived `sync.stream` span, a child of the request that
 /// opened it and ended with the task, rather than a span per frame: a stream
 /// can live for hours, and a trace of one is its shape — `gap`, `caught_up`,
@@ -240,13 +257,13 @@ fn spawn_stream(
     state: ServerState,
     id: String,
     session: Session,
-    after: Option<u64>,
+    (mut positions, resumed): (Positions, bool),
     slot: Option<Permit>,
 ) -> EventStream {
     use futures_util::StreamExt as _;
     use sunrise_telemetry::FutureExt as _;
     let (tx, rx) = tokio::sync::mpsc::channel::<Event<SyncEvent>>(STREAM_BUFFER);
-    let span = stream_span(&session, after);
+    let span = stream_span(&session, resumed);
     let cx = span.context();
 
     tokio::spawn(async move {
@@ -264,7 +281,7 @@ fn spawn_stream(
         // Live receiver FIRST, then the durable read. A frame published between
         // the two arrives on both paths and the client's op-log gate makes that
         // a no-op; the reverse order would drop it entirely.
-        for entry in &session.streams {
+        for (i, entry) in session.streams.iter().enumerate() {
             let sid = entry.stream_id;
             receivers.push((sid, state.relay.subscribe_live((session.account, sid))));
 
@@ -280,7 +297,11 @@ fn spawn_stream(
                 Ok(()) => {
                     state
                         .store
-                        .relay_replay_after((session.account, sid), after.unwrap_or(0), &cursors)
+                        .relay_replay_after(
+                            (session.account, sid),
+                            positions.after(i).unwrap_or(0),
+                            &cursors,
+                        )
                         .await
                 }
                 Err(e) => Err(e),
@@ -335,7 +356,7 @@ fn spawn_stream(
                     return;
                 }
             }
-            if !send_replay(&state, &tx, sid, frames).await {
+            if !send_replay(&state, &tx, (i, sid), frames, &mut positions).await {
                 return;
             }
             let caught_up = Event::new(SyncEvent::CaughtUp {
@@ -348,7 +369,7 @@ fn spawn_stream(
         }
 
         let account_h = crate::logging::account_h(&session.account_id);
-        let reason = live_loop(state, id, session, receivers, tx, &span).await;
+        let reason = live_loop(state, id, session, (receivers, positions), tx, &span).await;
         span.event("closed", [Attr::reason(reason)]);
         tracing::info!(ev = "srv.sync.stream_closed", account_h = %account_h, "event stream ended");
     }.with_context(cx));
@@ -365,19 +386,24 @@ fn spawn_stream(
 /// After the first frame, never before it: a stream reopened faster than one
 /// slow frame arrives must still make progress on each reopen, and a
 /// statement is not progress.
+///
+/// `i` is the stream's index in the session's set, and each frame advances
+/// its position before the event that carries it is stamped.
 async fn send_replay(
     state: &ServerState,
     tx: &tokio::sync::mpsc::Sender<Event<SyncEvent>>,
-    sid: [u8; 16],
+    (i, sid): (usize, [u8; 16]),
     frames: Vec<crate::relay_log::ReplayFrame>,
+    positions: &mut Positions,
 ) -> bool {
     let after_first: u64 = frames.iter().skip(1).map(|f| f.n_ops).sum();
     for (n, frame) in frames.into_iter().enumerate() {
+        positions.sent(i, frame.id);
         let event = Event::new(SyncEvent::Ops {
             stream_id: hex::encode(sid),
             frame: base64::engine::general_purpose::STANDARD.encode(&frame.bytes),
         })
-        .id(frame.id.to_string());
+        .id(positions.event_id());
         if tx.send(event).await.is_err() {
             return false;
         }
@@ -403,11 +429,11 @@ fn backlog(sid: [u8; 16], ops: u64) -> Event<SyncEvent> {
 
 /// The `sync.stream` span: whether the stream resumed, and how many streams
 /// it subscribes to.
-fn stream_span(session: &Session, after: Option<u64>) -> sunrise_telemetry::SpanGuard {
+fn stream_span(session: &Session, resumed: bool) -> sunrise_telemetry::SpanGuard {
     sunrise_telemetry::span(
         "sync.stream",
         [
-            Attr::resumed(after.is_some()),
+            Attr::resumed(resumed),
             Attr::count(Count::Streams, session.streams.len() as u64),
         ],
     )
@@ -417,11 +443,14 @@ fn stream_span(session: &Session, after: Option<u64>) -> sunrise_telemetry::Span
 ///
 /// Returns why it ended, as the literal the `closed` span event carries, and
 /// marks each live frame it delivers as a `frame` event on `span`.
+///
+/// The receivers are in the session's stream order, so a receiver's index is
+/// its stream's index in `positions`.
 async fn live_loop(
     state: ServerState,
     id: String,
     session: Session,
-    mut receivers: Vec<([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)>,
+    (mut receivers, mut positions): (Receivers, Positions),
     tx: tokio::sync::mpsc::Sender<Event<SyncEvent>>,
     span: &sunrise_telemetry::SpanGuard,
 ) -> &'static str {
@@ -453,7 +482,7 @@ async fn live_loop(
             // slot (and a relay subscription) for a connection nobody reads.
             () = tx.closed() => return "peer_gone",
 
-            Some((sid, frame)) = next => {
+            Some((i, sid, frame)) = next => {
                 // The session's own batches are not echoed back to it: it
                 // already has them, and applying its own op twice is exactly
                 // what the op-log gate then has to undo.
@@ -474,10 +503,14 @@ async fn live_loop(
                     stream_id: hex::encode(sid),
                     frame: base64::engine::general_purpose::STANDARD.encode(&frame.bytes),
                 });
-                // The log id, as a replayed frame carries it, so a client
-                // that drops here resumes on a position any node can act on.
+                // Every stream's position, as a replayed frame carries it,
+                // so a client that drops here resumes on a position any node
+                // can act on. This frame advances only its own stream: a live
+                // frame of one channel can overtake a lower-id frame of
+                // another, and a single id would resume past that one.
                 let event = if frame.id > 0 {
-                    event.id(frame.id.to_string())
+                    positions.sent(i, frame.id);
+                    event.id(positions.event_id())
                 } else {
                     event
                 };
@@ -600,10 +633,14 @@ async fn device_recheck(
     Some("device_revoked")
 }
 
-/// Await the first frame from any subscribed stream.
+/// One live receiver per stream of the session, in the session's order.
+type Receivers = Vec<([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)>;
+
+/// Await the first frame from any subscribed stream, with the stream's index
+/// in the session's set and its id.
 async fn recv_first(
     receivers: &mut [([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)],
-) -> Option<([u8; 16], RelayFrame)> {
+) -> Option<(usize, [u8; 16], RelayFrame)> {
     use futures_util::future::{select_all, FutureExt as _};
     if receivers.is_empty() {
         // Nothing to receive on: park forever rather than spinning, and let the
@@ -613,9 +650,10 @@ async fn recv_first(
     }
     let futures: Vec<_> = receivers
         .iter_mut()
-        .map(|(sid, rx)| {
+        .enumerate()
+        .map(|(i, (sid, rx))| {
             let sid = *sid;
-            async move { rx.recv().await.ok().map(|f| (sid, f)) }.boxed()
+            async move { rx.recv().await.ok().map(|f| (i, sid, f)) }.boxed()
         })
         .collect();
     let (out, _, _) = select_all(futures).await;
