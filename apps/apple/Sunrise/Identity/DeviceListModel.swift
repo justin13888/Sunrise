@@ -373,29 +373,39 @@ final class DeviceListModel {
             await refresh()
         } catch {
             lastWithdrawal = nil
-            errorMessage = Self.withdrawalRefusal(error)
+            errorMessage = Self.withdrawalRefusal(error, rows: rows)
         }
     }
 
+    /// The features whose gate can refuse a withdrawal: `core.revoke_withdraw`
+    /// for a device's own removal, `core.revoke_withdraw_authority` for one
+    /// the account identity made, which the identity key's holder may
+    /// withdraw.
+    nonisolated static let withdrawalFeatures: Set<String> = [
+        "core.revoke_withdraw", "core.revoke_withdraw_authority",
+    ]
+
     /// What to show for a withdrawal the core refused.
     ///
-    /// The feature gate's refusal crosses the seam as `BindingError.Core`
-    /// carrying `EngineError::FeatureUnsupportedByDevices`'s message — the
-    /// seam has no typed variant for it yet, so the device ids do not cross —
-    /// and is recognised by the feature id it names and the count it states.
-    /// Either withdrawal feature can refuse: `core.revoke_withdraw` for a
-    /// device's own removal, `core.revoke_withdraw_authority` for one the
-    /// account identity made, which the identity key's holder may withdraw.
-    /// Anything else, or that message reworded, falls back to the core's own
-    /// words: never to a claim that the removal was withdrawn.
-    nonisolated static func withdrawalRefusal(_ error: Error) -> String {
-        guard case let .Core(message)? = error as? BindingError,
-              message.contains("`core.revoke_withdraw`")
-              || message.contains("`core.revoke_withdraw_authority`"),
-              let match = message.firstMatch(of: /needs (\d+) other device/),
-              let count = Int(match.1)
+    /// The feature gate's refusal (ADR-0056 §7) crosses the seam as
+    /// `BindingError.FeatureUnsupportedByDevices`, and `featureRefusal` reads
+    /// the feature and the devices to update out of its message. The user is
+    /// told how many, then each on its own line by the name `rows` gives it
+    /// beside its id, or by its id alone where the list does not hold it, as
+    /// `sunrise device withdraw` lists them. Anything else falls back to the core's own words: never to a
+    /// claim that the removal was withdrawn.
+    nonisolated static func withdrawalRefusal(_ error: Error, rows: [DeviceRow]) -> String {
+        guard case let .FeatureUnsupportedByDevices(message)? = error as? BindingError,
+              let refusal = featureRefusal(message: message),
+              withdrawalFeatures.contains(refusal.feature)
         else { return error.localizedDescription }
-        return L10n.Devices.withdrawAwaitsUpdate(count: count)
+        // The id as the row shows it, so the line can be matched to a row.
+        let names = refusal.devices.map { id in
+            let shown = String(id.prefix(16))
+            return rows.first { $0.deviceID == id }.map { "\($0.nickname) (\(shown))" } ?? shown
+        }
+        return ([L10n.Devices.withdrawAwaitsUpdate(count: refusal.devices.count)] + names)
+            .joined(separator: "\n")
     }
 
     func dismissWithdrawal() {
