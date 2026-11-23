@@ -295,9 +295,12 @@ them again on its next session, as it does after any reinstall.
 **The seam separates the two halves.** `Core::relay_revocation_pending` lets a
 client tell "revoked locally" from "the relay has stopped accepting it"
 (#160). The withdrawal gets the same pair of states through
-`Core::relay_reinstatement_pending`, with a third for the relay's terminal
-refusal, which the queue keeps as a trace after the drain has run so the
-remedy can still be offered.
+`Core::relay_reinstatement_pending`, with a third for the relay's refusal,
+which the queue keeps as a trace after the drain has run so the remedy can
+still be offered. The refusal is asked again at each session start: where two
+devices revoked the device, the relay recorded one of them, and that one's own
+reinstatement can land after this one was refused, so the trace clears once
+the relay accepts the device.
 
 ### 6. What the user is told, before and after
 

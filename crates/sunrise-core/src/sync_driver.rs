@@ -894,8 +894,15 @@ async fn session(
     crate::relay_intents::drain(core, transport.as_mut()).await;
     // A withdrawal's reverse telling waits on a session for the same reason,
     // and runs after the revocations so a device revoked again since is
-    // never reinstated behind its own revocation.
-    crate::relay_intents::drain_reinstatements(core, transport.as_mut()).await;
+    // never reinstated behind its own revocation. Only here are refused rows
+    // asked again: another device that revoked the same one may have
+    // reinstated it at the relay since.
+    crate::relay_intents::drain_reinstatements(
+        core,
+        transport.as_mut(),
+        crate::relay_intents::ReinstatementPass::OwedAndRefused,
+    )
+    .await;
     // A session is also the first moment an attachment sealed offline can
     // reach the relay, and the first moment one created elsewhere can be
     // fetched. Both directions run here for the same reason the revocation
@@ -968,7 +975,12 @@ async fn session(
                 // whole point of pressing the button. The read is a single-row
                 // query against an almost always empty table.
                 crate::relay_intents::drain(core, transport.as_mut()).await;
-                crate::relay_intents::drain_reinstatements(core, transport.as_mut()).await;
+                crate::relay_intents::drain_reinstatements(
+                    core,
+                    transport.as_mut(),
+                    crate::relay_intents::ReinstatementPass::Owed,
+                )
+                .await;
                 // `attach_file` writes its queue row and then submits the op,
                 // which pokes this wake — so the upload starts in the same
                 // breath as the metadata rather than waiting for a reconnect.

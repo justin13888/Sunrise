@@ -83,9 +83,11 @@ impl SunriseCore {
     /// as [`Self::relay_revocation_pending`] is after `RevokeDevice`: the
     /// vault half is committed when the command returns, while a relay that
     /// was already told keeps refusing the device until a session sends the
-    /// reinstatement. `Refused` is the relay's terminal answer that this
-    /// device is not the one it recorded as the revoker; the device cannot
-    /// sync through that relay, and pairing it again is the remedy.
+    /// reinstatement. `Refused` is the relay's last answer that this device
+    /// is not the one it recorded as the revoker; the device cannot sync
+    /// through that relay, and pairing it again is the remedy. Each session
+    /// asks again, so it turns `Clear` where the recorded revoker reinstates
+    /// the device itself.
     ///
     /// # Errors
     /// [`BindingError::BadId`] when `device` is not a `dev_` reference, and

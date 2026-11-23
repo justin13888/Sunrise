@@ -11,11 +11,14 @@
 -- One row per device. `attempts` and `last_attempt_ms` make a relay that keeps
 -- refusing visible, as in 0020. `refused_at_ms` is the one column 0020 has no
 -- counterpart for: the relay answers `403 DEVICE_NOT_REVOKER` when this device
--- is not the one it recorded as the revoker, which no retry changes and whose
--- remedy is pairing the device again. The row is kept with the time of that
--- answer, rather than deleted, so a client can still say so after the drain
--- has run. A row with it set is never sent again; a later withdrawal of a
--- fresh revocation of the same device writes the row anew.
+-- is not the one it recorded as the revoker, whose remedy is pairing the
+-- device again. The row is kept with the time of that answer, rather than
+-- deleted, so a client can still say so after the drain has run. A row with
+-- it set is asked again only when a session starts, because where two devices
+-- revoked the device the relay recorded one of them, and that one's own
+-- reinstatement can land after this one was refused; it is deleted once the
+-- relay accepts the device. A later withdrawal of a fresh revocation of the
+-- same device writes the row anew.
 CREATE TABLE relay_reinstatement_intents (
     device_id       BLOB PRIMARY KEY,
     created_at_ms   INTEGER NOT NULL,

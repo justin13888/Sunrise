@@ -419,8 +419,10 @@ pub enum RelayReinstatementKind {
     /// Queued for the next session; until then a relay that was told of the
     /// revocation still refuses the device.
     Pending,
-    /// The relay refused it for good: it recorded another device as the
-    /// revoker. The device must be paired again.
+    /// The relay refused it the last time it was asked: it recorded another
+    /// device as the revoker. The device must be paired again, unless that
+    /// revoker withdraws too; each session asks the relay again, and this
+    /// becomes `Clear` once it accepts the device.
     Refused,
 }
 
