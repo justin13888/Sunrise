@@ -6,10 +6,13 @@
 //! (`every_device_row_carries_the_readmission_signal`).
 //!
 //! The report a withdrawal of a revocation returns, which a device list acts
-//! on, lowers here too.
+//! on, lowers here too, and so does the feature gate's refusal of one.
 
-use sunrise_core::{CommandResult, DeviceRow, Withdrawal, WithdrawalOutcome};
+use sunrise_core::{
+    CommandResult, CoreError, DeviceRow, EngineError, Withdrawal, WithdrawalOutcome,
+};
 use sunrise_core_bindings::dto::{CommandOutcome, DeviceListRow, WithdrawalOutcomeKind};
+use sunrise_core_bindings::{feature_refusal, BindingError, FeatureRefusal};
 use sunrise_id::{EntityKind, EntityRef};
 
 /// **`read_bounded: true, revoked: false` crosses the seam as itself.**
@@ -251,5 +254,66 @@ fn a_withdrawal_report_crosses_the_seam_whole() {
         ),
     ] {
         assert_eq!(WithdrawalOutcomeKind::from(core), seam);
+    }
+}
+
+/// **The feature gate's refusal crosses with the devices it names**
+/// (ADR-0056 §7). A withdrawal the gate refuses names the devices to update,
+/// and `BindingError` is flat, so only the message crosses: the variant is
+/// what a client branches on and `feature_refusal` reads the ids back out of
+/// that message. A reworded display that `feature_refusal` no longer reads,
+/// or a lowering that dropped an id, fails here rather than in the device
+/// list.
+#[test]
+fn the_feature_gate_refusal_crosses_with_its_device_ids() {
+    let ids = [[0xab; 16], [0x01; 16]];
+    for feature in ["core.revoke_withdraw", "core.revoke_withdraw_authority"] {
+        let refusal = BindingError::from(CoreError::Engine(
+            EngineError::FeatureUnsupportedByDevices {
+                feature: feature.into(),
+                devices: ids.to_vec(),
+            },
+        ));
+        let BindingError::FeatureUnsupportedByDevices {
+            feature: f,
+            devices,
+        } = &refusal
+        else {
+            panic!("crossed as {refusal:?}, not its own variant");
+        };
+        assert_eq!(f, feature);
+        assert_eq!(
+            devices,
+            &["ab".repeat(16), "01".repeat(16)],
+            "lowercase hex, in the core's order"
+        );
+
+        let message = refusal.to_string();
+        assert!(
+            message.starts_with(&format!(
+                "enabling `{feature}` needs 2 other device(s) to update first"
+            )),
+            "the core's own sentence leads: {message}"
+        );
+        assert_eq!(
+            feature_refusal(message),
+            Some(FeatureRefusal {
+                feature: feature.into(),
+                devices: devices.clone(),
+            })
+        );
+    }
+}
+
+/// `feature_refusal` answers only for the message its variant writes.
+#[test]
+fn feature_refusal_reads_nothing_else() {
+    for message in [
+        "core: a device cannot withdraw a revocation of itself",
+        "enabling `` needs 1 other device(s) to update first: ab",
+        "enabling `core.revoke_withdraw` needs 1 other device(s) to update first: not hex",
+        "this vault uses `core.revoke_withdraw`, which this version of Sunrise does not have",
+    ] {
+        assert_eq!(feature_refusal(message.into()), None, "{message}");
     }
 }

@@ -6,6 +6,8 @@
 //! recovery errors in [`crate::recovery`].
 
 use sunrise_core::CoreError;
+
+use crate::dto::hex16;
 use thiserror::Error;
 
 #[cfg(doc)]
@@ -157,6 +159,27 @@ pub enum BindingError {
         /// The feature id.
         feature: String,
     },
+    /// The command needs the vault to require `feature`, and these devices,
+    /// which are not revoked, have not said they support it, so nothing was
+    /// written (ADR-0045 §7, ADR-0056 §7).
+    ///
+    /// Its own variant because the answer is "update these devices", which a
+    /// client says in its own words and with the devices named. A flat error
+    /// carries only its message across the seam, so the message ends with the
+    /// ids and [`feature_refusal`] reads them back; a client never parses the
+    /// wording itself.
+    #[error(
+        "enabling `{feature}` needs {} other device(s) to update first{}{}",
+        devices.len(),
+        FEATURE_REFUSAL_IDS,
+        devices.join(FEATURE_REFUSAL_ID_SEPARATOR)
+    )]
+    FeatureUnsupportedByDevices {
+        /// The feature id.
+        feature: String,
+        /// The devices to update, as lowercase hex ids.
+        devices: Vec<String>,
+    },
     /// A recovery code that is mistyped, or is not this account's, or that an
     /// identity rotation retired (ADR-0070).
     ///
@@ -257,7 +280,62 @@ impl From<CoreError> for BindingError {
             CoreError::Engine(sunrise_core::EngineError::FeatureMissing { feature }) => {
                 Self::FeatureMissing { feature }
             }
+            CoreError::Engine(sunrise_core::EngineError::FeatureUnsupportedByDevices {
+                feature,
+                devices,
+            }) => Self::FeatureUnsupportedByDevices {
+                feature,
+                devices: devices.iter().map(hex16).collect(),
+            },
             other => Self::Core(other.to_string()),
         }
     }
+}
+
+/// Where [`BindingError::FeatureUnsupportedByDevices`]'s message turns from
+/// the sentence to the device ids.
+const FEATURE_REFUSAL_IDS: &str = ": ";
+/// Between two device ids in that message.
+const FEATURE_REFUSAL_ID_SEPARATOR: &str = ", ";
+
+/// What a [`BindingError::FeatureUnsupportedByDevices`] refused on.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FeatureRefusal {
+    /// The feature the command needed the vault to require.
+    pub feature: String,
+    /// The devices to update before it can, as lowercase hex ids.
+    pub devices: Vec<String>,
+}
+
+/// The feature and devices a [`BindingError::FeatureUnsupportedByDevices`]
+/// names, read back from the message it crossed the seam with. `None` for
+/// any other message.
+///
+/// The error is flat, so its fields do not cross and the message is all a
+/// client receives. This reads the message the seam itself wrote, so the
+/// wording and the reading of it change together, in one file, under one
+/// test; a client passes the variant's message here instead of parsing it.
+#[uniffi::export]
+#[must_use]
+pub fn feature_refusal(message: String) -> Option<FeatureRefusal> {
+    let rest = message.strip_prefix("enabling `")?;
+    let (feature, rest) = rest.split_once('`')?;
+    let (_, ids) = rest.split_once(" to update first")?;
+    let ids = ids.strip_prefix(FEATURE_REFUSAL_IDS).unwrap_or(ids);
+    let devices: Vec<String> = ids
+        .split(FEATURE_REFUSAL_ID_SEPARATOR)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if feature.is_empty()
+        || devices
+            .iter()
+            .any(|id| !id.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return None;
+    }
+    Some(FeatureRefusal {
+        feature: feature.to_owned(),
+        devices,
+    })
 }
