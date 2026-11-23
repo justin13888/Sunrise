@@ -13,8 +13,11 @@ use crate::store::{Store, StoreError};
 pub struct ReplayFrame {
     /// Its durable `relay_frames.id`.
     ///
-    /// The id is what an SSE `id:` field carries, so `Last-Event-ID` resumes
-    /// from a position the server can act on rather than one it has to guess.
+    /// For a session subscribed to one stream this id is what an SSE `id:`
+    /// field carries. For two or more, the field carries a per-stream
+    /// position (ADR-0023, third amendment) built from these ids, so
+    /// `Last-Event-ID` resumes each stream from a position the server can act
+    /// on rather than one it has to guess.
     pub id: u64,
     /// The frame, verbatim.
     pub bytes: Vec<u8>,
