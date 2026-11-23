@@ -179,6 +179,9 @@ struct DeviceListSection: View {
             // its remedy, for the same reason the two marks below are.
             out.append(L10n.Devices.markReadBounded)
         }
+        // ADR-0056 §5: a reinstatement still queued, or one the relay
+        // refused, which is the only state that sends the user to pair again.
+        if let relay = row.relayMark(device: Platform.deviceName) { out.append(relay) }
         if !row.current {
             out.append(L10n.Devices.markNotCurrent)
         }
