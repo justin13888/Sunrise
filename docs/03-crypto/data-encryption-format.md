@@ -155,6 +155,8 @@ Key rotation grace: when a device emits `device_rotate(old, new, effective_at)`,
 
 The resolution snapshot is captured at signature-verify entry; concurrent vault-meta updates do not change the result of an in-flight verification.
 
+**A recipient of a shared Stream** reads no vault-meta log of the owner's. It resolves the owner's devices from the `stream_writer_cert` ops in the shared Stream itself, each a `DeviceCert` beside the owner's identity chain, believed when the chain holds the granting identity and the cert verifies under an identity on it ([ADR-0076](../11-adr/0076-a-shared-stream-carries-its-writer-certs-and-re-sealed-grants.md) §1).
+
 ### Verification order
 
 A receiver MUST verify in this order:

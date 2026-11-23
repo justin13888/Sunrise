@@ -14,6 +14,9 @@ who may *read* a channel) and
 withdrawn or expired grant, as hygiene rather than as the guarantee).
 **Built by** [#1319](https://github.com/justin13888/Sunrise/issues/1319), and
 §6 by [#1322](https://github.com/justin13888/Sunrise/issues/1322).
+**Extended by** [ADR-0076](./0076-a-shared-stream-carries-its-writer-certs-and-re-sealed-grants.md):
+the owner's writer certs and re-sealed grants travel on the channel this
+record routes, and a recipient reads it in a replica of its own.
 
 ## Context
 
