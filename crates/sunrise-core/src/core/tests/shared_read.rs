@@ -2,7 +2,14 @@
 //! writer certs and grant copies the owner logs there (ADR-0076).
 
 use super::*;
+use crate::control_op::StreamWriterCertPayload;
 use crate::core::{SharedPending, SharedRead, SharedStreamReader};
+use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp};
+use sunrise_crypto::{
+    decode_envelope, decode_share_grant, identity_id_from_pub, open_envelope_unverified,
+    seal_envelope, DeviceCert, DeviceCertInner, DeviceSigningKeyPair, IdentitySigningKeyPair,
+    OpEnvelope, StreamKey,
+};
 use sunrise_domain::{StreamDraft, TaskDraft};
 
 const T: u64 = 1_700_000_000_000;
@@ -277,4 +284,225 @@ async fn a_read_needs_a_held_share_of_that_stream() {
         recipient.read_shared_envelope(&mut reader, &envelopes(&owner, other)[0]),
         Err(CoreError::Engine(EngineError::RemoteOpInvalid(_)))
     ));
+}
+
+/// The key `recipient` holds for `owner`'s Stream `s` at `epoch`.
+fn held_key(recipient: &Core, owner: &[u8; 16], s: sunrise_id::EntityRef, epoch: u32) -> StreamKey {
+    let db = recipient.db.lock();
+    recipient
+        .engine
+        .keychain()
+        .held_share_key(&db, owner, s.bytes(), epoch)
+        .unwrap()
+        .expect("a key is held at the envelope's epoch")
+}
+
+/// `env` with `inner` as its plaintext, sealed under `key` and signed by
+/// `signer`.
+fn reseal(
+    env: OpEnvelope,
+    inner: Vec<u8>,
+    key: &StreamKey,
+    signer: &DeviceSigningKeyPair,
+) -> Vec<u8> {
+    seal_envelope(
+        OpEnvelope {
+            payload: inner,
+            ..env
+        },
+        Some(key),
+        signer,
+    )
+    .unwrap()
+}
+
+/// An op and a writer cert under the believed writer's device id, signed by
+/// a key that is not its, are each refused, and the reader is left as it
+/// was: the AEAD tag says only that a holder of the key wrote it.
+#[tokio::test]
+async fn an_envelope_whose_signature_does_not_verify_is_refused() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (owner, recipient) = (account(da.path()).await, account(db.path()).await);
+    let s = stream(&owner).await;
+    share_and_accept(&owner, s, &recipient, None);
+    task(&owner, s, "after the share").await;
+    let envs = envelopes(&owner, s);
+    let mut reader = SharedStreamReader::new(owner.identity_signing_pub(), *s.bytes());
+    let reads = read_all(&recipient, &mut reader, &envs);
+    let me = owner.engine.keychain().device_id();
+    assert!(reads.contains(&SharedRead::WriterCert { device_id: me }));
+    assert_eq!(ops(&reads), vec!["task.patch"]);
+
+    let forger = DeviceSigningKeyPair::from_secret_bytes(&[0x66; 32]);
+    let fresh = SharedStreamReader::new(owner.identity_signing_pub(), *s.bytes());
+    for bytes in &envs {
+        let env = decode_envelope(bytes).unwrap();
+        assert_eq!(env.device_id, me);
+        let key = held_key(&recipient, &owner.identity_id(), s, env.epoch);
+        let inner = open_envelope_unverified(&env, &key).unwrap();
+        let is_cert = matches!(decode_inner_op(&inner), Ok(InnerOp::StreamWriterCert(_)));
+        let forged = reseal(env, inner, &key, &forger);
+
+        // Under a believed writer, every forged envelope is refused.
+        let mut believing = reader.clone();
+        let read = recipient.read_shared_envelope(&mut believing, &forged);
+        assert!(
+            matches!(
+                read,
+                Err(CoreError::Engine(EngineError::RemoteOpInvalid(_)))
+            ),
+            "{read:?}"
+        );
+        assert_eq!(believing, reader, "a refused envelope changes nothing");
+
+        // Before the writer is believed, a forged cert is refused and a
+        // forged op waits for a cert, believing nothing either way.
+        let mut waiting = fresh.clone();
+        let read = recipient.read_shared_envelope(&mut waiting, &forged);
+        if is_cert {
+            assert!(
+                matches!(
+                    read,
+                    Err(CoreError::Engine(EngineError::RemoteOpInvalid(_)))
+                ),
+                "{read:?}"
+            );
+        } else {
+            assert_eq!(
+                read.unwrap(),
+                SharedRead::Pending(SharedPending::UnknownWriter { device_id: me })
+            );
+        }
+        assert_eq!(waiting, fresh, "a refused cert changes nothing");
+    }
+}
+
+/// A writer cert carrying the owner's chain, whose cert no identity on that
+/// chain signed, is refused though the envelope verifies under the cert it
+/// carries.
+#[tokio::test]
+async fn a_writer_cert_no_identity_on_its_chain_signed_is_refused() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (owner, recipient) = (account(da.path()).await, account(db.path()).await);
+    let s = stream(&owner).await;
+    share_and_accept(&owner, s, &recipient, None);
+    let (env, key, chain) = envelopes(&owner, s)
+        .iter()
+        .find_map(|bytes| {
+            let env = decode_envelope(bytes).unwrap();
+            let key = held_key(&recipient, &owner.identity_id(), s, env.epoch);
+            let inner = open_envelope_unverified(&env, &key).unwrap();
+            match decode_inner_op(&inner).unwrap() {
+                InnerOp::StreamWriterCert(p) => Some((env, key, p.chain)),
+                _ => None,
+            }
+        })
+        .expect("the share logged a writer cert");
+
+    let stranger = IdentitySigningKeyPair::from_secret_bytes(&[0x51; 32]);
+    let device = DeviceSigningKeyPair::from_secret_bytes(&[0x52; 32]);
+    let device_id = [0x53; 16];
+    let cert = DeviceCert::issue(
+        DeviceCertInner {
+            v: 1,
+            device_id,
+            d_s_pub: device.public_bytes(),
+            d_d_pub: [0x54; 32],
+            identity_id: identity_id_from_pub(&stranger.public_bytes()),
+            created_at_ms: T,
+            nickname: "forged".into(),
+            platform: "test".into(),
+        },
+        &stranger,
+    )
+    .unwrap();
+    let inner = encode_inner_op(&InnerOp::StreamWriterCert(StreamWriterCertPayload {
+        cert: cert.to_cbor().unwrap(),
+        chain,
+        unknown: sunrise_domain::Unknowns::new(),
+    }))
+    .unwrap();
+    let forged = reseal(OpEnvelope { device_id, ..env }, inner, &key, &device);
+
+    let mut reader = SharedStreamReader::new(owner.identity_signing_pub(), *s.bytes());
+    let before = reader.clone();
+    assert!(matches!(
+        recipient.read_shared_envelope(&mut reader, &forged),
+        Err(CoreError::Engine(EngineError::RemoteOpInvalid(_)))
+    ));
+    assert_eq!(reader, before, "a refused cert changes nothing");
+    assert!(!reader.believes_writer(&device_id));
+}
+
+/// The owner rotates its identity after sharing, then the Stream's key: the
+/// grant copy the rotation logs is signed by the successor identity, and the
+/// cert its device logs under the next epoch was issued by it. The
+/// recipient, which knows only the identity it accepted from, believes both
+/// through the chain each carries, holds the next epoch and reads under it.
+#[tokio::test]
+async fn a_recipient_follows_the_share_across_the_owners_identity_rotation() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (owner, recipient) = (account(da.path()).await, account(db.path()).await);
+    let s = stream(&owner).await;
+    task(&owner, s, "before the share").await;
+    share_and_accept(&owner, s, &recipient, None);
+    let granter = (owner.identity_id(), owner.identity_signing_pub());
+
+    owner
+        .submit(Command::RotateIdentity {
+            keep_recovery_code: true,
+        })
+        .await
+        .unwrap();
+    let successor = (owner.identity_id(), owner.identity_signing_pub());
+    assert_ne!(successor.0, granter.0, "the owner's identity moved");
+    owner
+        .submit(Command::RotateStreamKey { stream: s })
+        .await
+        .unwrap();
+    task(&owner, s, "under the successor").await;
+
+    let envs = envelopes(&owner, s);
+    let next = decode_envelope(envs.last().unwrap()).unwrap().epoch;
+    let mut reader = SharedStreamReader::new(granter.1, *s.bytes());
+    let first = read_all(&recipient, &mut reader, &envs);
+    assert!(first.contains(&SharedRead::EpochHeld { epoch: next }));
+    assert_eq!(
+        ops(&read_all(&recipient, &mut reader, &envs)),
+        vec!["task.patch", "task.patch"],
+        "the task before the share and the one under the next epoch read"
+    );
+    let held = recipient.held_shares().unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].epoch, next);
+    assert_eq!(held[0].granter_identity_id, granter.0);
+
+    // What was believed is the successor's: the grant copy verifies under it
+    // and not under the granter, and the cert read under the next epoch
+    // names it.
+    let me = owner.engine.keychain().device_id();
+    let mut copies = 0;
+    let mut successor_certs = 0;
+    for (bytes, read) in envs.iter().zip(&first) {
+        let env = decode_envelope(bytes).unwrap();
+        let key = held_key(&recipient, &granter.0, s, env.epoch);
+        match decode_inner_op(&open_envelope_unverified(&env, &key).unwrap()).unwrap() {
+            InnerOp::StreamShareGrant(p) => {
+                let grant = decode_share_grant(&p.grant).unwrap();
+                let to = recipient.identity_dh_pub();
+                assert!(grant.verify(&successor.1, &to).is_ok());
+                assert!(grant.verify(&granter.1, &to).is_err());
+                assert_eq!(*read, SharedRead::EpochHeld { epoch: next });
+                copies += 1;
+            }
+            InnerOp::StreamWriterCert(p) if env.epoch == next => {
+                let cert = DeviceCert::from_cbor(&p.cert).unwrap();
+                assert_eq!(cert.body.identity_id, successor.0);
+                assert_eq!(*read, SharedRead::WriterCert { device_id: me });
+                successor_certs += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!((copies, successor_certs), (1, 1));
 }

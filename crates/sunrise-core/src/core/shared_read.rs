@@ -42,7 +42,7 @@ type Identity = ([u8; 16], [u8; 32]);
 /// What a recipient believes about one shared Stream: the identity it
 /// accepted the share from, the owner's identities that chain to it, and
 /// the writers whose certs it believes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedStreamReader {
     granter_identity_id: [u8; 16],
     granter_id_s_pub: [u8; 32],
