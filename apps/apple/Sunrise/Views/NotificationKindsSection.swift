@@ -114,7 +114,11 @@ struct NotificationKindsSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        // Borderless, because this sits in the same form row as the switch:
+        // a plain button there makes the whole row its tap target on iOS,
+        // and a tap meant for the switch would leave the app.
         Button(TimeSensitiveDelivery.focusSettingsLabel) { Self.openFocusSettings() }
+            .buttonStyle(.borderless)
             .accessibilityIdentifier("notifications.focusSettings")
     }
 
