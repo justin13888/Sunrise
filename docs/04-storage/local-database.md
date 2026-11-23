@@ -162,6 +162,21 @@ signing seed sealed under the vault root. `outbox` tracks ops still to push
 Keyed by `(stream_id, epoch)`, so a rotation adds a row rather than replacing
 one and old epochs stay openable.
 
+### Shares — `held_share_keys`, `share_relay_grants`
+
+Migration 0056 ([`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)).
+`held_share_keys` is the recipient's: each Stream key an accepted share grant
+sealed to this account, wrapped under the vault root as `stream_keys` is, and
+keyed by `(granter_identity_id, stream_id, epoch)`, beside the relay grant the
+account claimed for it, the Stream's sealed name and color, and the grant's
+expiry. It is kept apart from `stream_keys` because the owner picks the Stream
+id: in `stream_keys` a key the owner knows could stand at one of this
+account's own Stream ids, which every rotation, key bundle and seal reads.
+`share_relay_grants` is the owner's: the relay viewer grant id this device
+registered for each share, keyed by `(stream_id, recipient_identity_id,
+relay_grant_id)`, which a revocation withdraws. Both are local source state no
+op carries.
+
 ### FTS — `search_docs`, `search_words`, `search_tri`
 
 Two FTS5 indexes over every searchable kind (migration 0040,

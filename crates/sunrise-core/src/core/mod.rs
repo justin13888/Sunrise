@@ -1679,6 +1679,7 @@ mod planner;
 mod published;
 mod repair;
 mod share;
+mod share_records;
 mod snapshot;
 
 pub use share::ReceivedShare;

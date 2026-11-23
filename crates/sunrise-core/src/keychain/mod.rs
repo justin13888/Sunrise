@@ -119,6 +119,8 @@
 //! - `envelopes` — key envelopes, the key bundle and op envelopes.
 //! - `succession` — identity transition (ADR-0032): minting a successor, its
 //!   shares, and adopting it.
+//! - `held_shares` — the Stream keys accepted share grants sealed to this
+//!   account, held apart from `stream_keys` under their granter.
 //!
 //! What never took `&self` and never touched a field sits beneath those:
 //!
@@ -143,6 +145,7 @@ mod envelopes;
 /// `tests/` because the AAD builders it asserts against are `pub(super)`.
 #[cfg(test)]
 mod fixture;
+mod held_shares;
 mod legacy;
 mod pairing;
 mod rows;
@@ -165,6 +168,9 @@ use sunrise_crypto::{
 use sunrise_storage::Db;
 use thiserror::Error;
 use zeroize::Zeroize;
+
+pub use held_shares::HeldShare;
+pub(crate) use held_shares::{drop_held_share, held_shares, HoldShareKey};
 
 use crypto::{
     device_aad, device_dh_aad, unwrap_identity, unwrap_secret, wrap_device_secrets, wrap_identity,
