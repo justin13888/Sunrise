@@ -155,6 +155,35 @@ struct DropWritesTests {
         await vault.bridge.shutdown()
     }
 
+    /// **Task → Task on iOS**, through the `List`'s own `onMove`: the same
+    /// vault write as a row dropped on a row, and none in a list that cannot
+    /// be arranged by hand.
+    @Test
+    func anOnMoveWritesTheSameArrangement() async throws {
+        let vault = try await TestVault()
+        let list = try freshList(.inbox, in: vault)
+        for title in ["One", "Two", "Three"] {
+            _ = try await vault.bridge.submit(.createTask(draft: draft(title)))
+        }
+        await list.refresh()
+        let queryOrder = list.tasks.map(\.title)
+
+        #expect(await list.move(from: [2], to: 0))
+        let arranged = [queryOrder[2], queryOrder[0], queryOrder[1]]
+        #expect(list.tasks.map(\.title) == arranged)
+        let elsewhere = try freshList(.inbox, in: vault)
+        await elsewhere.refresh()
+        #expect(elsewhere.tasks.map(\.title) == arranged, "the arrangement is in the vault")
+
+        #expect(!(await list.move(from: [0], to: 0)), "a move that changes nothing submits nothing")
+
+        let today = TaskListModel(bridge: vault.bridge, kind: .todayAll)
+        await today.refresh()
+        #expect(!(await today.move(from: [1], to: 0)), "Today cannot be arranged by hand")
+
+        await vault.bridge.shutdown()
+    }
+
     /// **The one-time import.** What an earlier build kept in `UserDefaults`
     /// is written into the vault on the list's first refresh, and the stored
     /// copy is deleted.

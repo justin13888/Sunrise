@@ -174,6 +174,18 @@ struct TaskRows: View {
                 ForEach(model.upcoming) { upcomingSection($0) }
             } else {
                 ForEach(model.tasks, id: \.id) { row($0) }
+                    #if os(iOS)
+                    // **Task → Task (reorder)** on iOS. The row's own drop
+                    // target below never receives a drag another row of this
+                    // `List` started (#1297, as #1234 found for Upcoming): the
+                    // row lifts and the drop is refused. `onMove` is what an
+                    // iOS `List` does deliver for its own rows, so the reorder
+                    // is that here, writing the same `MoveTasks`. `nil` in a
+                    // list that cannot be arranged by hand.
+                    .onMove(perform: model.acceptsReordering ? { source, destination in
+                        Task { await model.move(from: source, to: destination) }
+                    } : nil)
+                    #endif
             }
         }
     }
@@ -236,9 +248,11 @@ struct TaskRows: View {
         // immediately above that one; a whole ⇧-selected run moves together
         // and keeps its internal order.
         //
-        // A drop target rather than `ForEach.onMove`, because the row is
-        // already `.draggable` — it has to reach the calendar grid and the
-        // sidebar too — and `onMove` would take that drag over for itself.
+        // A drop target rather than `ForEach.onMove` on the Mac, because the
+        // row is already `.draggable` — it has to reach the calendar grid and
+        // the sidebar too — and `onMove` would take that drag over for
+        // itself. On iOS this target never receives a sibling row's drag, so
+        // the reorder there is `rowList`'s `onMove` (#1297).
         //
         // Declined outright in Today and in Search: the first is sectioned by
         // urgency and the second ranked by relevance, so a row dropped there

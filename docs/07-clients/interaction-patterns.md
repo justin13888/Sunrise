@@ -107,15 +107,18 @@ they cannot honour.
 
 Android and Web are omitted; see [`parity-matrix.md`](./parity-matrix.md).
 The iOS column is not a second implementation: every modifier below sits in a
-shared file with no platform fork but one: the grip a block is dragged onto a
-task by is the Mac's alone. Three things still differ. The gesture is a
-long-press drag where the Mac has a click-drag. Two cells split outright —
+shared file with two platform forks: the grip a block is dragged onto a
+task by is the Mac's alone, and *Task → Task (reorder)* is a row drop on the
+Mac but the list's own `onMove` on iOS. Four things still differ. The gesture
+is a long-press drag where the Mac has a click-drag. Reorder takes a different
+route to the same `Task.sort_order` write, per the section below. Two cells
+split outright —
 *Task → Calendar block* and *Calendar block → Task* are each a **Yes** on
 macOS and a **No** on iOS — which is not about the gesture at all, but about
 which surfaces the shell can put in front of a user at once. And one is
 narrowed rather than lost: *File → Task* is a plain **Yes** on the Mac and
 iPad-only on iOS, because dragging a file in from another app needs two apps
-on screen. The gesture is the whole of the first difference; the other two
+on screen. The gesture is the whole of the first difference; the others
 are set out below.
 
 | From → To | macOS | iOS | CLI |
@@ -126,7 +129,7 @@ are set out below.
 | Calendar block → Task | Yes | **No** — see below | N/A |
 | Calendar block → Calendar (move / resize) | Yes | Yes | N/A |
 | File → Task (attach) | Yes | Yes *(iPad)* | N/A |
-| Task → Task (reorder) | Yes | Yes | N/A |
+| Task → Task (reorder) | Yes *(row drop)* | Yes *(`ForEach.onMove`)* | N/A |
 | Stream → Stream (reorder) | Yes | Yes | N/A |
 
 **Calendar block → Task binds or unbinds, and on the Mac only.** Dragging a
@@ -245,10 +248,19 @@ exactly what Split View hands out.
 Every file named above is under `Sunrise/`, so every modifier this section
 names compiles into the Mac app and the iOS app alike — what differs between
 the columns is which of them a user can bring together on one screen, not
-which of them exist.
+which of them exist. One cell is a platform fork: *Task → Task (reorder)*.
 `TaskRowView` is `.draggable`, and it is accepted by the sidebar's stream and
-context rows (`BrowseSidebar`) and by other task rows (`TaskListView`, which
-declines the drop in Today and in Search because the core ranks those lists).
+context rows (`BrowseSidebar`) and, on the Mac, by other task rows
+(`TaskListView`'s `dropDestination`, which declines the drop in Today and in
+Search because the core ranks those lists). On iOS that row drop never
+receives a sibling row's drag from inside the same `List` (#1297, as #1234
+found for Upcoming), so the iOS reorder is `rowList`'s `ForEach.onMove`
+(`#if os(iOS)`, `nil` where the list cannot be arranged by hand), writing the
+same `MoveTasks`; `TaskReorderUITests` drags an Inbox row onto its sibling on
+the simulator and finds it drawn above it. Whether the row's drag still
+reaches a target outside the `List` (a second iPad window) with `onMove`
+present is unmeasured, and the one-scene limit above leaves no such window to
+measure it in.
 The attachments pane takes files (`AttachmentsView`), and a block moves and
 resizes within the grid by its own gestures rather than by a drop. The grid's
 own drop target (an `onDrop` delegate, `GridTaskDropTarget`, because previewing a

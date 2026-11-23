@@ -84,6 +84,47 @@ struct ListOrderTests {
         #expect(ListOrder.move([Rows.one], before: Rows.four, in: list) == nil)
     }
 
+    /// iOS reorders through `onMove`, whose destination is an offset into
+    /// the list before the move: the rows land above the row there, or at
+    /// the bottom past the end, as `Array.move(fromOffsets:toOffset:)` puts
+    /// them.
+    @Test
+    func anOnMoveLandsWhereArrayMoveWouldPutIt() {
+        let list = Rows.list([(Rows.one, "G"), (Rows.two, "N"), (Rows.three, "T")])
+        #expect(
+            Rows.fields(ListOrder.move(from: [2], to: 0, in: list))
+                == MoveFields(ids: [Rows.three], after: nil, before: Rows.one),
+            "the last row dragged to the top"
+        )
+        #expect(
+            Rows.fields(ListOrder.move(from: [0], to: 2, in: list))
+                == MoveFields(ids: [Rows.one], after: Rows.two, before: Rows.three),
+            "the first row dragged between the second and third"
+        )
+        #expect(
+            Rows.fields(ListOrder.move(from: [0], to: 3, in: list))
+                == MoveFields(ids: [Rows.one], after: Rows.three, before: nil),
+            "the first row dragged past the end lands at the bottom"
+        )
+    }
+
+    /// A destination on a row that is itself moving anchors on the first
+    /// unmoved row after it, and a move that leaves the list as it was, or
+    /// names no row the list holds, is no command.
+    @Test
+    func anOnMoveThatChangesNothingIsNoCommand() {
+        let list = Rows.list([(Rows.one, "G"), (Rows.two, "N"), (Rows.three, "T")])
+        #expect(ListOrder.move(from: [1], to: 1, in: list) == nil)
+        #expect(ListOrder.move(from: [1], to: 2, in: list) == nil, "just below itself is where it is")
+        #expect(ListOrder.move(from: [2], to: 3, in: list) == nil, "the last row to the bottom")
+        #expect(ListOrder.move(from: [], to: 0, in: list) == nil)
+        #expect(ListOrder.move(from: [7], to: 0, in: list) == nil)
+        #expect(
+            Rows.fields(ListOrder.move(from: [0, 1], to: 1, in: list)) == nil,
+            "a run dropped onto its own second row stays where it is"
+        )
+    }
+
     /// Today is sectioned by urgency and Search is ranked by relevance. A row
     /// dragged in either would snap back on the next refresh, so both decline
     /// the drop rather than accepting one they cannot honour.
