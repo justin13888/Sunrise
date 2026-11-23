@@ -2,7 +2,10 @@
 //! ranges and notice codes, and the content-language re-index, against a real
 //! vault. `flavor = "multi_thread"` for the reason `seam.rs` gives.
 
-use sunrise_core_bindings::search::{HighlightRange, SearchKindItem};
+use sunrise_core_bindings::search::{
+    search_completions, search_kind_keyword, search_scope_token, HighlightRange,
+    SearchCompletionKindItem, SearchKindItem, SearchScopeItem,
+};
 use sunrise_core_bindings::{CoreCommand, CoreQuery, CoreQueryResult};
 
 mod support;
@@ -66,4 +69,60 @@ async fn grouped_search_crosses_the_seam_with_highlights_and_notices() {
     let step = core.reindex_search().await.expect("reindex");
     assert!(step.finished);
     core.shutdown().await;
+}
+
+/// The field's autocomplete crosses the seam as whole-field suggestions,
+/// each saying what it is so a client can describe it.
+#[test]
+fn completions_cross_the_seam_with_what_each_one_is() {
+    let keys = search_completions("deploy d".into(), vec![], vec![]);
+    assert_eq!(
+        keys.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
+        ["deploy due:", "deploy done:"]
+    );
+    assert_eq!(keys[0].kind, SearchCompletionKindItem::Key);
+    assert_eq!(keys[0].key, "due");
+    assert_eq!(keys[0].value, None);
+
+    let values = search_completions("is:la".into(), vec![], vec![]);
+    assert_eq!(values[0].label, "late");
+    assert_eq!(values[0].kind, SearchCompletionKindItem::Value);
+    assert_eq!(
+        (values[0].key.as_str(), values[0].value.as_deref()),
+        ("is", Some("late"))
+    );
+
+    let dates = search_completions("due<tom".into(), vec![], vec![]);
+    assert_eq!(dates[0].key, "date");
+
+    let names = search_completions(
+        "#si".into(),
+        vec!["Side project".into()],
+        vec!["errands".into()],
+    );
+    assert_eq!(names[0].text, "#\"Side project\" ");
+    assert_eq!(
+        (names[0].kind, names[0].key.as_str()),
+        (SearchCompletionKindItem::Stream, "stream")
+    );
+    let contexts = search_completions("@".into(), vec![], vec!["errands".into()]);
+    assert_eq!(contexts[0].kind, SearchCompletionKindItem::Context);
+}
+
+/// The scope token and a group's `kind:` keyword are the core's spellings.
+#[test]
+fn the_scope_token_and_kind_keyword_are_the_grammars() {
+    assert_eq!(
+        search_scope_token(SearchScopeItem::Stream, "Side project".into()),
+        "#\"Side project\" "
+    );
+    assert_eq!(
+        search_scope_token(SearchScopeItem::Context, "errands".into()),
+        "@errands "
+    );
+    assert_eq!(
+        search_kind_keyword(SearchKindItem::Attachment),
+        "attachment"
+    );
+    assert_eq!(search_kind_keyword(SearchKindItem::Event), "event");
 }

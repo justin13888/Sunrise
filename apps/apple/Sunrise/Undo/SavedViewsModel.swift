@@ -23,6 +23,10 @@ final class SavedViewsModel {
     /// Why the last recall could not be honoured in full — a context name the
     /// vault no longer has. Not an error: the view still opens.
     private(set) var recallNote: String?
+    /// The query a recalled saved search put back, until the search field
+    /// takes it. A ``Destination`` names the search screen and not what it
+    /// searched for, so the query travels beside it.
+    private(set) var pendingSearch: String?
 
     private let store: SavedViews
 
@@ -62,6 +66,13 @@ final class SavedViewsModel {
         await write(next)
     }
 
+    /// ⌘S in the search view: save `query`, the canonical text of the
+    /// search on screen, as a saved search named `name`.
+    func saveSearch(name: String, query: String) async {
+        guard !query.trimmed.isEmpty else { return }
+        await save(name: name, destination: .search, query: query, contexts: [])
+    }
+
     func delete(_ view: SavedView) async {
         await write(views.filter { $0.name != view.name })
     }
@@ -81,6 +92,7 @@ final class SavedViewsModel {
         recallNote = missing == 0
             ? nil
             : L10n.SavedViews.missingContexts(count: missing)
+        pendingSearch = view.view == .search && !view.query.trimmed.isEmpty ? view.query : nil
 
         return destination(for: view.view, contexts: resolved, book: book)
     }
@@ -115,6 +127,9 @@ final class SavedViewsModel {
     }
 
     func dismissRecallNote() { recallNote = nil }
+
+    /// The search field has put the recalled query in.
+    func searchTaken() { pendingSearch = nil }
 
     private func write(_ next: [SavedView]) async {
         do {

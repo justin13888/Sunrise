@@ -17,8 +17,13 @@
 //!
 //! Names (`#work`) and dates (`due<fri`) are kept as typed; the core resolves
 //! them when the query runs, against the vault's names and the reader's day.
+//!
+//! [`complete()`] suggests how to finish the word at the end of a query from
+//! the same vocabulary, so the field's autocomplete never offers a spelling
+//! the parser reads as text.
 
 mod ast;
+mod complete;
 mod date;
 mod display;
 mod parse;
@@ -27,6 +32,9 @@ mod text;
 pub use ast::{
     Cmp, DateField, Expr, Filter, HasValue, IsValue, NoticeKind, ParseNotice, SearchKind,
     SearchQuery, StateValue,
+};
+pub use complete::{
+    complete, scope_token, Completion, CompletionKind, CompletionNames, Scope, MAX_COMPLETIONS,
 };
 pub use date::{DateSpan, DateValue, DayOfWeek, Days, OffsetUnit, MAX_OFFSET};
 pub use parse::Parsed;
