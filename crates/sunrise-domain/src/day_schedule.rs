@@ -268,7 +268,10 @@ impl DaySchedule {
 /// planner day at the start of the timestamp range, or a brief whose offset
 /// or next date leaves it. A planner-day bound past the range's last instant
 /// is never refused: it saturates at [`Timestamp::MAX`] (`day-schedule.md`
-/// §Planner day).
+/// §Planner day). A walk that must step to a next date past the calendar's
+/// last one is still refused: [`next_wind_down`] at the range's end (for
+/// example 07:00-23:00 at 9999-12-30T22:00:00.5Z, once the last date's
+/// wind-down is behind it) returns this rather than `Ok(None)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the planner day {0} has no instant in the timestamp range")]
 pub struct OutOfCalendar(pub Date);
@@ -536,7 +539,8 @@ pub struct WindDown {
 /// behind the reader.
 ///
 /// # Errors
-/// [`OutOfCalendar`] at the edge of the calendar.
+/// [`OutOfCalendar`] at either edge of the calendar, including when the walk
+/// has no next date to step to at the range's end.
 pub fn next_wind_down(
     schedule: &DaySchedule,
     now: Timestamp,

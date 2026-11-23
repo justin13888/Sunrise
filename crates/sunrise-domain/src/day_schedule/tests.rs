@@ -574,6 +574,18 @@ fn the_last_planner_day_ends_at_the_ranges_last_instant() {
     );
 }
 
+/// `next_wind_down` walks to the next planner date, so at the range's end,
+/// once the last dates' wind-downs are behind `now`, it has none to step to
+/// and refuses with `OutOfCalendar` rather than answering `None`.
+#[test]
+fn next_wind_down_refuses_at_the_ranges_end() {
+    let s = daily(w((7, 0), (23, 0)));
+    let z = tz("UTC");
+    let now = ts("9999-12-30T22:00:00.5Z");
+    let r = next_wind_down(&s, now, &z, 3600);
+    assert!(matches!(r, Err(OutOfCalendar(_))), "{r:?}");
+}
+
 /// The start of the range still refuses: a planner day there is
 /// `OutOfCalendar`, not saturated.
 #[test]
