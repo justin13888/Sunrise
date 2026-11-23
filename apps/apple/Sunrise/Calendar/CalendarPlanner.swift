@@ -71,24 +71,29 @@ final class CalendarPlanner {
     /// at `toMs`: its start for a move, its end for a resize. The time keeps
     /// the kind the block already has: dragging a floating block an hour
     /// later must not quietly pin it to a zone.
+    ///
+    /// One event of a repeating block names its occurrence and how far the
+    /// drag reaches, `scope` (`planner.md` §Recurring blocks): the times on
+    /// its row are that event's. It previews as *this event* until the drop
+    /// is answered, which is why that is the default.
     static func intent(
         for row: BlockGridRow,
         mode: BlockDragMode,
         toMs: Int64,
-        timeZone: String
+        timeZone: String,
+        scope: OccurrenceScope = .this
     ) -> PlanIntentItem {
-        switch mode {
-        case .move:
-            .moveBlock(
-                block: row.block.id,
-                toStart: CalendarModel.sameKind(as: row.block.startsAt, ms: toMs, timeZone: timeZone)
-            )
-        case .resizeEnd:
-            .resizeBlock(
-                block: row.block.id,
-                edge: .end,
-                to: CalendarModel.sameKind(as: row.block.endsAt, ms: toMs, timeZone: timeZone)
-            )
+        let start = CalendarModel.sameKind(as: row.block.startsAt, ms: toMs, timeZone: timeZone)
+        let end = CalendarModel.sameKind(as: row.block.endsAt, ms: toMs, timeZone: timeZone)
+        switch (mode, row.occurrenceKey) {
+        case (.move, nil):
+            return .moveBlock(block: row.block.id, toStart: start)
+        case (.resizeEnd, nil):
+            return .resizeBlock(block: row.block.id, edge: .end, to: end)
+        case let (.move, key?):
+            return .moveBlockOccurrence(block: row.block.id, key: key, scope: scope, toStart: start)
+        case let (.resizeEnd, key?):
+            return .resizeBlockOccurrence(block: row.block.id, key: key, scope: scope, edge: .end, to: end)
         }
     }
 
@@ -117,36 +122,12 @@ final class CalendarPlanner {
         }
     }
 
-    /// Where one event of a repeating block goes when dragged in `mode` with
-    /// its held edge at `toMs`, or `nil` for a resize that would end it at or
-    /// before its start.
-    ///
-    /// The planner reads a repeating block as its series row, not as the
-    /// event on screen, so a drag of one event is not a plan it can preview:
-    /// that drag keeps the edit the grid made before the planner, with its
-    /// "which events?" question, and this is the span it writes. A move keeps
-    /// the event's length; a resize keeps its start.
-    static func repeatingSpan(
-        of row: BlockGridRow,
-        mode: BlockDragMode,
-        toMs: Int64,
-        timeZone: String
-    ) -> GridSpan? {
-        let start = timeValueMs(value: row.block.startsAt, tz: timeZone)
-        let end = timeValueMs(value: row.block.endsAt, tz: timeZone)
-        switch mode {
-        case .move:
-            return GridSpan(startMs: toMs, endMs: toMs + (end - start))
-        case .resizeEnd:
-            return toMs > start ? GridSpan(startMs: start, endMs: toMs) : nil
-        }
-    }
-
     // MARK: - A drag
 
     /// A drag of `row` reached a new snapped position: preview it. The diff
     /// is drawn when it comes back, unless a newer position or the end of
-    /// the gesture overtook it.
+    /// the gesture overtook it. One event of a repeating block previews as
+    /// *this event*: nobody has said yet how far the drag reaches.
     func previewDrag(_ row: BlockGridRow, mode: BlockDragMode, toMs: Int64, timeZone: String) async {
         await preview(
             Self.intent(for: row, mode: mode, toMs: toMs, timeZone: timeZone),
@@ -155,10 +136,17 @@ final class CalendarPlanner {
     }
 
     /// The drag of `row` ended with its held edge at `toMs`: commit the plan
-    /// for that position. Dropped where it started, it commits nothing.
-    func dropDrag(_ row: BlockGridRow, mode: BlockDragMode, toMs: Int64, timeZone: String) async {
+    /// for that position, reaching `scope` for one event of a repeating
+    /// block. Dropped where it started, it commits nothing.
+    func dropDrag(
+        _ row: BlockGridRow,
+        mode: BlockDragMode,
+        toMs: Int64,
+        timeZone: String,
+        scope: OccurrenceScope = .this
+    ) async {
         await drop(
-            Self.intent(for: row, mode: mode, toMs: toMs, timeZone: timeZone),
+            Self.intent(for: row, mode: mode, toMs: toMs, timeZone: timeZone, scope: scope),
             gesture: PlanGesture(row: row, mode: mode)
         )
     }
@@ -218,6 +206,16 @@ final class CalendarPlanner {
         await commit(plan, intent: planIntent, gesture: planGesture, retry: true)
     }
 
+    /// Return on a nudge of one event, once "which events?" is answered: the
+    /// plan, solved as *this event*, is committed as a drop at `scope` is.
+    func commitPlan(reaching scope: OccurrenceScope) async {
+        guard let planIntent, let planGesture else { return }
+        await drop(planIntent.reaching(scope), gesture: planGesture)
+    }
+
+    /// The plan on screen drags one event, so its commit asks which events.
+    var plansOccurrence: Bool { plan != nil && planIntent?.occurrenceKey != nil }
+
     /// Esc, the banner's Cancel button, or the end of a gesture: forget the
     /// plan on screen and write nothing.
     func cancel() {
@@ -243,6 +241,15 @@ final class CalendarPlanner {
     /// Whether the plan on screen moves `block`.
     func moves(_ block: EntityRef) -> Bool {
         plan?.moves.contains { $0.item == block } ?? false
+    }
+
+    /// Whether the plan on screen moves what `row` draws. Every event of a
+    /// repeating block shares its id, and a plan moves only the event its
+    /// drag names (`planner.md` §Recurring blocks), so the rest stay drawn.
+    func moves(_ row: BlockGridRow) -> Bool {
+        guard moves(row.block.id) else { return false }
+        guard let key = row.occurrenceKey else { return true }
+        return planIntent?.occurrenceKey == key
     }
 
     /// Commit `diff`, exactly. Stale or forgotten, it is previewed once more
@@ -314,10 +321,11 @@ final class CalendarPlanner {
     /// move its end a snap, ⌥←/⌥→ move it a day, each previewing the same
     /// plan a drag there would; Return commits it and Esc cancels it.
     ///
-    /// Returns whether the key did anything. A repeating block is not
-    /// planned (``repeatingSpan(of:mode:toMs:timeZone:)``), so its moving
-    /// keys fall through. Nudges add up until Return or Esc; switching
-    /// between moving and resizing starts again from where the block is.
+    /// Returns whether the key did anything. One event of a repeating block
+    /// is nudged as *this event*, as its drag previews; its Return goes
+    /// through ``commitPlan(reaching:)`` once the calendar has asked how far
+    /// it reaches. Nudges add up until Return or Esc; switching between
+    /// moving and resizing starts again from where the block is.
     @discardableResult
     func press(_ key: PlanKey, on row: BlockGridRow, snapMinutes: Int, timeZone: String) async -> Bool {
         switch key {
@@ -330,7 +338,6 @@ final class CalendarPlanner {
             cancel()
             return true
         default:
-            guard !row.recurs else { return false }
             var next = nudge.flatMap { $0.block == row.gridKey ? $0 : nil } ?? PlanNudge(block: row.gridKey)
             next.press(key)
             nudge = next

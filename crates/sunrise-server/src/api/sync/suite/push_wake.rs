@@ -5,7 +5,7 @@ use super::*;
 
 /// A provider that hands every intent to the test.
 #[derive(Debug)]
-struct Recorder(tokio::sync::mpsc::UnboundedSender<crate::push::PushIntent>);
+pub(super) struct Recorder(pub(super) tokio::sync::mpsc::UnboundedSender<crate::push::PushIntent>);
 
 #[async_trait::async_trait]
 impl crate::push::PushProvider for Recorder {

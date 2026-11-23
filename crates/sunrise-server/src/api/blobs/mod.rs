@@ -47,7 +47,7 @@
 pub mod delete;
 pub mod fetch;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use delete::{BlobDeleteRequest, BlobDeleteResponse};
 // The id newtypes live in the crate-private `api::ids`; re-exported so the
@@ -57,7 +57,7 @@ pub use crate::api::ids::{BlobId, ChunkHash, UploadId};
 
 use crate::api::account_deletion::refuse_if_pending;
 use crate::api::error::{codes, ApiError};
-use crate::api::ids::{parse_hash, parse_upload_id};
+use crate::api::ids::{parse_hash, parse_hex16, parse_upload_id};
 use crate::api::ratelimit::policy::Budget;
 use crate::api::ratelimit::Throttled;
 use crate::api::signed::{Caller, Signed, SignedBinary};
@@ -153,6 +153,75 @@ pub struct ChunkPath {
 pub struct BlobIdPath {
     /// The blob being read.
     pub blob_id: BlobId,
+}
+
+/// A viewer grant's id in a query string: 32 lowercase hex characters, the
+/// spelling `GET /sync/grants` returns it in. A newtype for the reason
+/// [`UploadId`] is one: a parameter's pattern has to be something its type
+/// states.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(transparent)]
+pub struct GrantIdHex(pub String);
+
+impl kynos::schema::Schema for GrantIdHex {
+    fn schema(registry: &mut kynos::schema::registry::Registry) -> kynos::openapi::Schema {
+        crate::api::ids::hex_pattern(registry, "^[0-9a-f]{32}$")
+    }
+}
+
+impl std::str::FromStr for GrantIdHex {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
+impl std::fmt::Display for GrantIdHex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Its schema is one string, so one query value carries it.
+impl kynos::schema::ParamValue for GrantIdHex {}
+
+/// The query a read of a Stream's ciphertext takes: `GET /blobs/{blob_id}`
+/// and `GET /snapshots/{stream_id}`.
+#[derive(Debug, Clone, Deserialize, kynos::Schema, kynos::QueryParams)]
+pub struct GrantQuery {
+    /// A viewer grant the caller holds (ADR-0074): the read is served from
+    /// the account that registered it rather than the caller's own. Absent
+    /// for the caller's own. A grant that is not in force for the caller is
+    /// `403 RELAY_GRANT_REVOKED`, whichever of withdrawn, expired, unclaimed,
+    /// foreign or unknown it is.
+    pub grant: Option<GrantIdHex>,
+}
+
+/// The account a read is served from: the caller's own without a grant, and
+/// with one, the account that registered it, once
+/// [`in_force`](crate::api::sync::grants::in_force) holds the grant in force
+/// for the caller's account and, where `stream_id` is given, that Stream.
+///
+/// Every grant that fails is the one `403 RELAY_GRANT_REVOKED` a subscription
+/// naming it gets, so the read is no oracle for which grants exist, and it is
+/// decided before anything of the owner's is looked up.
+pub(crate) async fn reader_account(
+    state: &ServerState,
+    caller: &Caller,
+    grant: Option<&GrantIdHex>,
+    stream_id: Option<&[u8; 16]>,
+) -> Result<String, ApiError> {
+    let account_id = &caller.principal.account.account_id;
+    let Some(grant) = grant else {
+        return Ok(account_id.clone());
+    };
+    let grant_id = parse_hex16(&grant.0, "grant")?;
+    let now_ms = state.clock.now_ms();
+    crate::api::sync::grants::in_force(state, &grant_id, account_id, stream_id, now_ms)
+        .await?
+        .map(|g| g.owner_id)
+        .ok_or_else(crate::api::sync::grants::not_in_force)
 }
 
 /// Reserve an upload id and hand back one URL per chunk.

@@ -90,10 +90,15 @@ pub async fn subscribe(
         let stream_id = parse_hex16(&s.stream_id, "stream_id")?;
         if let Some(grant) = &s.grant {
             let grant_id = parse_hex16(grant, "grant")?;
-            let g =
-                super::grants::in_force(&state, &grant_id, &session.account_id, &stream_id, now_ms)
-                    .await?
-                    .ok_or_else(super::grants::not_in_force)?;
+            let g = super::grants::in_force(
+                &state,
+                &grant_id,
+                &session.account_id,
+                Some(&stream_id),
+                now_ms,
+            )
+            .await?
+            .ok_or_else(super::grants::not_in_force)?;
             shared.push(SharedStream {
                 stream_id,
                 grant_id,

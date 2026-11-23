@@ -377,33 +377,48 @@ extension PlannedDragTests {
         await vault.bridge.shutdown()
     }
 
-    /// One event of a repeating block is not planned; its drag writes the
-    /// span the grid computes, keeping the event's length.
+    /// A drag of one event of a repeating block names its occurrence: it
+    /// sends `MoveBlockOccurrence` or `ResizeBlockOccurrence`, as *this
+    /// event* until the drop is answered, and an answer changes only the
+    /// reach. A block that does not recur sends the plain intents.
     @Test
-    func aRepeatingEventKeepsItsLengthWhenMovedAndCannotEndBeforeItStarts() throws {
-        let row = BlockGridRow(
-            block: BlockItem(
-                id: "blk_1",
-                createdAt: 0,
-                updatedAt: 0,
-                streamId: inboxStreamId(),
-                startsAt: .instant(at: 9 * 3_600_000),
-                endsAt: .instant(at: 10 * 3_600_000),
+    func aRepeatingEventsDragNamesItsOccurrenceAndItsReach() {
+        func row(_ key: String?) -> BlockGridRow {
+            BlockGridRow(
+                block: BlockItem(
+                    id: "blk_1",
+                    createdAt: 0,
+                    updatedAt: 0,
+                    streamId: inboxStreamId(),
+                    startsAt: .instant(at: 9 * 3_600_000),
+                    endsAt: .instant(at: 10 * 3_600_000),
+                    title: nil,
+                    titleTrackTask: false,
+                    tasks: [],
+                    deleted: false
+                ),
                 title: nil,
-                titleTrackTask: false,
-                tasks: [],
-                deleted: false
-            ),
-            title: nil,
-            taskTitles: [],
-            occurrenceKey: nil
+                taskTitles: [],
+                occurrenceKey: key
+            )
+        }
+        let at = TimeValue.instant(at: 11 * 3_600_000)
+        let toMs: Int64 = 11 * 3_600_000
+
+        let move = CalendarPlanner.intent(for: row("k1"), mode: .move, toMs: toMs, timeZone: "UTC")
+        #expect(move == .moveBlockOccurrence(block: "blk_1", key: "k1", scope: .this, toStart: at))
+        let resize = CalendarPlanner.intent(
+            for: row("k1"), mode: .resizeEnd, toMs: toMs, timeZone: "UTC", scope: .all
         )
-        let moved = CalendarPlanner.repeatingSpan(of: row, mode: .move, toMs: 11 * 3_600_000, timeZone: "UTC")
-        #expect(moved == GridSpan(startMs: 11 * 3_600_000, endMs: 12 * 3_600_000))
-        let squashed = CalendarPlanner.repeatingSpan(
-            of: row, mode: .resizeEnd, toMs: 9 * 3_600_000, timeZone: "UTC"
-        )
-        #expect(squashed == nil)
+        #expect(resize == .resizeBlockOccurrence(block: "blk_1", key: "k1", scope: .all, edge: .end, to: at))
+        let all = PlanIntentItem.moveBlockOccurrence(block: "blk_1", key: "k1", scope: .all, toStart: at)
+        #expect(move.reaching(.all) == all)
+        #expect(move.occurrenceKey == "k1")
+
+        let plain = CalendarPlanner.intent(for: row(nil), mode: .move, toMs: toMs, timeZone: "UTC")
+        #expect(plain == .moveBlock(block: "blk_1", toStart: at))
+        #expect(plain.reaching(.all) == plain)
+        #expect(plain.occurrenceKey == nil)
     }
 }
 

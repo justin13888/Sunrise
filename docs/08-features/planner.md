@@ -28,12 +28,14 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 > separate act (the block editor, or a block's grip dropped on the task row).
 > Where that client stops short of the contract below:
 >
-> - One event of a repeating block is not planned by the client yet: the
->   core reads a recurring block as its occurrences and plans a drag of one
->   of them (§Recurring blocks), and UniFFI carries it as
->   `MoveBlockOccurrence` and `ResizeBlockOccurrence`, but the Apple drag
->   still asks "which events?" and writes an ordinary edit
->   ([#1224](https://github.com/justin13888/Sunrise/issues/1224)).
+> - A drag of one event of a repeating block is planned through
+>   `MoveBlockOccurrence` and `ResizeBlockOccurrence` (§Recurring blocks):
+>   it previews as *this event*, with the ghost on the event dragged and on
+>   no other, and its drop, or Return after a planning key, asks "which
+>   events?" with the plan still drawn. The question offers *this event* and
+>   *all events* only; *this and following* is not planned
+>   ([#1324](https://github.com/justin13888/Sunrise/issues/1324)), and the
+>   block editor's Adjust times still makes that change as an ordinary edit.
 > - A block's top edge is not draggable, so `ResizeBlock { edge: Start }` is
 >   never sent.
 > - The undo step is ordered against the command stack in Swift
@@ -486,8 +488,10 @@ else that moves ever has one.
   event from it is flagged as a Blocking `Invalid` violation.
 
 "This and following" is not planned yet: it splits the series into a new
-block, which the per-field inverse below cannot undo. The client keeps its
-edit for that answer.
+block, which the per-field inverse below cannot undo
+([#1324](https://github.com/justin13888/Sunrise/issues/1324)). A client's
+drag does not offer that answer; its block editor makes the change as an
+ordinary edit.
 
 A drag of one event stores its inverse against the occurrence's entry in the
 `exceptions` map (`OccurrenceStartsAt`, `OccurrenceEndsAt`, the prior value

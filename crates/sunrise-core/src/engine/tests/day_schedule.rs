@@ -286,6 +286,14 @@ fn the_planner_day_reads_answer_in_the_last_second_of_the_range() {
             panic!("not Today");
         };
         assert!(rows.iter().all(|r| r.task.id == id), "{zone}");
+        // The week ahead runs past the last date, so it ends at the range's
+        // last instant instead of refusing the plan (#1323).
+        let QueryResult::EndOfDayPlan(p) =
+            e.query(&db, Query::EndOfDayPlan { now_ms: now }).unwrap()
+        else {
+            panic!("not an end-of-day plan");
+        };
+        assert_eq!(p.week_end.as_millisecond(), last_ms, "{zone}");
     }
 }
 

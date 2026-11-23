@@ -160,7 +160,7 @@ pub async fn events(
             &state,
             &shared.grant_id,
             &session.account_id,
-            &shared.stream_id,
+            Some(&shared.stream_id),
             now_ms,
         )
         .await?;
@@ -674,7 +674,7 @@ async fn grant_recheck(
             state,
             &shared.grant_id,
             &session.account_id,
-            &shared.stream_id,
+            Some(&shared.stream_id),
             now_ms,
         )
         .await

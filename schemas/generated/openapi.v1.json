@@ -5313,7 +5313,7 @@
     "/api/v1/blobs/{blob_id}": {
       "get": {
         "summary": "Stream a committed blob's ciphertext back.",
-        "description": "One chunk is read from disk at a time rather than the whole blob being\nassembled first. The surface this replaces built a single `Vec<u8>` of up to\n`MAX_BLOB_BYTES` before writing a byte, so one fetch of a large attachment\npinned 100 MB of the relay's memory for as long as the client took to read\nit — and a handful of concurrent fetches was an availability problem rather\nthan a slow response.",
+        "description": "One chunk is read from disk at a time rather than the whole blob being\nassembled first. The surface this replaces built a single `Vec<u8>` of up to\n`MAX_BLOB_BYTES` before writing a byte, so one fetch of a large attachment\npinned 100 MB of the relay's memory for as long as the client took to read\nit — and a handful of concurrent fetches was an availability problem rather\nthan a slow response.\n\nWith `?grant=`, the blob is read from the account that registered the\nviewer grant (ADR-0074), once the grant is in force for the caller. The\nrelay files a blob by account and content address and never by Stream, so\na grant reaches the owner's blobs by id rather than only its Stream's: the\nviewer still needs the id, which travels inside the Stream's sealed ops,\nand the ciphertext of any other Stream is under a key it was never sealed.\nThe download is charged to the caller.",
         "operationId": "fetchBlob",
         "parameters": [
           {
@@ -5324,6 +5324,19 @@
             "schema": {
               "type": "string",
               "pattern": "^blb_[0-9a-f]{32}$"
+            }
+          },
+          {
+            "name": "grant",
+            "in": "query",
+            "description": "A viewer grant the caller holds (ADR-0074): the read is served from\nthe account that registered it rather than the caller's own. Absent\nfor the caller's own. A grant that is not in force for the caller is\n`403 RELAY_GRANT_REVOKED`, whichever of withdrawn, expired, unclaimed,\nforeign or unknown it is.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{32}$"
             }
           },
           {
@@ -6035,6 +6048,7 @@
     "/api/v1/snapshots/{stream_id}": {
       "get": {
         "summary": "The stream's pinned snapshot, or `404` when none is.",
+        "description": "With `?grant=`, the pin is the one the account that registered the viewer\ngrant (ADR-0074) holds for the Stream, once the grant is in force for the\ncaller and names that Stream; the blob it names is then fetched with the\nsame `?grant=`. That is what a viewer whose cursor fell behind the owner's\nretention resolves its `SYNC_CURSOR_GAP` with.",
         "operationId": "fetchStreamSnapshot",
         "parameters": [
           {
@@ -6044,6 +6058,19 @@
             "required": true,
             "schema": {
               "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            }
+          },
+          {
+            "name": "grant",
+            "in": "query",
+            "description": "A viewer grant the caller holds (ADR-0074): the read is served from\nthe account that registered it rather than the caller's own. Absent\nfor the caller's own. A grant that is not in force for the caller is\n`403 RELAY_GRANT_REVOKED`, whichever of withdrawn, expired, unclaimed,\nforeign or unknown it is.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
               "pattern": "^[0-9a-f]{32}$"
             }
           },

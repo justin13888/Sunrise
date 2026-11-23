@@ -444,10 +444,13 @@ fn count_received(metrics: &crate::Metrics, n_ops: usize) {
 }
 
 /// Tell the push dispatcher a fresh batch landed, so the account's devices
-/// with no stream open learn of it by a wake-up.
+/// with no stream open learn of it by a wake-up, and so do the devices of
+/// every account holding a viewer grant in force on the Stream (ADR-0074).
 ///
 /// A queue push and nothing more: the token lookup and the send happen on the
 /// dispatcher's own task, so the append is neither slowed nor failed by them.
+/// The viewers' wakes need the grants read first, which happens on a task of
+/// its own for the same reason, and only when a push provider is configured.
 fn wake_offline_peers(
     state: &ServerState,
     session: &crate::sync_session::Session,
@@ -462,6 +465,58 @@ fn wake_offline_peers(
             kind: crate::push::PushKind::Sync,
         },
     );
+    if state.push.provider().is_none() {
+        return;
+    }
+    let state = state.clone();
+    let owner_id = session.account_id.clone();
+    tokio::spawn(async move {
+        for viewer in viewers_in_force(&state, &owner_id, stream_id).await {
+            state.push.notify(
+                &state,
+                crate::push::Wake {
+                    account_id: viewer,
+                    stream_id,
+                    // The publishing device is the owner's: no device of a
+                    // viewer's account already holds the batch.
+                    origin: None,
+                    kind: crate::push::PushKind::Sync,
+                },
+            );
+        }
+    });
+}
+
+/// The accounts holding a viewer grant in force on `owner_id`'s `stream_id`,
+/// each once. A store that cannot answer wakes no viewer, and says so: the
+/// batch is stored, and the viewer's next stream replays it.
+async fn viewers_in_force(state: &ServerState, owner_id: &str, stream_id: [u8; 16]) -> Vec<String> {
+    let grants = match state.store.viewer_grants(owner_id).await {
+        Ok(grants) => grants,
+        Err(e) => {
+            tracing::error!(
+                ev = "srv.push.lookup_failed",
+                provider = state.push.provider().unwrap_or_default(),
+                account_h = %crate::logging::account_h(owner_id),
+                cause = %e,
+                "could not read the viewer grants; no viewer is woken for this batch"
+            );
+            return Vec::new();
+        }
+    };
+    let now_ms = state.clock.now_ms();
+    let mut viewers: Vec<String> = grants
+        .into_iter()
+        .filter(|g| g.owner_id == owner_id && g.stream_id == stream_id)
+        .filter_map(|g| {
+            g.recipient_id
+                .clone()
+                .filter(|recipient| g.serves(recipient, now_ms))
+        })
+        .collect();
+    viewers.sort_unstable();
+    viewers.dedup();
+    viewers
 }
 
 #[cfg(test)]
