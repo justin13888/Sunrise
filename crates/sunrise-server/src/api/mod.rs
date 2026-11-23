@@ -145,6 +145,12 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
             sync::events
         ])
         .mount(kynos::routes![
+            sync::grants::create,
+            sync::grants::claim,
+            sync::grants::list,
+            sync::grants::withdraw
+        ])
+        .mount(kynos::routes![
             pairing::send,
             pairing::receive,
             pairing::abort,

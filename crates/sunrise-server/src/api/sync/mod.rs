@@ -13,6 +13,9 @@
 //! | `RefreshToken` | [`refresh`] |
 //! | cursor replay, `SYNC_CURSOR_GAP` | `Last-Event-ID` |
 //!
+//! [`grants`] is the one surface here no frame had: the viewer grants through
+//! which a subscription reads another account's Stream (ADR-0074).
+//!
 //! # What the ADR left open, and what was chosen
 //!
 //! **Where the session id travels.** ADR-0023 says `POST /sync/session`
@@ -42,6 +45,7 @@
 
 mod credential;
 mod cursors;
+pub mod grants;
 mod publish;
 mod resume;
 mod stream;
@@ -53,5 +57,6 @@ pub use credential::{
     SessionResponse,
 };
 pub use cursors::{subscribe, DeviceCursor, StreamSubscription, SubscribeRequest};
+pub use grants::{ClaimGrantRequest, CreateGrantRequest, GrantIdPath, GrantList, GrantView};
 pub use publish::{ops, OpsRequest, OpsResponse};
 pub use stream::{events, EventStream, SyncEvent, KEEP_ALIVE_SECS};

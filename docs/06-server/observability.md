@@ -74,7 +74,10 @@ srv.sync.stream_closed           srv.sync.refreshed
 srv.sync.stream_drained          srv.sync.resume_conflict
 srv.sync.token_expired
 srv.sync.device_revoked
+srv.sync.grant_revoked
 srv.sync.session_store_failed
+srv.grant.created                srv.grant.claimed
+srv.grant.withdrawn
 srv.push.disabled                srv.push.lookup_failed
 srv.push.token_unregistered      srv.push.delivery_failed
 srv.account.delete_initiated     srv.blob.tombstoned

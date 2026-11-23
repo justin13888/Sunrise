@@ -153,6 +153,21 @@ pub async fn events(
 ) -> Result<Sse<EventStream>, Throttled> {
     let now_ms = state.clock.now_ms();
     let (id, session) = resolve(&state, &header, &caller, now_ms).await?;
+    // A grant checked at subscribe can have been withdrawn or have expired
+    // since; the replay below must not serve the owner's backlog through it.
+    for shared in &session.shared {
+        let held = super::grants::in_force(
+            &state,
+            &shared.grant_id,
+            &session.account_id,
+            &shared.stream_id,
+            now_ms,
+        )
+        .await?;
+        if held.is_none() {
+            return Err(super::grants::not_in_force().into());
+        }
+    }
     // Held by the stream's task and released when it ends, which includes
     // the client going away: `live_loop` watches for that.
     let slot = state
@@ -283,7 +298,10 @@ fn spawn_stream(
         // a no-op; the reverse order would drop it entirely.
         for (i, entry) in session.streams.iter().enumerate() {
             let sid = entry.stream_id;
-            receivers.push((sid, state.relay.subscribe_live((session.account, sid))));
+            // The owner's channel for a stream read through a viewer grant,
+            // the session's own for every other (ADR-0074).
+            let channel = session.channel(sid);
+            receivers.push((sid, state.relay.subscribe_live(channel)));
 
             let cursors: HashMap<[u8; 16], u64> = entry
                 .cursors
@@ -293,12 +311,12 @@ fn spawn_stream(
             // Between the two, on a hub the cluster's bus feeds: the bus then
             // publishes everything that commits after this, so the read below
             // and the receiver above still overlap rather than leave a hole.
-            let replay = match state.relay.prime((session.account, sid)).await {
+            let replay = match state.relay.prime(channel).await {
                 Ok(()) => {
                     state
                         .store
                         .relay_replay_after(
-                            (session.account, sid),
+                            channel,
                             positions.after(i).unwrap_or(0),
                             &cursors,
                         )
@@ -567,6 +585,9 @@ async fn live_loop(
                 if let Some(reason) = device_recheck(&state, &id, &session, &tx, span).await {
                     return reason;
                 }
+                if let Some(reason) = grant_recheck(&state, &session, now_ms, &tx, span).await {
+                    return reason;
+                }
             }
         }
     }
@@ -631,6 +652,66 @@ async fn device_recheck(
         .send(closed(ErrorCode::AuthDeviceRevoked, "device revoked"))
         .await;
     Some("device_revoked")
+}
+
+/// Whether every viewer grant the session reads through is still in force
+/// for its account: not withdrawn by either party, not expired, not gone with
+/// an erased account (ADR-0074 §4). Returns why the stream ended, if it did.
+///
+/// The session itself is kept: its own streams are still its own, and the
+/// client re-subscribes without the stream it lost. Ending the relay's
+/// service is the hygiene half; the owner's key rotation is what keeps the
+/// next epoch from the recipient.
+async fn grant_recheck(
+    state: &ServerState,
+    session: &Session,
+    now_ms: u64,
+    tx: &tokio::sync::mpsc::Sender<Event<SyncEvent>>,
+    span: &sunrise_telemetry::SpanGuard,
+) -> Option<&'static str> {
+    for shared in &session.shared {
+        match super::grants::in_force(
+            state,
+            &shared.grant_id,
+            &session.account_id,
+            &shared.stream_id,
+            now_ms,
+        )
+        .await
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                tracing::warn!(
+                    ev = "srv.sync.grant_revoked",
+                    err_code = %ErrorCode::RelayGrantRevoked,
+                    err_kind = "user",
+                    account_h = %crate::logging::account_h(&session.account_id),
+                    stream_h = %crate::logging::id_h(&shared.stream_id),
+                    "a viewer grant this stream reads through is no longer in force; ending the stream"
+                );
+                let _ = tx
+                    .send(closed(
+                        ErrorCode::RelayGrantRevoked,
+                        "viewer grant withdrawn or expired",
+                    ))
+                    .await;
+                return Some("grant_revoked");
+            }
+            // Not knowing is not "revoked": the close is retryable, and a
+            // reopened stream checks again.
+            Err(_) => {
+                span.fail("grant store unreadable");
+                let _ = tx
+                    .send(closed(
+                        ErrorCode::RelayStorageUnavailable,
+                        "relay could not read its viewer grants",
+                    ))
+                    .await;
+                return Some("grant_store_unavailable");
+            }
+        }
+    }
+    None
 }
 
 /// One live receiver per stream of the session, in the session's order.

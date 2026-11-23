@@ -102,6 +102,27 @@ pub struct Session {
     pub subscribe_unserved: bool,
     /// When this session was last touched, for idle collection.
     pub seen_ms: u64,
+    /// The streams of [`Self::streams`] this session reads through a viewer
+    /// grant, from another account's channel (ADR-0074). Replaced with
+    /// `streams`, and empty for a session that reads only its own.
+    ///
+    /// `default`, so a session row a relay that predates grants stored reads
+    /// as reading only its own streams, which is what it was.
+    #[serde(default)]
+    pub shared: Vec<SharedStream>,
+}
+
+/// One stream a session reads from its owner's channel through a viewer
+/// grant (ADR-0074).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SharedStream {
+    /// The stream, as the subscription named it.
+    pub stream_id: [u8; 16],
+    /// The grant the subscription named, re-checked while the stream is open.
+    pub grant_id: [u8; 16],
+    /// The owner's channel namespace, [`crate::account_ns::account_key`] of
+    /// the owning account.
+    pub owner: [u8; 16],
 }
 
 impl Session {
@@ -109,6 +130,22 @@ impl Session {
     #[must_use]
     pub fn expired(&self, now_ms: u64) -> bool {
         self.deadline_ms.is_some_and(|d| now_ms >= d)
+    }
+
+    /// The relay channel this session reads `stream_id` from: the owner's,
+    /// for a stream it reads through a grant, and its own for every other.
+    ///
+    /// Only reads route through a grant. A session always publishes to its
+    /// own channel, which is what makes a viewer unable to write
+    /// (ADR-0074 §3).
+    #[must_use]
+    pub fn channel(&self, stream_id: [u8; 16]) -> crate::relay::StreamKey {
+        let owner = self
+            .shared
+            .iter()
+            .find(|s| s.stream_id == stream_id)
+            .map_or(self.account, |s| s.owner);
+        (owner, stream_id)
     }
 }
 
@@ -554,6 +591,7 @@ mod tests {
             streams: Vec::new(),
             subscribe_unserved: false,
             seen_ms,
+            shared: Vec::new(),
         }
     }
 

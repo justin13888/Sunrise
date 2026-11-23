@@ -83,21 +83,30 @@ pub fn route_group(method: &str, path: &str) -> Option<RouteGroup> {
         ("GET", "/api/v1/health" | "/metrics") => Probe,
         ("GET", "/api/v1/meta") => Meta,
         ("POST", "/api/v1/accounts" | "/api/v1/devices") => Bootstrap,
+        // The `/api/v1/sync/grants` rows are the viewer grants of ADR-0074:
+        // account-level records, written rarely, and a claim is a token
+        // guess this group's budget slows.
         (
             "GET",
-            "/api/v1/accounts/me" | "/api/v1/accounts/me/recovery_blob" | "/api/v1/devices",
+            "/api/v1/accounts/me"
+            | "/api/v1/accounts/me/recovery_blob"
+            | "/api/v1/devices"
+            | "/api/v1/sync/grants",
         )
         | (
             "DELETE",
             "/api/v1/accounts/me"
             | "/api/v1/devices/{device_id}"
-            | "/api/v1/devices/by-vault-id/{vault_device_id}",
+            | "/api/v1/devices/by-vault-id/{vault_device_id}"
+            | "/api/v1/sync/grants/{grant_id}",
         )
         | (
             "POST",
             "/api/v1/devices/push-tokens"
             | "/api/v1/devices/by-vault-id/{vault_device_id}/reinstate"
-            | "/api/v1/accounts/me/delete/initiate",
+            | "/api/v1/accounts/me/delete/initiate"
+            | "/api/v1/sync/grants"
+            | "/api/v1/sync/grants/claim",
         )
         | ("PUT", "/api/v1/accounts/me/recovery_blob") => Account,
         ("POST", "/api/v1/blobs/init" | "/api/v1/blobs/finalize")
