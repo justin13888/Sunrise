@@ -12,6 +12,12 @@ const CAROL: &str = "Bearer third";
 /// A relay with three accounts — alice owns, bob views, carol is a third
 /// party — a clock the test moves, and a re-check fast enough to observe.
 fn relay(clock: Arc<TestClock>) -> Client {
+    relay_with_state(clock).0
+}
+
+/// [`relay`], keeping a handle on the state so a test can reach the store
+/// under the seam.
+fn relay_with_state(clock: Arc<TestClock>) -> (Client, ServerState) {
     let state = ServerState::with_clock(
         ServerConfig {
             device_recheck_ms: 20,
@@ -25,7 +31,7 @@ fn relay(clock: Arc<TestClock>) -> Client {
             .with("second", Subject::new(ISSUER, "bob"))
             .with("third", Subject::new(ISSUER, "carol")),
     ));
-    Client::from_state(state)
+    (Client::from_state(state.clone()), state)
 }
 
 fn token(tag: u8) -> String {
@@ -425,4 +431,137 @@ async fn a_granted_stream_id_appears_once_in_a_set() {
     )
     .await
     .assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// A device registered under `bearer`'s account, with the key it signs by.
+async fn device_of(client: &Client, bearer: &str, seed: u8) -> (String, ed25519_dalek::SigningKey) {
+    use base64::Engine as _;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let body = serde_json::json!({
+        "device_pub_s": base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(key.verifying_key().as_bytes()),
+        "nickname": "viewer phone",
+        "platform": "linux",
+    });
+    let res = client
+        .send_as(Method::POST, "/api/v1/devices", Some(bearer), Some(&body))
+        .await;
+    res.assert_status(StatusCode::CREATED);
+    (res.json()["device_id"].as_str().unwrap().to_owned(), key)
+}
+
+/// `bearer`'s device signs a request, with `session` when it has one.
+async fn signed_as(
+    client: &Client,
+    bearer: &str,
+    device: &(String, ed25519_dalek::SigningKey),
+    target: &str,
+    body: &serde_json::Value,
+    session: Option<&str>,
+) -> Res {
+    let date = crate::api::testing::now_rfc2822(client);
+    let signature = sunrise_http_sig::sign(&device.1, "POST", target, &date, Some(body))
+        .expect("the client half signs");
+    let mut headers = vec![
+        ("x-sunrise-device", device.0.as_str()),
+        ("x-sunrise-device-sig", signature.as_str()),
+        ("date", date.as_str()),
+    ];
+    if let Some(id) = session {
+        headers.push(("x-sunrise-session", id));
+    }
+    client
+        .send_with(Method::POST, target, Some(bearer), Some(body), &headers)
+        .await
+}
+
+/// The cursors a viewer's device declares for a granted Stream are not its
+/// acknowledgement of anything the owner's blob-tombstone quorum counts, so
+/// none is recorded; the cursors it declares for its own Stream still are.
+#[tokio::test]
+async fn a_subscribe_through_a_grant_records_no_cursor_for_the_granted_stream() {
+    let (client, state) = relay_with_state(TestClock::at(T0_MS));
+    let grant_id = granted(&client, None).await;
+    let device = device_of(&client, BOB, 9).await;
+    let opened = signed_as(
+        &client,
+        BOB,
+        &device,
+        "/api/v1/sync/session",
+        &hello(),
+        None,
+    )
+    .await;
+    opened.assert_status(StatusCode::CREATED);
+    let session = opened.json()["session_id"].as_str().unwrap().to_owned();
+    let origin = hex::encode([0x22; 16]);
+    let own_stream = hex::encode([0x33; 16]);
+    let body = serde_json::json!({ "streams": [
+        {
+            "stream_id": stream_hex(),
+            "grant": grant_id,
+            "cursors": [{ "device_id": origin, "last_applied_seq": 4 }],
+        },
+        {
+            "stream_id": own_stream,
+            "cursors": [{ "device_id": origin, "last_applied_seq": 6 }],
+        },
+    ]});
+    signed_as(
+        &client,
+        BOB,
+        &device,
+        "/api/v1/sync/subscribe",
+        &body,
+        Some(&session),
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+
+    let streams: Vec<Vec<u8>> = {
+        let conn = state.store.as_sqlite().expect("SQLite").conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT stream_id FROM device_cursors WHERE device_id = ?1")
+            .unwrap();
+        stmt.query_map([&device.0], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        streams,
+        vec![vec![0x33u8; 16]],
+        "only the device's own stream's cursor may be recorded"
+    );
+}
+
+/// A relay that cannot read its grants does not know the grant is revoked,
+/// so it ends the stream with the retryable storage code rather than
+/// `RELAY_GRANT_REVOKED`.
+#[tokio::test]
+async fn an_unreadable_grant_store_ends_the_stream_retryably() {
+    let (client, state) = relay_with_state(TestClock::at(T0_MS));
+    let grant_id = granted(&client, None).await;
+    let reader = session_as(&client, BOB).await;
+    subscribe_to(&client, BOB, &reader, through(&grant_id))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    let (body, ()) = tokio::join!(read_as(&client, BOB, &reader, &[]), async {
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        state
+            .store
+            .as_sqlite()
+            .expect("SQLite")
+            .conn
+            .lock()
+            .execute_batch("DROP TABLE viewer_grants")
+            .unwrap();
+    });
+    assert!(
+        body.contains("\"kind\":\"closed\"")
+            && body.contains("RELAY_STORAGE_UNAVAILABLE")
+            && !body.contains("RELAY_GRANT_REVOKED"),
+        "an unreadable grant store must close retryably, not as revoked: {body}"
+    );
 }
