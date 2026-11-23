@@ -33,7 +33,9 @@ pub use ast::{
     Cmp, DateField, Expr, Filter, HasValue, IsValue, NoticeKind, ParseNotice, SearchKind,
     SearchQuery, StateValue,
 };
-pub use complete::{complete, Completion, CompletionKind, CompletionNames, MAX_COMPLETIONS};
+pub use complete::{
+    complete, scope_token, Completion, CompletionKind, CompletionNames, Scope, MAX_COMPLETIONS,
+};
 pub use date::{DateSpan, DateValue, DayOfWeek, Days, OffsetUnit, MAX_OFFSET};
 pub use parse::Parsed;
 pub use text::{fold, highlight, is_cjk, match_ranges, snippet, Highlighted, SNIPPET_LEN};

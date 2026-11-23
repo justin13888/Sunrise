@@ -3,7 +3,8 @@
 //! vault. `flavor = "multi_thread"` for the reason `seam.rs` gives.
 
 use sunrise_core_bindings::search::{
-    search_completions, HighlightRange, SearchCompletionKindItem, SearchKindItem,
+    search_completions, search_kind_keyword, search_scope_token, HighlightRange,
+    SearchCompletionKindItem, SearchKindItem, SearchScopeItem,
 };
 use sunrise_core_bindings::{CoreCommand, CoreQuery, CoreQueryResult};
 
@@ -106,4 +107,22 @@ fn completions_cross_the_seam_with_what_each_one_is() {
     );
     let contexts = search_completions("@".into(), vec![], vec!["errands".into()]);
     assert_eq!(contexts[0].kind, SearchCompletionKindItem::Context);
+}
+
+/// The scope token and a group's `kind:` keyword are the core's spellings.
+#[test]
+fn the_scope_token_and_kind_keyword_are_the_grammars() {
+    assert_eq!(
+        search_scope_token(SearchScopeItem::Stream, "Side project".into()),
+        "#\"Side project\" "
+    );
+    assert_eq!(
+        search_scope_token(SearchScopeItem::Context, "errands".into()),
+        "@errands "
+    );
+    assert_eq!(
+        search_kind_keyword(SearchKindItem::Attachment),
+        "attachment"
+    );
+    assert_eq!(search_kind_keyword(SearchKindItem::Event), "event");
 }

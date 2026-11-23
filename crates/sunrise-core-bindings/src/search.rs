@@ -6,7 +6,8 @@
 
 use sunrise_core::{SearchGroup, SearchHit, SearchNotice, SearchResults};
 use sunrise_domain::search::{
-    complete, Completion, CompletionKind, CompletionNames, Highlighted, SearchKind,
+    complete, scope_token, Completion, CompletionKind, CompletionNames, Highlighted, Scope,
+    SearchKind,
 };
 use sunrise_id::EntityRef;
 
@@ -33,6 +34,31 @@ pub enum SearchKindItem {
     View,
     /// A person.
     Person,
+}
+
+impl From<SearchKindItem> for SearchKind {
+    fn from(k: SearchKindItem) -> Self {
+        match k {
+            SearchKindItem::Task => Self::Task,
+            SearchKindItem::Note => Self::Note,
+            SearchKindItem::Event => Self::Event,
+            SearchKindItem::Block => Self::Block,
+            SearchKindItem::Stream => Self::Stream,
+            SearchKindItem::Context => Self::Context,
+            SearchKindItem::Place => Self::Place,
+            SearchKindItem::Attachment => Self::Attachment,
+            SearchKindItem::View => Self::View,
+            SearchKindItem::Person => Self::Person,
+        }
+    }
+}
+
+/// The `kind:` keyword that restricts a query to `kind`: what a group's
+/// "Show all" adds to the field.
+#[uniffi::export]
+#[must_use]
+pub fn search_kind_keyword(kind: SearchKindItem) -> String {
+    SearchKind::from(kind).as_str().to_owned()
 }
 
 impl From<SearchKind> for SearchKindItem {
@@ -269,4 +295,26 @@ pub fn search_completions(
         .into_iter()
         .map(SearchCompletionItem::from)
         .collect()
+}
+
+/// What a list the search field is opened from is scoped to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SearchScopeItem {
+    /// A stream's list.
+    Stream,
+    /// A context's list.
+    Context,
+}
+
+/// The editable token the field is prefilled with when search is opened
+/// from a stream's or a context's list: `#work `, `@errands `, the name
+/// quoted where the grammar needs it.
+#[uniffi::export]
+#[must_use]
+pub fn search_scope_token(scope: SearchScopeItem, name: String) -> String {
+    let scope = match scope {
+        SearchScopeItem::Stream => Scope::Stream,
+        SearchScopeItem::Context => Scope::Context,
+    };
+    scope_token(scope, &name)
 }

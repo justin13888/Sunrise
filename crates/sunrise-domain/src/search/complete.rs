@@ -153,6 +153,28 @@ pub fn complete(input: &str, names: &CompletionNames) -> Vec<Completion> {
     out
 }
 
+/// What a view the search field is opened from is scoped to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Scope {
+    /// A stream's list.
+    Stream,
+    /// A context's list.
+    Context,
+}
+
+/// The token the field is prefilled with when search is opened from a
+/// stream's or a context's list (`docs/08-features/search.md` §Scope):
+/// `#work ` or `@errands `, the name quoted as the canonical text quotes it,
+/// and a space after it so the next word can be typed at once.
+#[must_use]
+pub fn scope_token(scope: Scope, name: &str) -> String {
+    let sigil = match scope {
+        Scope::Stream => '#',
+        Scope::Context => '@',
+    };
+    format!("{sigil}{} ", shorthand_name(name))
+}
+
 /// Where the word being typed starts: after the last whitespace or `(`, or,
 /// inside a quote left open, at the start of the word the quote opened in.
 fn word_start(chars: &[char]) -> usize {
@@ -451,6 +473,24 @@ mod tests {
                     [Expr::Filter(_)]
                 ));
             }
+        }
+    }
+
+    #[test]
+    fn a_scope_token_reads_back_as_the_one_filter_it_names() {
+        assert_eq!(scope_token(Scope::Stream, "work"), "#work ");
+        assert_eq!(scope_token(Scope::Context, "errands"), "@errands ");
+        for name in ["Side project", "a,b", "(x)", "東京"] {
+            let stream = parse(&scope_token(Scope::Stream, name));
+            assert_eq!(
+                stream.clauses,
+                [Expr::Filter(Filter::Stream(vec![name.into()]))]
+            );
+            let context = parse(&scope_token(Scope::Context, name));
+            assert_eq!(
+                context.clauses,
+                [Expr::Filter(Filter::Context(vec![name.into()]))]
+            );
         }
     }
 
