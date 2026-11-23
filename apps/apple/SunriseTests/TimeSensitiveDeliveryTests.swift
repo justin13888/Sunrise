@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 import UserNotifications
 
@@ -59,5 +60,49 @@ struct TimeSensitiveDeliveryTests {
         #expect(url.absoluteString == "x-apple.systempreferences:com.apple.Focus-Settings.extension")
         #endif
         #expect(!TimeSensitiveDelivery.focusSettingsLabel.isEmpty)
+    }
+
+    /// The row reads the setting through the center it was given, only while
+    /// the app is at the front, and again on every return there, so a change
+    /// made in System Settings shows without reopening the screen.
+    @Test
+    func theRowReadsTheSettingOnEachReturnToTheFront() async {
+        let center = FakeNotificationCenter()
+        await center.setTimeSensitive(.off)
+        let model = WindDownDeliveryModel(center: center)
+        #expect(model.timeSensitive == nil)
+
+        await model.refresh(in: .background)
+        await model.refresh(in: .inactive)
+        #expect(model.timeSensitive == nil)
+        #expect(await center.timeSensitiveReads == 0)
+
+        await model.refresh(in: .active)
+        #expect(model.timeSensitive == .off)
+
+        await center.setTimeSensitive(.allowed)
+        await model.refresh(in: .background)
+        #expect(model.timeSensitive == .off)
+        await model.refresh(in: .active)
+        #expect(model.timeSensitive == .allowed)
+        #expect(await center.timeSensitiveReads == 2)
+    }
+
+    /// Flipping a switch raises the explanation exactly when turning wind-down
+    /// on, and leaves one already raised for the alert to dismiss.
+    @Test
+    func turningWindDownOnRaisesTheExplanation() {
+        let model = WindDownDeliveryModel(center: FakeNotificationCenter())
+        for kind in NotificationCatalog.kinds.map(\.kind) where kind != .windDown {
+            model.switchFlipped(kind, wasOn: false, isOn: true)
+        }
+        model.switchFlipped(.windDown, wasOn: true, isOn: false)
+        model.switchFlipped(.windDown, wasOn: true, isOn: true)
+        #expect(!model.explainingSleepFocus)
+
+        model.switchFlipped(.windDown, wasOn: false, isOn: true)
+        #expect(model.explainingSleepFocus)
+        model.switchFlipped(.windDown, wasOn: true, isOn: false)
+        #expect(model.explainingSleepFocus)
     }
 }

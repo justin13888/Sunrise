@@ -18,15 +18,24 @@ import SwiftUI
 struct NotificationKindsSection: View {
     let policy: CatalogPolicyItem
     let set: (NotificationKind, Bool) -> Void
-    /// Where the time-sensitive setting is read from. A parameter so a test
-    /// host can answer for the system.
-    var center: any NotificationCenterClient = SystemNotificationCenter()
 
     @Environment(\.scenePhase) private var scenePhase
-    /// `nil` until the first read answers, so the row never claims a state
-    /// it has not seen.
-    @State private var timeSensitive: TimeSensitiveDelivery?
-    @State private var explainingSleepFocus = false
+    /// What the wind-down row shows and whether the Sleep Focus explanation
+    /// is up. A model rather than two `@State` values so a test can drive the
+    /// same wiring this view runs, against a fake notification center.
+    @State private var windDown: WindDownDeliveryModel
+
+    /// `center` is where the time-sensitive setting is read from; the system's
+    /// unless a test host answers for it.
+    init(
+        policy: CatalogPolicyItem,
+        center: any NotificationCenterClient = SystemNotificationCenter(),
+        set: @escaping (NotificationKind, Bool) -> Void
+    ) {
+        self.policy = policy
+        self.set = set
+        _windDown = State(initialValue: WindDownDeliveryModel(center: center))
+    }
 
     var body: some View {
         Section {
@@ -41,10 +50,9 @@ struct NotificationKindsSection: View {
         // Re-read on every return to the front: the button below sends the
         // user to System Settings, and the row must say what they did there.
         .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            timeSensitive = await center.timeSensitiveDelivery()
+            await windDown.refresh(in: scenePhase)
         }
-        .alert(L10n.Account.NotificationKinds.sleepFocusTitle, isPresented: $explainingSleepFocus) {
+        .alert(L10n.Account.NotificationKinds.sleepFocusTitle, isPresented: $windDown.explainingSleepFocus) {
             Button(TimeSensitiveDelivery.focusSettingsLabel) { Self.openFocusSettings() }
             Button(L10n.Account.NotificationKinds.notNow, role: .cancel) {}
         } message: {
@@ -67,9 +75,7 @@ struct NotificationKindsSection: View {
                     set: { isOn in
                         let wasOn = NotificationCatalog.isOn(info.kind, in: policy)
                         set(info.kind, isOn)
-                        if TimeSensitiveDelivery.explainsSleepFocus(info.kind, wasOn: wasOn, isOn: isOn) {
-                            explainingSleepFocus = true
-                        }
+                        windDown.switchFlipped(info.kind, wasOn: wasOn, isOn: isOn)
                     }
                 )) {
                     HStack {
@@ -96,7 +102,7 @@ struct NotificationKindsSection: View {
     @ViewBuilder
     private var windDownDelivery: some View {
         LabeledContent(L10n.Account.NotificationKinds.timeSensitive) {
-            if let timeSensitive {
+            if let timeSensitive = windDown.timeSensitive {
                 HStack(spacing: 8) {
                     Text(timeSensitive.summary).foregroundStyle(.secondary)
                     Image(systemName: timeSensitive.isAllowed
@@ -109,7 +115,7 @@ struct NotificationKindsSection: View {
             }
         }
         .accessibilityIdentifier("notifications.timeSensitive")
-        if let caption = timeSensitive?.caption {
+        if let caption = windDown.timeSensitive?.caption {
             Text(caption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -131,5 +137,42 @@ struct NotificationKindsSection: View {
 
     private static func keys(for kind: NotificationKind) -> String {
         kind.keyAction.map(Keymap.shortcutLabel(for:)) ?? ""
+    }
+}
+
+/// The wind-down row's state in ``NotificationKindsSection``: the
+/// time-sensitive setting it shows, and whether the Sleep Focus explanation is
+/// up (`docs/08-features/notifications.md` §Wind-down).
+///
+/// The view only forwards to it, so the tests drive this with a fake
+/// ``NotificationCenterClient`` and cover the same wiring the screen runs.
+@MainActor
+@Observable
+final class WindDownDeliveryModel {
+    /// `nil` until the first read answers, so the row never claims a state it
+    /// has not seen.
+    private(set) var timeSensitive: TimeSensitiveDelivery?
+    var explainingSleepFocus = false
+
+    private let center: any NotificationCenterClient
+
+    init(center: any NotificationCenterClient) {
+        self.center = center
+    }
+
+    /// Re-read the setting when the app is at the front, which is every return
+    /// from the System Settings page the explanation's button opens; any other
+    /// phase keeps the last answer.
+    func refresh(in phase: ScenePhase) async {
+        guard phase == .active else { return }
+        timeSensitive = await center.timeSensitiveDelivery()
+    }
+
+    /// A kind's switch moved; raise the explanation when
+    /// ``TimeSensitiveDelivery/explainsSleepFocus(_:wasOn:isOn:)`` says so.
+    func switchFlipped(_ kind: NotificationKind, wasOn: Bool, isOn: Bool) {
+        if TimeSensitiveDelivery.explainsSleepFocus(kind, wasOn: wasOn, isOn: isOn) {
+            explainingSleepFocus = true
+        }
     }
 }
