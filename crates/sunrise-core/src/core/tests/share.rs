@@ -321,6 +321,47 @@ async fn a_held_share_is_replaced_by_a_second_accept_and_dropped_once() {
         .unwrap());
 }
 
+/// Epochs held for one (granter, stream) fold into one entry at the newest
+/// epoch with the union of their relay grant ids, which `share decline`
+/// relies on to withdraw every grant.
+#[tokio::test]
+async fn several_held_epochs_fold_into_one_share_with_every_relay_grant() {
+    let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+    let owner = account(dirs[0].path()).await;
+    let recipient = account(dirs[1].path()).await;
+    let bystander = account(dirs[2].path()).await;
+    let s = stream(&owner, "Garden").await;
+    let granter = owner.identity_signing_pub();
+    let seal = |to: &Core| {
+        owner
+            .share_stream(s, &to.identity_signing_pub(), to.identity_dh_pub(), None)
+            .unwrap()
+    };
+
+    let first = seal(&recipient);
+    let one = recipient
+        .accept_share(&granter, &first, [0x22; 16])
+        .unwrap();
+    // Revoking another recipient rotates the Stream key to a newer epoch.
+    seal(&bystander);
+    let newer = owner.revoke_share(s, bystander.identity_id()).unwrap();
+    let second = seal(&recipient);
+    let two = recipient
+        .accept_share(&granter, &second, [0x11; 16])
+        .unwrap();
+    assert!(two.epoch > one.epoch, "a rotation raised the epoch");
+    assert_eq!(two.epoch, newer);
+
+    let listed = recipient.held_shares().unwrap();
+    assert_eq!(listed.len(), 1, "one entry per (granter, stream)");
+    assert_eq!(listed[0].epoch, two.epoch, "the newest epoch");
+    assert_eq!(
+        listed[0].relay_grant_ids,
+        vec![[0x11; 16], [0x22; 16]],
+        "the union of both epochs' relay grants, in byte order"
+    );
+}
+
 /// The owner's relay grant ids are recorded per share, listed in byte
 /// order, kept once however often recorded, and forgotten one at a time.
 #[tokio::test]

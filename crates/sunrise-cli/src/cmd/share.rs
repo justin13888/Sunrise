@@ -278,6 +278,15 @@ enum End {
     Declined,
 }
 
+/// The message for a grant the relay did not withdraw. Only a revocation
+/// rotates the key, so only its message says the new key stops them reading.
+fn withdraw_failed(how: End, grant: &str, error: &str) -> String {
+    match how {
+        End::Revoke => strings::share::withdraw_failed(grant, error),
+        End::Declined => strings::share::withdraw_failed_declined(grant, error),
+    }
+}
+
 /// `share revoke <stream> <identity>` | `share declined <stream> <identity>`.
 ///
 /// The share is ended first, offline if need be: the rotation is the
@@ -342,10 +351,7 @@ async fn end(ctx: &Ctx<'_>, stream: &str, identity: &str, how: End) -> CmdResult
                         core.forget_share_relay_grant(stream, recipient, grant)?;
                         eprintln!("{}", strings::share::withdrawn(&hex16(&grant)));
                     } else if let Err(e) = outcome {
-                        failed.push(strings::share::withdraw_failed(
-                            &hex16(&grant),
-                            &e.to_string(),
-                        ));
+                        failed.push(withdraw_failed(how, &hex16(&grant), &e.to_string()));
                     }
                 }
             }
@@ -354,7 +360,7 @@ async fn end(ctx: &Ctx<'_>, stream: &str, identity: &str, how: End) -> CmdResult
                 failed.extend(
                     recorded
                         .iter()
-                        .map(|grant| strings::share::withdraw_failed(&hex16(grant), &why)),
+                        .map(|grant| withdraw_failed(how, &hex16(grant), &why)),
                 );
             }
         }

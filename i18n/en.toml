@@ -2614,6 +2614,9 @@ withdrawn = "Withdrew relay grant {grant}."
 # The relay did not withdraw a grant. {grant} is its id in hex; {error} what
 # the relay said.
 withdraw_failed = "the relay did not withdraw grant {grant} ({error}); the new key is what stops them reading, and running the same command again withdraws it"
+# The same, for `share declined`, which rotates no key: the grant is all that
+# lets the relay serve them.
+withdraw_failed_declined = "the relay did not withdraw grant {grant} ({error}); running the same command again withdraws it"
 # Note, when this device registered no relay grant for the share.
 no_relay_grant = "this device registered no relay grant for that share, so none is withdrawn. The new key is what stops them reading; the device that made the share withdraws its grant with the same command."
 # `share decline`: {text} is what the user typed.

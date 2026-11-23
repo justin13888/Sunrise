@@ -969,6 +969,18 @@ pub mod share {
         out
     }
 
+    /// the relay did not withdraw grant {grant} ({error}); running the same command again withdraws it
+    #[must_use]
+    pub fn withdraw_failed_declined(grant: &str, error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the relay did not withdraw grant ");
+        out.push_str(grant);
+        out.push_str(" (");
+        out.push_str(error);
+        out.push_str("); running the same command again withdraws it");
+        out
+    }
+
     /// this device registered no relay grant for that share, so none is withdrawn. The new key is what stops them reading; the device that made the share withdraws its grant with the same command.
     #[must_use]
     pub fn no_relay_grant() -> String {
