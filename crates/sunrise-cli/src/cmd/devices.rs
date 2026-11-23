@@ -177,6 +177,11 @@ pub(super) async fn list(ctx: &Ctx<'_>) -> CmdResult {
             // verdict, because the ordinary cause is an honest pairing (#144).
             marks.push(strings::devices::mark_admitted_after_revocation());
         }
+        // ADR-0056 §5: the drain records the relay's refusal after the
+        // withdrawal's report was printed, so this row is the one place a user
+        // sees it, and with it that pairing again is the remedy (#1332).
+        let relay = relay_on_row(|| core.relay_reinstatement_pending(&d.device_id));
+        marks.extend(relay_mark(relay));
         let suffix = if marks.is_empty() {
             String::new()
         } else {
@@ -205,6 +210,25 @@ pub(super) async fn list(ctx: &Ctx<'_>) -> CmdResult {
         println!("  - {}", strings::devices::identity_key_remedy());
     }
     Ok(())
+}
+
+/// Where the relay's reinstatement of a listed device stands. A failed read
+/// is `Clear`, so a listing never fails on it and never marks a row with a
+/// queued request or a refusal it did not see. The core answers `Clear` for a
+/// device the register calls revoked, which already carries its own mark.
+fn relay_on_row<E>(read: impl FnOnce() -> Result<RelayReinstatement, E>) -> RelayReinstatement {
+    read().unwrap_or(RelayReinstatement::Clear)
+}
+
+/// The mark `sunrise devices` puts on a row for where the relay's
+/// reinstatement of it stands (ADR-0056 §5): queued for the next sync, or
+/// refused, which names the remedy. None when there is nothing to ask.
+fn relay_mark(relay: RelayReinstatement) -> Option<String> {
+    match relay {
+        RelayReinstatement::Pending => Some(strings::devices::mark_relay_queued()),
+        RelayReinstatement::Refused => Some(strings::devices::mark_relay_refused()),
+        RelayReinstatement::Clear => None,
+    }
 }
 
 /// `device revoke <id-prefix> [--reason …]` and `device withdraw <id-prefix>`.
@@ -826,6 +850,43 @@ mod tests {
                 panic!("a cancelled telling leaves nothing to read")
             }),
             RelayReinstatement::Clear
+        );
+    }
+
+    /// **`sunrise devices` marks a row the relay refuses, with the remedy**
+    /// (ADR-0056 §5, #1332), and a queued reinstatement without one. A clear
+    /// row, and one whose read failed, carries no relay mark.
+    #[test]
+    fn a_device_row_says_where_the_relays_reinstatement_stands() {
+        assert_eq!(
+            relay_mark(RelayReinstatement::Refused),
+            Some(strings::devices::mark_relay_refused())
+        );
+        assert_eq!(
+            relay_mark(RelayReinstatement::Pending),
+            Some(strings::devices::mark_relay_queued())
+        );
+        assert_eq!(relay_mark(RelayReinstatement::Clear), None);
+        assert!(
+            strings::devices::mark_relay_refused()
+                .to_lowercase()
+                .contains("pair it again"),
+            "a refused reinstatement names the remedy"
+        );
+        assert!(
+            !strings::devices::mark_relay_queued()
+                .to_lowercase()
+                .contains("pair it again"),
+            "a reinstatement not yet refused is no reason to pair again"
+        );
+        assert_eq!(
+            relay_on_row(|| Ok::<_, &str>(RelayReinstatement::Refused)),
+            RelayReinstatement::Refused
+        );
+        assert_eq!(
+            relay_on_row(|| Err("vault closed")),
+            RelayReinstatement::Clear,
+            "a failed read must not fail the listing or invent a mark"
         );
     }
 }

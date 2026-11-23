@@ -62,6 +62,14 @@ enum L10n {
         static var markNotCurrent: String { L10n.tr("apple.devices.mark_not_current") }
         /// Joined after a device was removed. Usually that is just a device you added later; it is worth a look if it is not.
         static var markAdmittedAfterRevocation: String { L10n.tr("apple.devices.mark_admitted_after_revocation") }
+        /// If the relay was told of its removal, it refuses this device until the next sync asks it to let the device back in. That request is queued on this {device}.
+        static func markRelayQueued(device: String) -> String {
+            L10n.tr("apple.devices.mark_relay_queued", device)
+        }
+        /// The relay refuses this device: another device removed it there too, or this {device} no longer holds the key it removed it with. If it cannot sync, pair it again as a new device.
+        static func markRelayRefused(device: String) -> String {
+            L10n.tr("apple.devices.mark_relay_refused", device)
+        }
         /// This {device} holds the account identity key. Your recovery code is its only other copy: without one, losing this device destroys the key permanently, and no recovery feature added later can retrieve it.
         static func identityKey(device: String) -> String {
             L10n.tr("apple.devices.identity_key", device)

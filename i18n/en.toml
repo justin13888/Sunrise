@@ -152,6 +152,14 @@ mark_removed = "Removed by a device. It reads nothing written since. A later cha
 mark_read_bounded = "Removed earlier. The account no longer records that, so it shows as current — but it still receives no keys and reads nothing written since. Remove it again from a device you still trust."
 mark_not_current = "Not active on this account — the identity that certified it is no longer the one in force. An honest device that has not caught up with a change yet looks the same."
 mark_admitted_after_revocation = "Joined after a device was removed. Usually that is just a device you added later; it is worth a look if it is not."
+# Under a row whose removal this {device} withdrew, while asking the relay to
+# let it back in waits for the next sync (ADR-0056 §5). {device} is the
+# platform's word for this device ("Mac").
+mark_relay_queued = "If the relay was told of its removal, it refuses this device until the next sync asks it to let the device back in. That request is queued on this {device}."
+# Under a row the relay refuses to let back in: it answered that this {device}
+# is not the remover it recorded (ADR-0056 §5). Must keep that re-pairing is
+# the remedy.
+mark_relay_refused = "The relay refuses this device: another device removed it there too, or this {device} no longer holds the key it removed it with. If it cannot sync, pair it again as a new device."
 # Shown only on the device that holds the account identity key.
 identity_key = "This {device} holds the account identity key. Your recovery code is its only other copy: without one, losing this device destroys the key permanently, and no recovery feature added later can retrieve it."
 # A removal this device was not allowed to make. {name} is the other device.
@@ -3061,6 +3069,12 @@ mark_revoked_by_authority = "revoked by the account identity; only the device ho
 mark_read_bounded = "removed earlier; the account no longer records that, but it still receives no keys -- remove it again from a device you trust"
 mark_not_current = "not active on this account"
 mark_admitted_after_revocation = "joined after a device was removed"
+# A row whose revocation this device withdrew, while asking the relay to let it
+# back in waits for the next sync (ADR-0056 §5).
+mark_relay_queued = "the relay may still refuse it; asking it to let it back in is queued for the next `sunrise sync`"
+# A row the relay refuses to let back in: it answered that this device is not
+# the revoker it recorded (ADR-0056 §5). Must keep that re-pairing is the remedy.
+mark_relay_refused = "the relay refuses it; pair it again as a new device if it cannot sync"
 # Under the list, on the device that holds the identity key. Three lines.
 identity_key = "This device holds the account identity key. A sealed recovery code is \nits only other copy: without one, losing this vault destroys the key \npermanently and no recovery feature added later can retrieve it."
 identity_key_remedy = "`sunrise bootstrap` seals that second copy"

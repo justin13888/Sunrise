@@ -3642,6 +3642,28 @@
         }
       }
     },
+    "apple.devices.mark_relay_queued": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If the relay was told of its removal, it refuses this device until the next sync asks it to let the device back in. That request is queued on this %1$@."
+          }
+        }
+      }
+    },
+    "apple.devices.mark_relay_refused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The relay refuses this device: another device removed it there too, or this %1$@ no longer holds the key it removed it with. If it cannot sync, pair it again as a new device."
+          }
+        }
+      }
+    },
     "apple.devices.mark_removed": {
       "extractionState": "manual",
       "localizations": {
