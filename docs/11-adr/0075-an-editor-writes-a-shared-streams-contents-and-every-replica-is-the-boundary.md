@@ -17,8 +17,9 @@ editor's UI.
 an entity op), [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) §3
 (entity writes stay ungated) and
 [ADR-0045](./0045-schema-identity-and-feature-gating.md) §4 (an op is applied
-or parked): §9 says what each amendment is and what it leaves standing.
-[ADR-0043](./0043-commit-tree.md) §3 is not amended, and §9 says why.
+or parked) and [ADR-0043](./0043-commit-tree.md) §4 (of two ops at one
+position, the first is the one applied): §9 says what each amendment is and
+what it leaves standing. ADR-0043 §3 is not amended, and §9 says why.
 **Depends on** [ADR-0016](./0016-hlc-timestamps.md) (HLC),
 [ADR-0043](./0043-commit-tree.md) (each device's ops chain by `prev_hash`),
 [ADR-0044](./0044-per-field-ops.md) (per-field ops) and
@@ -159,16 +160,24 @@ the chain already holds is off it. The editor cannot write either kind and
 have it land below the cut. An op past the cut or off the chain fails §3(c)
 and is parked like any other op that fails §3. The chain check that decides
 it is an authority check, which a cut makes possible. It is not a link check,
-and [ADR-0043](./0043-commit-tree.md) §3–§4 are unchanged (§9).
+and [ADR-0043](./0043-commit-tree.md) §3 is unchanged. Which half of a fork
+applies is not: a cut overrides ADR-0043 §4's "the first is the one applied"
+for the fork it names (below, and §9).
 
 A cut can land after ops past it were applied: a replica received the
 editor's later ops before the owner's revoke reached it. When the cut lands,
 the replica **re-derives the shared Stream**: it rebuilds the Stream's
-materialized entities from its retained log, applied and parked ops alike,
-with §3's checks read against the attestations and cuts it now holds. An op
-past the cut is then un-materialized and parked. Where the cut names the
-half of a fork that this replica holds only as fork evidence (ADR-0043 §4),
-that half is the one applied. The rebuild throws nothing away, so a later cut
+materialized entities from its retained log, with §3's checks read against
+the attestations and cuts it now holds. The retained log is every op in
+`ops`, applied and parked alike, and every envelope in `fork_evidence` at a
+position the cut covers. An op past the cut is then un-materialized and
+parked. Where the cut, or the chain below it, names the half of a fork that
+this replica holds only as fork evidence (ADR-0043 §4), the two halves trade
+places: the named half takes the `ops` row and is the one applied, and the
+half that held it moves into `fork_evidence` and is not materialized. This
+amends ADR-0043 §4 for that one case (§9). Without it, a replica that met the
+halves in one order would show the named op and a replica that met them in
+the other would show neither. The rebuild throws nothing away, so a later cut
 that moves the frontier, or the withdrawal of a cut, re-derives again and
 brings back what it now admits. A cut correction is lossless, as ADR-0034's
 corollary 2 requires of one. No such rebuild exists in the engine today, and
@@ -234,10 +243,12 @@ together:
    a writer cert lands in it. Tested for each of (a) to (d) and each item of
    §2.
 5. **The shared Stream's re-derivation** of §4: a rebuild of one Stream's
-   materialized entities from its retained log, run when a cut lands, which
-   un-materializes ops past it. Tested by delivering one log to two replicas
-   in different orders, the cut before and after the ops past it, and
-   asserting the two Streams are equal.
+   materialized entities from its retained log and the `fork_evidence` the
+   cut covers, run when a cut lands, which un-materializes ops past it and
+   swaps in the fork half the cut names. Tested by delivering one log to two
+   replicas in different orders, the cut before and after the ops past it,
+   and the two halves of a fork in either order, and asserting the two
+   Streams are equal.
 6. **The relay's editor write route** of §6.
 7. **A structural feature** (ADR-0045 §7), named when it is built and listed
    in `vault_requires` before any device seals an editor grant. Until then, no
@@ -246,9 +257,9 @@ together:
 
 ### 9. What this amends, and what it leaves standing
 
-§3 and §4 hold an entity op back on account of who signed it, and take one
-back out after a cut. Four records speak to that, and each is read here
-rather than past.
+§3 and §4 hold an entity op back on account of who signed it, take one back
+out after a cut, and apply the fork half a cut names. Four records speak to
+that, and each is read here rather than past.
 
 - **[ADR-0034](./0034-revocation-bounds-reads-not-writes.md)** decides that
   no replica refuses an entity op on account of its sender's revocation, and
@@ -281,8 +292,22 @@ rather than past.
   never refuse on a link: a gap, a fork or a legacy op from any writer applies
   or is recorded as that record says. What holds back a revoked editor's op
   past its cut, or off the chain the cut names, is §3(c), an authority check
-  the cut makes. A fork by a revoked editor is still recorded as fork
-  evidence, and only the half the cut names applies.
+  the cut makes.
+- **[ADR-0043](./0043-commit-tree.md) §4** says that of two ops at one
+  position both are kept, the first is the one applied, and the second is not
+  materialized. This record amends the middle clause for one case: a fork by
+  a revoked editor's device at a position its cut covers. There the half the
+  cut names, or that lies on the chain below it, is the one applied, whichever
+  arrived first, and §4's rebuild trades the two halves between `ops` and
+  `fork_evidence` to make it so. ADR-0043 §4 kept the second half out because
+  applying it would make a replica's state depend on which half it met first.
+  The cut is the input that removes that dependence: it is signed by the
+  owner, it names one half by `op_hash`, and every replica that holds the
+  named half applies the same one. Both halves are still kept, the fork is
+  still surfaced as `core.chain.fork`, and evidence still does not propagate,
+  so a replica that never received the named half applies neither until it
+  does. Every other fork, including any by the owner's devices or by an
+  editor not yet cut, stays exactly as ADR-0043 §4 decides.
 
 ## Alternatives considered
 
@@ -317,8 +342,9 @@ rather than past.
 - The `editor` role has a fixed meaning. Building it is §8 and nothing beyond.
   Any change to what an editor may do is a new ADR, not an implementation
   choice.
-- ADR-0034, ADR-0041 §3 and ADR-0045 §4 each gain one scoped exception or
-  addition for editor ops in a shared Stream, and keep everything else (§9).
+- ADR-0034, ADR-0041 §3, ADR-0043 §4 and ADR-0045 §4 each gain one scoped
+  exception or addition for editor ops in a shared Stream, and keep
+  everything else (§9).
   Each carries an `Amended by` line pointing here.
 - The viewer stays exactly as built. `share_grant.rs` refuses `editor`, and its
   docs cite this ADR as the reason.
