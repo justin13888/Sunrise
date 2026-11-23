@@ -13,13 +13,15 @@ leaves the device — is in
 [`../03-crypto/encrypted-search.md`](../03-crypto/encrypted-search.md).
 [#345](https://github.com/justin13888/Sunrise/issues/345) builds it.
 
-> **Status: the core is built; the Apple search view is not yet.** Both
-> indexes, the parser, the grouped and highlighted results, the content-language
-> re-index and the CLI ship; §[What is built](#what-is-built) says how, and
-> where the build differs from this page. Saved searches wait for the
-> `SavedView` entity ([#341](https://github.com/justin13888/Sunrise/issues/341)),
-> places for the Place entity ([#339](https://github.com/justin13888/Sunrise/issues/339)),
-> and the Apple clients still show the Tasks group as before.
+> **Status: built.** Both indexes, the parser, the grouped and highlighted
+> results, the content-language re-index, the CLI and the Apple search view
+> (groups, highlights, ⌘S, operator autocomplete and the scope token) ship;
+> §[What is built](#what-is-built) says how, and where the build differs from
+> this page. The Apple client saves a search to its saved-view store until it
+> switches to the `SavedView` entity
+> ([#341](https://github.com/justin13888/Sunrise/issues/341)), and `place:`
+> waits for a filter that can name a Place
+> ([#339](https://github.com/justin13888/Sunrise/issues/339)).
 
 ## What is indexed
 
@@ -329,9 +331,30 @@ The empty state names the operators most likely to help ("Try `#stream` or
   §JSON output). It runs the content-language re-index first when one is due.
 - **UniFFI:** `CoreQuery::SearchGrouped`, `CoreQueryResult::Search` and
   `SunriseCore::reindex_search`, added beside what was there.
-- **Apple clients:** unchanged. `SearchView` and `SearchModel` still ask
-  `Query::Search` and show the Tasks group, which now reads the operators,
-  CJK and substrings. Grouped results with highlights, ⌘S, operator
-  autocomplete, the scope token and the re-index progress in Settings are
-  still to build.
+- **Autocomplete and scope:** `sunrise_domain::search::complete` reads the
+  word at the end of the field and returns each way to finish it as the
+  whole field after accepting it: keys, the values of `state:`, `kind:`,
+  `is:`, `has:` and `priority`, the date words, and stream and context names
+  after `#`, `@`, `stream:` and `context:`, at most 8. Offsets, absolute
+  dates and place names are typed, not suggested. `scope_token` spells the
+  token a stream's or a context's list prefills. Both cross the seam as
+  `search_completions` and `search_scope_token`, beside `search_kind_keyword`.
+- **Apple clients:** `SearchView` and `SearchModel` (macOS and iOS share
+  them) draw the Tasks group as the same task rows as every list, from
+  `Query::Search`, with each title's ranges marked, then every other group
+  from `Query::SearchGrouped` in the fixed order, titles and snippets
+  highlighted, with "Show all N" appending `kind:` and lifting the limit to
+  500. Both queries run without the typing prefix, so the rows and the
+  groups answer the same query. Activating a stream or a context opens its
+  list; any other hit is revealed where it lives, as a `sunrise://entity/`
+  link is. The field autocompletes, with a localized description per
+  suggestion; Tab takes the first. ⌘S saves the canonical text as a saved
+  search in the client's saved-view store (`views.toml`, which the Views
+  menu reads and the one-time import carries into the `SavedView` entity),
+  and recalling it puts the query back in the field. ⌘F from a stream's or
+  a context's list prefills its scope token, which one Backspace on the
+  bare token removes; ⌘K starts empty. Not built here: ↑/↓ across groups
+  (the row keys stay on the task rows; other hits are reached with Tab),
+  ⌘Return, the notice underline in the field, and the re-index progress in
+  Settings.
 - **Bench:** `crates/sunrise-bench/benches/fts.rs` (§Performance and memory).

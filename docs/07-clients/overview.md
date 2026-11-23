@@ -464,7 +464,9 @@ real relay in-process. That is a standing requirement, not a transitional one.
 - The design tokens (colors, type scale, spacing).
 - The mental model (Today, Streams, Inbox, Focus).
 - The **vocabulary**. Recurrence phrasing, the annotate grammar, relative days,
-  why the planner ranked something where it did — all of it lives in
+  why the planner ranked something where it did, the search grammar with its
+  autocomplete, scope token and highlight ranges
+  ([`../08-features/search.md`](../08-features/search.md)) — all of it lives in
   `sunrise-domain`, so the CLI and the app say the same thing about the same
   data. Two clients inventing their own wording for one fact is how a product
   starts contradicting itself.
