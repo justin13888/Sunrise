@@ -18,6 +18,14 @@ through a hand-written client, now go through the generated one (#774).
 Neither changes the decision; both are recorded in the second **Amendment** at
 the end of this file.
 
+**Amended (2026-11, #1263):** the `cursor replay` row's claim that resumption
+is "a rename of machinery that exists" held for a session with one stream and
+not for one with several: a single `relay_frames.id` resumed every stream of
+the session, and could skip frames of one stream that the client never
+received. The event id of a session subscribed to two or more streams is now a
+position per stream. The third **Amendment** at the end of this file records
+the rule and the alternatives.
+
 ## Context
 
 `/sync` is the only surface ops travel over. Everything else the relay serves is
@@ -221,3 +229,80 @@ What the move had to keep is recorded where it is kept:
   one is a new OpenAPI document version, not a minor change.
 
 Neither part changes the decision. Both record its shape as built.
+
+## Amendment (2026-11): a resume position per stream
+
+**What the original text said.** The `cursor replay` row maps to SSE
+`Last-Event-ID`, and the paragraph under the table calls resumption "a rename
+of machinery that exists", because the relay already numbers every frame with a
+durable `relay_frames.id`.
+
+**Why that was wrong for more than one stream.** `relay_frames.id` is one
+sequence for the whole table, not one per channel. A session subscribed to
+streams A and B is replayed one stream after the other, so a session whose A
+frames are 1, 5 and 9 and whose B frames are 2 and 3 is sent 1, 5, 9, then 2,
+3. A client whose stream drops after 9 resumed with `Last-Event-ID: 9`, B's
+replay then selected `id > 9`, and 2 and 3 were never sent. Nothing reported
+it: a gap covers only what retention deleted. The live half has the same hole,
+because the relay publishes each channel in log order but makes no promise
+across channels, so a live frame of A can reach a stream before a lower-id
+frame of B.
+
+**The rule.** An `ops` event's `id:` is a statement about every stream of the
+session, not about the frame it rides on:
+
+* For a session subscribed to **one** stream it is that frame's
+  `relay_frames.id`, in decimal, exactly as before. One stream cannot skip
+  another, and the single-stream case keeps its wire form.
+* For a session subscribed to **two or more** it is
+  `<set>:<i>=<id>[,<i>=<id>…]`. `<set>` is 16 lowercase hex characters naming
+  the session's stream set: the first 8 bytes of a BLAKE3 key derivation, with
+  context `sunrise sync resume stream set`, over the stream ids in the order
+  the `Subscribe` listed them. Each `<i>=<id>` pair names a stream by its
+  zero-based index in that list and the highest `relay_frames.id` of that
+  stream the client has been sent, on this stream or on the one it resumed
+  from. A stream with no pair has had nothing sent since the `Subscribe`.
+
+A reconnect presenting a position resumes each stream on its own pair: the
+replay of stream `i` selects `id > <id>` where the pair exists, and selects by
+the `Subscribe`'s cursors where it does not, exactly as a first connection
+does. Cursor gaps are reported on the cursors either way.
+
+The id is opaque to a client, which stores the last one it saw and presents it
+verbatim. `SseTransport` always did.
+
+**What a server does with an id it cannot apply.** Each falls back to replay
+from the cursors, which over-delivers to the op-log gate and never skips:
+
+* a set name that is not the session's current set — an id minted before a
+  later `Subscribe` replaced the streams;
+* an index outside the set;
+* a bare `relay_frames.id` presented to a session subscribed to two or more
+  streams, which is what a client held from a server built before this rule.
+
+Each still counts as a resume claim for the `SYNC_RESUME_CONFLICT` order: an
+id presented on the first stream after a `Subscribe` is refused whatever its
+form, so the order a client follows does not depend on which form it holds.
+An id that is neither form, or `0`, is no claim and is ignored, as before.
+
+**Why per stream, and not a rule that keeps one number safe.** The issue
+offered a server-side alternative: send an id only once every lower id of every
+subscribed channel has been sent. The replay half of that is cheap — merge the
+streams' replays into one log order. The live half is not. A relay that has
+delivered frame 11 of B cannot know whether frame 10 of A has committed and not
+yet reached it, on this node or through the cluster's bus, without a store
+read per frame or a watermark the bus does not carry. A position per stream
+needs neither: within one channel the relay already publishes in log order
+(`RelayHub::ordered`, and the bus reads each channel in order), so the highest
+id sent on a stream is a true prefix of that stream.
+
+**Why an index and a set name rather than the stream ids.** Thirty-two hex
+characters per stream put an account with a few hundred streams past the 8 KiB
+header line common proxies allow, and the id comes back as a header. An index
+costs a few characters, and the set name is what keeps it honest: an index
+means something only against the list it was minted from, and a `Subscribe`
+can replace that list.
+
+**What it costs.** An event id grows with the number of streams that have had
+a frame sent, and the server formats one per `ops` event. Both are linear in
+the streams of one session.

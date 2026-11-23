@@ -26,10 +26,14 @@ transport.
 The forcing constraint is [ADR-0021](../11-adr/0021-kynos-openapi-server.md):
 `kynos` excludes bidirectional streaming on principle, and an event stream is a
 single response body, so SSE is the only streaming shape that lands inside the
-authoritative OpenAPI document. Cursor resumption is a rename rather than new
-machinery — the relay already keeps a durable, monotonically-ordered
-`relay_frames.id` per channel and already reports a typed gap when a cursor
-falls below `relay_evicted`.
+authoritative OpenAPI document. Cursor resumption reuses existing machinery —
+the relay already keeps a durable, monotonically-ordered `relay_frames.id` and
+already reports a typed gap when a cursor falls below `relay_evicted`. That id
+is one sequence across every channel, so the `Last-Event-ID` of a session
+subscribed to several streams carries a position per stream rather than one
+number ([ADR-0023's third
+amendment](../11-adr/0023-sse-sync-transport.md#amendment-2026-11-a-resume-position-per-stream);
+the grammar is in [`wire-protocol.md`](./wire-protocol.md#connection-lifecycle)).
 
 Negotiation semantics do not move. `Hello::negotiate` in
 `crates/sunrise-wire-protocol/src/negotiation.rs` keeps its rules, its error
