@@ -108,11 +108,14 @@ and the expiry.
 recipient (a decline is a withdrawal by the recipient).
 
 Why a token rather than naming the recipient account: the owner knows the
-recipient by identity, and the relay knows no identity. Account ids never
-travel to another account (`account_ns.rs`), and publishing an account handle
-for lookup would make every account enumerable. A claim token binds the grant
-to whichever account the recipient signs in with, and moves nothing about any
-account to anyone.
+recipient by identity, and the relay offers no lookup from an identity to an
+account. It keeps the identity keys an account was created with
+(`accounts.identity_pub_s`, write-once), but a lookup over them would make
+every account on the relay enumerable by its identity key, and would bind the
+grant to a key an identity rotation replaces (ADR-0037) while the column keeps
+the old one. Account ids never travel to another account (`account_ns.rs`). A
+claim token binds the grant to whichever account the recipient signs in with,
+and moves nothing about any account to anyone.
 
 ### 2. A subscription names the grant, and the relay routes it to the owner's channel
 
@@ -171,10 +174,11 @@ stream reading the owner's channel ends on its next re-check.
   every shared Stream whose id leaks, and it makes the channel key, which was
   never a secret, into a capability.
 - **The relay verifies the `ShareGrantPayload` itself.** Rejected: it would
-  need the granting identity's `ID_S_pub` and a binding from recipient identity
-  to account, neither of which the relay holds, and checking the signature
-  would still decide nothing about content. It would also put a parser of
-  sealed grant bytes into a binary that deliberately has no crypto dependency.
+  need the granting identity in force, where the relay keeps only the one the
+  account was created with, and a binding from recipient identity to account,
+  which it does not hold; and checking the signature would still decide
+  nothing about content. It would also put a parser of sealed grant bytes into
+  a binary that deliberately has no `sunrise-crypto` dependency.
 - **The owner names the recipient account.** Rejected in §1: it needs an
   account directory the relay does not and should not have.
 - **A stateless, relay-signed capability with an expiry.** Rejected: it cannot
