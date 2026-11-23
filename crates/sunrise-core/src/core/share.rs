@@ -13,7 +13,7 @@
 //!
 //! The relay viewer grant the link's claim token names is the caller's, over
 //! `sunrise-relay-client`: this crate never calls the relay outside the sync
-//! driver.
+//! driver. What this device keeps of one is in `share_records`.
 
 use super::{Core, CoreError};
 use crate::engine::{EndedShare, StreamShare};
@@ -24,7 +24,7 @@ use sunrise_id::{EntityKind, EntityRef};
 ///
 /// What a client shows beside "Accept?": the Stream's name and color as the
 /// owner sealed them, the identity that signed it, and its expiry. The Stream
-/// key it opened is not carried out: holding it is not built.
+/// key it opened is not carried out: [`Core::accept_share`] holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceivedShare {
     /// The owner's Stream.
@@ -171,7 +171,7 @@ impl Core {
     /// Opening checks, in order, that the grant names this identity, that
     /// `granter_id_s_pub` signed it over this identity's `ID_D_pub`, and that
     /// it has not expired; only then is anything decrypted. Nothing is
-    /// written.
+    /// written: holding the key is [`Core::accept_share`]'s.
     ///
     /// # Errors
     /// [`CoreError::Closed`] after close; [`CoreError::Keychain`] wrapping
@@ -185,20 +185,31 @@ impl Core {
         grant: &[u8],
     ) -> Result<ReceivedShare, CoreError> {
         self.ensure_open()?;
+        Ok(self.open_grant(granter_id_s_pub, grant)?.0)
+    }
+
+    /// Open `grant` as [`Self::open_share_grant`] does, keeping the Stream
+    /// key it sealed.
+    pub(super) fn open_grant(
+        &self,
+        granter_id_s_pub: &[u8; 32],
+        grant: &[u8],
+    ) -> Result<(ReceivedShare, sunrise_crypto::StreamKey), CoreError> {
         let decoded = sunrise_crypto::decode_share_grant(grant).map_err(KeychainError::from)?;
         let opened =
             self.engine
                 .keychain()
                 .open_share_grant(&decoded, granter_id_s_pub, self.now_ms())?;
         let terms = decoded.terms();
-        Ok(ReceivedShare {
+        let share = ReceivedShare {
             stream_id: terms.stream_id,
             epoch: terms.epoch,
             granter_identity_id: sunrise_crypto::identity_id_from_pub(granter_id_s_pub),
             name: opened.metadata.name.clone(),
             color: opened.metadata.color.clone(),
             expires_at_ms: terms.expires_at_ms,
-        })
+        };
+        Ok((share, opened.key))
     }
 }
 

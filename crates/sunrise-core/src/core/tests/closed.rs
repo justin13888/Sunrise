@@ -214,6 +214,21 @@ async fn the_old_checks_refuse(core: &Core, task: EntityRef) {
     );
     refused("stream_shares", core.stream_shares(shared));
     refused("ended_stream_shares", core.ended_stream_shares(shared));
+    refused("accept_share", core.accept_share(&[1; 32], b"x", [4; 16]));
+    refused("held_shares", core.held_shares());
+    refused("drop_held_share", core.drop_held_share([3; 16], [7; 16]));
+    refused(
+        "record_share_relay_grant",
+        core.record_share_relay_grant(shared, [3; 16], [4; 16]),
+    );
+    refused(
+        "share_relay_grants",
+        core.share_relay_grants(shared, [3; 16]),
+    );
+    refused(
+        "forget_share_relay_grant",
+        core.forget_share_relay_grant(shared, [3; 16], [4; 16]),
+    );
     refused("deadline_candidates", core.deadline_candidates());
     refused("security_events", core.security_events());
     refused("oldest_unacked_ms", core.oldest_unacked_ms());
