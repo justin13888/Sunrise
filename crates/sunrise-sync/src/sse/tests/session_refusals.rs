@@ -1,4 +1,10 @@
-//! The three refusals a success path would swallow.
+//! Session tests for refused and malformed input, and for how a session ends.
+//!
+//! The file holds three groups: the relay's refusals and malformed replies
+//! (the first six tests), ping, close and transport-close handling, and the
+//! refusal of undecodable or unroutable frames, revocation outcomes and
+//! per-stream resume positions. The head of the file explains the three
+//! reply guards the first group pins.
 //!
 //! `Subscribe`, `OpBatch` and `RefreshToken` each guard their reply with
 //! `if !reply.status.is_success()`. Each guard is separate code and each
