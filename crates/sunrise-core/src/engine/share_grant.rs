@@ -217,7 +217,7 @@ impl Refusal {
 
 /// A stream no share can name: the vault-meta stream and the private key
 /// domain hold the account's own state, never a Stream a Person reads.
-fn unshareable(stream_id: &[u8; 16]) -> bool {
+pub(super) fn unshareable(stream_id: &[u8; 16]) -> bool {
     *stream_id == META_STREAM || *stream_id == PRIVATE_DOMAIN_BYTES
 }
 
@@ -335,6 +335,10 @@ impl Engine {
                 unknown: sunrise_domain::Unknowns::new(),
             });
             self.emit_control_op(tx, &op, now_ms, None)?;
+            // The recipient reads the Stream from the live epoch on, and
+            // verifies each op there under a cert logged in the Stream
+            // (ADR-0076 §1).
+            self.log_writer_certs_for_share(tx, &stream_id, (epoch, &key), now_ms)?;
             Ok(bytes)
         });
         match (written, refused) {
@@ -353,7 +357,7 @@ impl Engine {
     /// later rotation on every replica that holds the op. A device without
     /// `ID_S_priv` can revoke: its rotation re-seals to nobody, and a device
     /// that holds `ID_S_priv` re-seals the epoch to the shares still in force
-    /// once it learns it ([`Self::backfill_share_grants`]). Returns the
+    /// once it learns it (`Engine::backfill_share_grants`). Returns the
     /// epoch the rotation minted.
     ///
     /// Withdrawing the relay viewer grant (step 3) is the caller's.
@@ -540,6 +544,16 @@ impl Engine {
         Ok(ops)
     }
 
+    /// The shares of `stream_id` in force, as [`Self::stream_shares`] lists
+    /// them, read inside a transaction.
+    pub(super) fn stream_shares_on(
+        &self,
+        conn: &Connection,
+        stream_id: &[u8; 16],
+    ) -> Result<Vec<StreamShare>, EngineError> {
+        Ok(self.share_fold(conn, stream_id)?.shares)
+    }
+
     /// The share fold over the op log. See the [module docs](self).
     fn share_fold(
         &self,
@@ -672,7 +686,11 @@ impl Engine {
     ) -> rusqlite::Result<()> {
         let chain = self.chain_identities(tx)?;
         match self.believe_share_grant(tx, &chain, p, sender)? {
-            Ok(grant) => self.backfill_share_grants(tx, &grant.terms().stream_id, now_ms),
+            Ok(grant) => {
+                let stream_id = grant.terms().stream_id;
+                self.backfill_share_grants(tx, &stream_id, now_ms)?;
+                self.log_writer_cert_on_learning_share(tx, &stream_id, now_ms)
+            }
             Err(why) => {
                 tracing::warn!(
                     ev = "core.share.grant_refused",
@@ -963,11 +981,14 @@ impl Engine {
             let op = InnerOp::ShareGrant(ShareGrantOpPayload {
                 person: share.person,
                 recipient_id_d_pub: share.recipient_id_d_pub,
-                grant: bytes,
+                grant: bytes.clone(),
                 reseal: true,
                 unknown: sunrise_domain::Unknowns::new(),
             });
             self.emit_control_op(tx, &op, now_ms, seal_under)?;
+            // The recipient never reads the op above; it reads this copy in
+            // the Stream, under the epoch it already holds (ADR-0076 §2).
+            self.log_stream_share_grant(tx, stream_id, share.epoch, &bytes, now_ms)?;
         }
         Ok(())
     }

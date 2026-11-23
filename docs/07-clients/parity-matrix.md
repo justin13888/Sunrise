@@ -95,7 +95,10 @@ still stands, and is kept here:
   offers a share and accepts one (`sunrise share`, `sunrise accept`,
   [#1333](https://github.com/justin13888/Sunrise/issues/1333)), but nothing
   reads or writes the `persons` table, no other client offers or accepts a
-  share, and no client reads a shared Stream
+  share, and no client applies or syncs a shared Stream
+  ([#1337](https://github.com/justin13888/Sunrise/issues/1337),
+  [#1338](https://github.com/justin13888/Sunrise/issues/1338)); the Stream
+  carries what a recipient verifies and keys it with
   ([#1336](https://github.com/justin13888/Sunrise/issues/1336)). Closing it is a
   second, security-critical epic — a sharing model that is almost right in an
   end-to-end-encrypted product is a vulnerability, not a partial feature.

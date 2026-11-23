@@ -20,14 +20,16 @@
 //! contend with one another and re-delivery is a no-op. See ADR-0013 and
 //! [`crate::engine`]'s `materialize_focus_remote`.
 //!
-//! Fourteen families are **control** ops rather than entities: `KeyEnvelope`,
+//! Sixteen families are **control** ops rather than entities: `KeyEnvelope`,
 //! `DeviceRevoke`, `DeviceRevokeByIdentity`, `DeviceRevokeWithdraw`,
 //! `DeviceRevokeWithdrawByIdentity`, `DeviceCertPublish` and
 //! `IdentityTransition` carry key material and trust, `StreamDigest` carries a replica's frontier in one
 //! stream (ADR-0043 §5), and `VaultRequires` and `DeviceFeatures` carry the
 //! vault's feature state (ADR-0045 §7), and `ShareGrant`, `ShareRevoke`,
 //! `ShareDecline` and `ShareResealRequest` record one Stream shared with one
-//! Person, the share's end, and an epoch a holder is to re-seal. None has a row or a last-writer-wins
+//! Person, the share's end, and an epoch a holder is to re-seal, and
+//! `StreamWriterCert` and `StreamShareGrant` carry a device's cert and a
+//! re-sealed grant inside a shared Stream for its recipients (ADR-0076). None has a row or a last-writer-wins
 //! stamp, and all are classed `OpEffect::Control` so the compiler keeps them
 //! out of the entity materializer. See [`crate::control_op`], ADR-0024 and
 //! ADR-0032.
@@ -54,7 +56,7 @@ use crate::control_op::{
     DeviceFeaturesPayload, DeviceRevokeByIdentityPayload, DeviceRevokePayload,
     DeviceRevokeWithdrawByIdentityPayload, DeviceRevokeWithdrawPayload, IdentityTransitionPayload,
     KeyEnvelopePayload, ShareDeclinePayload, ShareGrantOpPayload, ShareResealRequestPayload,
-    ShareRevokePayload, VaultRequiresPayload,
+    ShareRevokePayload, StreamShareGrantPayload, StreamWriterCertPayload, VaultRequiresPayload,
 };
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
@@ -192,6 +194,14 @@ macro_rules! define_inner_op {
             /// (`docs/03-crypto/sharing-with-others.md` §Revoking access).
             /// Control op, on the vault-meta stream.
             ShareResealRequest(ShareResealRequestPayload),
+            /// One device's identity-signed cert, in a shared Stream's own
+            /// log, for a recipient that reads no vault-meta log of the
+            /// account's (ADR-0076 §1). Control op, in an entity stream.
+            StreamWriterCert(StreamWriterCertPayload),
+            /// A re-sealed share grant, in the shared Stream's own log under
+            /// the epoch its recipient holds (ADR-0076 §2). Control op, in an
+            /// entity stream.
+            StreamShareGrant(StreamShareGrantPayload),
         }
 
         impl InnerOp {
@@ -223,6 +233,8 @@ macro_rules! define_inner_op {
                     Self::ShareRevoke(_) => "share.revoke",
                     Self::ShareDecline(_) => "share.decline",
                     Self::ShareResealRequest(_) => "share.reseal_request",
+                    Self::StreamWriterCert(_) => "stream.writer_cert",
+                    Self::StreamShareGrant(_) => "stream.share_grant",
                 }
             }
 
@@ -237,14 +249,16 @@ macro_rules! define_inner_op {
                     | Self::DeviceRevokeWithdraw(_)
                     | Self::DeviceRevokeWithdrawByIdentity(_)
                     | Self::DeviceCertPublish(_)
-                    | Self::DeviceFeatures(_) => "device",
+                    | Self::DeviceFeatures(_)
+                    | Self::StreamWriterCert(_) => "device",
                     Self::IdentityTransition(_) => "identity",
                     Self::Patch(p) => p.target.kind().tag(),
                     Self::StreamDigest(_)
                     | Self::ShareGrant(_)
                     | Self::ShareRevoke(_)
                     | Self::ShareDecline(_)
-                    | Self::ShareResealRequest(_) => "stream",
+                    | Self::ShareResealRequest(_)
+                    | Self::StreamShareGrant(_) => "stream",
                     Self::VaultRequires(_) => "vault",
                 }
             }
@@ -298,6 +312,17 @@ macro_rules! define_inner_op {
                     Self::ShareResealRequest(p) => {
                         EntityRef::new(EntityKind::Stream, p.stream_id)
                     }
+                    // The device the cert names, so a log can be asked which
+                    // devices' certs it holds; the zero id for one that does
+                    // not decode, for `DeviceCertPublish`'s reason.
+                    Self::StreamWriterCert(p) => EntityRef::new(
+                        EntityKind::Device,
+                        sunrise_crypto::DeviceCert::from_cbor(&p.cert)
+                            .map_or([0u8; 16], |c| c.body.device_id),
+                    ),
+                    // The envelope's stream, which the payload names only
+                    // inside the grant; the zero ref, as for a digest.
+                    Self::StreamShareGrant(_) => EntityRef::new(EntityKind::Stream, [0u8; 16]),
                 }
             }
 
@@ -318,7 +343,9 @@ macro_rules! define_inner_op {
                     | Self::ShareGrant(_)
                     | Self::ShareRevoke(_)
                     | Self::ShareDecline(_)
-                    | Self::ShareResealRequest(_) => OpEffect::Control,
+                    | Self::ShareResealRequest(_)
+                    | Self::StreamWriterCert(_)
+                    | Self::StreamShareGrant(_) => OpEffect::Control,
                     Self::Patch(p) => p.effect(),
                 }
             }
@@ -333,14 +360,16 @@ macro_rules! define_inner_op {
                     | Self::DeviceRevokeWithdraw(_)
                     | Self::DeviceRevokeWithdrawByIdentity(_)
                     | Self::DeviceCertPublish(_)
-                    | Self::DeviceFeatures(_) => EntityKind::Device,
+                    | Self::DeviceFeatures(_)
+                    | Self::StreamWriterCert(_) => EntityKind::Device,
                     Self::IdentityTransition(_) => EntityKind::Identity,
                     Self::Patch(p) => p.target.kind(),
                     Self::StreamDigest(_)
                     | Self::ShareGrant(_)
                     | Self::ShareRevoke(_)
                     | Self::ShareDecline(_)
-                    | Self::ShareResealRequest(_) => EntityKind::Stream,
+                    | Self::ShareResealRequest(_)
+                    | Self::StreamShareGrant(_) => EntityKind::Stream,
                 }
             }
 
@@ -365,6 +394,8 @@ macro_rules! define_inner_op {
                         | Self::ShareRevoke(_)
                         | Self::ShareDecline(_)
                         | Self::ShareResealRequest(_)
+                        | Self::StreamWriterCert(_)
+                        | Self::StreamShareGrant(_)
                 )
             }
         }
@@ -839,7 +870,7 @@ mod tests {
     fn known_kinds_is_the_derives_variant_list() {
         let kinds = known_kinds();
         assert_eq!(kinds.first(), Some(&"TaskCreate"));
-        assert_eq!(kinds.last(), Some(&"ShareResealRequest"));
+        assert_eq!(kinds.last(), Some(&"StreamShareGrant"));
         for name in [
             "BlockCreate",
             "AttachmentDelete",
@@ -857,7 +888,8 @@ mod tests {
     /// control families, then `Patch`, then `StreamDigest`, then the two
     /// feature control families, then the identity-signed revocation, then the
     /// withdrawal, then the identity-signed withdrawal, then the share grant,
-    /// revocation and decline, then the re-seal request — read out of the derive, so it is the list the
+    /// revocation and decline, then the re-seal request, then the shared
+    /// Stream's writer cert and grant copy — read out of the derive, so it is the list the
     /// decoder actually accepts.
     #[test]
     fn the_derive_declares_the_registry_ops_then_the_control_families() {
@@ -881,6 +913,8 @@ mod tests {
             "ShareRevoke",
             "ShareDecline",
             "ShareResealRequest",
+            "StreamWriterCert",
+            "StreamShareGrant",
         ]);
         assert_eq!(known_kinds(), expected.as_slice());
     }

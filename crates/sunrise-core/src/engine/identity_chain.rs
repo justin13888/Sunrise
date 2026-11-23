@@ -186,6 +186,26 @@ impl Engine {
         {
             return Ok(None);
         }
+        let Some(record) = self.identity_chain_record(conn)? else {
+            return Ok(None);
+        };
+        record
+            .encode()
+            .map(Some)
+            .map_err(|e| EngineError::Invalid(e.to_string()))
+    }
+
+    /// The account's identity chain as this replica folds it, genesis to the
+    /// identity in force, with no link for an account that never rotated;
+    /// `None` where a link the fold walked does not convert.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub(crate) fn identity_chain_record(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> Result<Option<IdentityChain>, EngineError> {
+        let chain = self.chain_identities(conn)?;
         let mut stmt = conn.prepare(
             "SELECT to_id_d_pub, roster_digest, shares_digest, prev_sig, next_sig,
                     meta_epoch, hlc_physical_ms, hlc_logical, emitter_device_id, payload
@@ -247,14 +267,10 @@ impl Engine {
             links.push(link);
         }
         let (_, genesis_id_s_pub) = chain[0];
-        let record = IdentityChain {
+        Ok(Some(IdentityChain {
             genesis_id_s_pub,
             links,
-        };
-        record
-            .encode()
-            .map(Some)
-            .map_err(|e| EngineError::Invalid(e.to_string()))
+        }))
     }
 
     /// Store the links of the account's identity chain in this vault and walk

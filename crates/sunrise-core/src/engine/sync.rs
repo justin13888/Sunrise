@@ -1619,6 +1619,10 @@ impl Engine {
                 }
                 Ok(Vec::new())
             }
+            // Among the rest, `StreamWriterCert` and `StreamShareGrant`: a
+            // shared Stream's copies for its recipients (ADR-0076). The
+            // account's own replicas know their devices and grants from the
+            // vault-meta log, and store nothing from either.
             _ => Ok(Vec::new()),
         }
     }

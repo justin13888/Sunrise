@@ -346,6 +346,10 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// `ShareResealRequest` op families) moved the same three regions and
 /// nothing else.
 ///
+/// The 33 → 34 re-freeze (#1336, the `StreamWriterCert` and
+/// `StreamShareGrant` op families) moved the same three regions and nothing
+/// else.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -363,10 +367,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840c2",
-        "a86b9ea3c60670df579d029a32c977780aaf4c1181f40565964a7f694931",
-        "5248399bac02c0140e88d970daadd2cad425ac5a51272350a6d27ed4678f",
-        "50500a0c18210d486c7c0cb5311f7c7a",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58404b",
+        "535dd48da8c58f261c68f3b8fccfd9af0dd7c80ee3b2959c3b6a97214300",
+        "67543995066d955aa2c6b4538a997e0f3194a41c9fc71cc0826b7c475f3a",
+        "e3dd050c18220d483e1717301ffda3a0",
     ));
 }
 
@@ -473,6 +477,10 @@ pub mod signed_only_envelope {
 /// `ShareResealRequest` op families) moved the same four regions; the
 /// ciphertext at `[94..117]` is again untouched.
 ///
+/// The 33 → 34 re-freeze (#1336, the `StreamWriterCert` and
+/// `StreamShareGrant` op families) moved the same four regions; the
+/// ciphertext at `[94..117]` is again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -492,11 +500,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb88c2390",
-        "5f51fb66319be7d303d00918d10b5840d1b740983b1522324d0459bec517",
-        "e698bc9622ba4c03e63e6e23e4cb710319eab873caaf93bc1ce176a4fd91",
-        "2d510f58a76f615a55e22b5df8eb215690acb20f0c18210d486c7c0cb531",
-        "1f7c7a",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8370dcc",
+        "2671f0ff9ec792089bcc8222870b5840455b734d0959bedd2eac7a777ea2",
+        "7b3e526333d5564836b034a0a61adbd9b72233e33c9f2df5e5d0cde37339",
+        "49441a87a130a499c38d513e2fde855b978156020c18220d483e1717301f",
+        "fda3a0",
     ));
 }
 

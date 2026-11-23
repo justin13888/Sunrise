@@ -1680,9 +1680,11 @@ mod published;
 mod repair;
 mod share;
 mod share_records;
+mod shared_read;
 mod snapshot;
 
 pub use share::ReceivedShare;
+pub use shared_read::{SharedPending, SharedRead, SharedStreamReader};
 
 pub use place::TaskPlaceStatus;
 pub use planner::{PlanCommitResult, PlanUndoResult, PLAN_CACHE_SIZE};

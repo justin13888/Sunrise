@@ -102,15 +102,12 @@ impl Keychain {
     }
 
     /// The key held for `stream_id` at `epoch` from `granter_identity_id`,
-    /// or `None` where none is held.
-    ///
-    /// Test-only until reading through the relay grant (#1336) opens the
-    /// owner's ops under it.
+    /// or `None` where none is held: what a shared Stream's envelope at that
+    /// epoch opens under (`Core::read_shared_envelope`).
     ///
     /// # Errors
     /// [`KeychainError::UnreadableRow`] for a row whose wrap does not open under
     /// this vault's root; storage errors.
-    #[cfg(test)]
     pub(crate) fn held_share_key(
         &self,
         db: &Db,

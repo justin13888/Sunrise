@@ -253,6 +253,10 @@ mod revocation_withdraw;
 /// Share grants as ops: emitted to a Person, folded, re-sealed (#1318).
 mod share_grant;
 
+/// A shared Stream's writer certs and grant copies for its recipients
+/// (ADR-0076, #1336).
+mod shared_stream;
+
 /// Identity transitions: the verification rule and the rotation chain.
 mod identity_rotation;
 

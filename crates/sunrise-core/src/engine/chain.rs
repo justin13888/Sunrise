@@ -1072,6 +1072,9 @@ impl Engine {
         let Some(payload) = digest_payload(tx, stream_id, now_ms)? else {
             return Ok(None);
         };
+        // A digest is an op a shared Stream's recipients read like any
+        // other, so its writer's cert goes first (ADR-0076 §1).
+        self.ensure_own_writer_cert(tx, stream_id, (epoch, &key), now_ms)?;
         let inner = InnerOp::StreamDigest(payload);
         let blob = encode_inner_op(&inner).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
         let op_id = self.fresh_op_id(now_ms);

@@ -54,6 +54,11 @@
 //! `ID_S_priv` that minted an epoch names the shares its re-seal would have
 //! reached, so a holder re-seals it to those and no others.
 //!
+//! [`StreamWriterCertPayload`] and [`StreamShareGrantPayload`] arrive at
+//! `DOC_SCHEMA_V = 34`, and are the two control families logged in a shared
+//! Stream's own log rather than the vault-meta stream: a device's cert, and a
+//! re-sealed grant, for a recipient that reads only that Stream (ADR-0076).
+//!
 //! These are **not** entities. They have no row, no LWW stamp and no
 //! materialization: `inner_op`'s `OpEffect::Control` variant exists so the
 //! compiler cannot route one into the entity materializer, where the `_ =>`
@@ -572,6 +577,50 @@ pub struct ResealRecipient {
     pub identity_id: [u8; 16],
 }
 
+/// One device's identity-signed cert, logged in a shared Stream's own log so
+/// a recipient that reads none of the account's vault-meta log can verify
+/// the device's ops there (ADR-0076 §1, `DOC_SCHEMA_V = 34`).
+///
+/// Logged per `(Stream, epoch, device)`: a recipient holds only the epochs it
+/// was sealed. Any device of the account may log any device's cert, because
+/// the identity's signature over it, not the envelope's, is what a recipient
+/// checks. The account's own replicas store nothing from it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamWriterCertPayload {
+    /// The canonical-CBOR `DeviceCert`.
+    #[serde(with = "serde_bytes")]
+    pub cert: Vec<u8>,
+    /// The account's identity chain record, genesis first
+    /// (`sunrise_crypto::IdentityChain`), as the emitter folded it.
+    #[serde(with = "serde_bytes")]
+    pub chain: Vec<u8>,
+    /// Fields this build does not know, kept byte for byte.
+    #[serde(flatten)]
+    pub unknown: sunrise_domain::Unknowns,
+}
+
+/// A re-sealed share grant, logged in the shared Stream's own log under the
+/// epoch the share's previous grant sealed, so its recipient reads the next
+/// epoch from the channel it already reads (ADR-0076 §2,
+/// `DOC_SCHEMA_V = 34`).
+///
+/// A copy of a re-seal `ShareGrant` op's `grant`, logged beside it. The
+/// recipient checks it as it checks the grant its link carried, against the
+/// identity that signed it, which `chain` must hold beside the granter's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamShareGrantPayload {
+    /// The canonical [`sunrise_crypto::ShareGrant`], at most
+    /// [`sunrise_crypto::MAX_SHARE_GRANT_BYTES`].
+    #[serde(with = "serde_bytes")]
+    pub grant: Vec<u8>,
+    /// The account's identity chain record, genesis first.
+    #[serde(with = "serde_bytes")]
+    pub chain: Vec<u8>,
+    /// Fields this build does not know, kept byte for byte.
+    #[serde(flatten)]
+    pub unknown: sunrise_domain::Unknowns,
+}
+
 // The payloads above, and the two `inner_op` keeps beside the op family it
 // defines, described field by field for the canonical document schema
 // (`crate::doc_schema`). A field or variant added to one of these types and
@@ -672,6 +721,16 @@ sunrise_id::describe_value_types! {
         ResealRecipient {
             identity_id: [u8; 16];
         }
+        StreamWriterCertPayload {
+            cert: Vec<u8>;
+            chain: Vec<u8>;
+            ..unknown
+        }
+        StreamShareGrantPayload {
+            grant: Vec<u8>;
+            chain: Vec<u8>;
+            ..unknown
+        }
         PatchPayload {
             target as "ref": EntityRef;
             create: bool;
@@ -750,6 +809,8 @@ op_payloads! {
     ShareRevoke(ShareRevokePayload),
     ShareDecline(ShareDeclinePayload),
     ShareResealRequest(ShareResealRequestPayload),
+    StreamWriterCert(StreamWriterCertPayload),
+    StreamShareGrant(StreamShareGrantPayload),
 }
 
 #[cfg(test)]
@@ -946,6 +1007,24 @@ mod tests {
         };
         assert_wire_names("ShareResealRequestPayload", &request, &[]);
         assert_wire_names("ResealRecipient", &request.recipients[0], &[]);
+        assert_wire_names(
+            "StreamWriterCertPayload",
+            &StreamWriterCertPayload {
+                cert: vec![1u8; 4],
+                chain: vec![2u8; 4],
+                unknown: Unknowns::new(),
+            },
+            &[],
+        );
+        assert_wire_names(
+            "StreamShareGrantPayload",
+            &StreamShareGrantPayload {
+                grant: vec![1u8; 4],
+                chain: vec![2u8; 4],
+                unknown: Unknowns::new(),
+            },
+            &[],
+        );
     }
 
     /// Every described record is reached by the wire tests above.
@@ -967,6 +1046,8 @@ mod tests {
             "ShareDeclinePayload",
             "ShareResealRequestPayload",
             "ResealRecipient",
+            "StreamWriterCertPayload",
+            "StreamShareGrantPayload",
             "PatchPayload",
             "GroupWire",
             "StreamDigestPayload",

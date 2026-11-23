@@ -1943,7 +1943,9 @@
         "StreamCreate",
         "StreamDelete",
         "StreamDigest",
+        "StreamShareGrant",
         "StreamUpdate",
+        "StreamWriterCert",
         "TaskCreate",
         "TaskDelete",
         "TaskUpdate",
@@ -2005,6 +2007,14 @@
         {
             "payload": "StreamDigestPayload",
             "variant": "StreamDigest"
+        },
+        {
+            "payload": "StreamShareGrantPayload",
+            "variant": "StreamShareGrant"
+        },
+        {
+            "payload": "StreamWriterCertPayload",
+            "variant": "StreamWriterCert"
         },
         {
             "payload": "VaultRequiresPayload",
@@ -2687,6 +2697,36 @@
             ],
             "keeps_unknowns": true,
             "name": "StreamDigestPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "chain",
+                    "type": "Vec<u8>"
+                },
+                {
+                    "name": "grant",
+                    "type": "Vec<u8>"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "StreamShareGrantPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "cert",
+                    "type": "Vec<u8>"
+                },
+                {
+                    "name": "chain",
+                    "type": "Vec<u8>"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "StreamWriterCertPayload",
             "shape": "record"
         },
         {

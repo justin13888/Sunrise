@@ -155,6 +155,8 @@ Key rotation grace: when a device emits `device_rotate(old, new, effective_at)`,
 
 The resolution snapshot is captured at signature-verify entry; concurrent vault-meta updates do not change the result of an in-flight verification.
 
+**A recipient of a shared Stream** reads no vault-meta log of the owner's. It resolves the owner's devices from the `stream_writer_cert` ops in the shared Stream itself, each a `DeviceCert` beside the owner's identity chain, believed when the chain holds the granting identity and the cert verifies under an identity on it ([ADR-0076](../11-adr/0076-a-shared-stream-carries-its-writer-certs-and-re-sealed-grants.md) §1).
+
 ### Verification order
 
 A receiver MUST verify in this order:
@@ -208,6 +210,8 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 | `share_revoke` | 1 | `{ stream_id, recipient_identity_id, effective_at_ms }` — the owner's account ends one share; the emitter rotates the Stream beside it; see the CDDL below |
 | `share_decline` | 1 | `{ stream_id, recipient_identity_id, declined_at_ms }` — the owner's account records that the recipient declined one share, which ends it with no rotation; see the CDDL below |
 | `share_reseal_request` | 1 | `{ stream_id, epoch, key_id, recipients }` — a device without `ID_S_priv` minted the epoch and asks a holder to re-seal it to the shares `recipients` names, those its own re-seal would have reached; see the CDDL below |
+| `stream_writer_cert` | 1 | `{ cert, chain }` — in a shared Stream's own log, not the vault-meta stream: one device's `DeviceCert` and the account's identity chain record, logged per `(Stream, epoch, device)` so a recipient can verify the device's ops there ([ADR-0076](../11-adr/0076-a-shared-stream-carries-its-writer-certs-and-re-sealed-grants.md) §1); see the CDDL below |
+| `stream_share_grant` | 1 | `{ grant, chain }` — in a shared Stream's own log: a copy of a re-seal `share_grant`'s `grant`, sealed under the epoch the share's previous grant sealed, so its recipient reads the next epoch from the Stream (ADR-0076 §2); see the CDDL below |
 | `snapshot` | 1 | `{ covers: { device_id => max_seq }, base_root, state_cbor }` (encrypted under Stream key) |
 | `checkpoint` | 1 | `{ root, covers: { device_id => max_seq } }` (encrypted under Stream key) |
 | `identity_transition` | 1 | `{ from_identity_id, to_identity_id, to_id_s_pub, to_id_d_pub, roster, device_shares, identity_share?, prev_sig, next_sig }` — no `effective_at`, for `device_revoke`'s reasons; see the CDDL below |
@@ -218,7 +222,7 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 
 ### The six families that are implemented
 
-[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `Patch`, an entity family rather than a control one, followed at `DOC_SCHEMA_V = 8` ([ADR-0044](../11-adr/0044-per-field-ops.md)), and the `StreamDigest` control family, a replica's frontier and digest in one stream, at `DOC_SCHEMA_V = 9` ([ADR-0043](../11-adr/0043-commit-tree.md)); it takes the place `checkpoint` was sketched for. [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 10`. [ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) added `device_revoke_by_identity` at `DOC_SCHEMA_V = 23`, behind the structural feature `core.revoke_authority`, and [ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md) added `device_revoke_withdraw` at `DOC_SCHEMA_V = 28`, behind the structural feature `core.revoke_withdraw`. ADR-0058 §6 added `device_revoke_withdraw_by_identity` at `DOC_SCHEMA_V = 30`, behind the structural feature `core.revoke_withdraw_authority`. [#1318](https://github.com/justin13888/Sunrise/issues/1318) added `share_grant` at `DOC_SCHEMA_V = 32`, behind no feature: it writes no entity, and a build that cannot read it parks it and fails only to re-seal the share. [#1325](https://github.com/justin13888/Sunrise/issues/1325) added `share_revoke`, `share_decline` and `share_reseal_request`, and `share_grant`'s optional `reseal`, at `DOC_SCHEMA_V = 33`, behind no feature for the same reason. `snapshot` remains unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
+[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `Patch`, an entity family rather than a control one, followed at `DOC_SCHEMA_V = 8` ([ADR-0044](../11-adr/0044-per-field-ops.md)), and the `StreamDigest` control family, a replica's frontier and digest in one stream, at `DOC_SCHEMA_V = 9` ([ADR-0043](../11-adr/0043-commit-tree.md)); it takes the place `checkpoint` was sketched for. [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 10`. [ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md) added `device_revoke_by_identity` at `DOC_SCHEMA_V = 23`, behind the structural feature `core.revoke_authority`, and [ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md) added `device_revoke_withdraw` at `DOC_SCHEMA_V = 28`, behind the structural feature `core.revoke_withdraw`. ADR-0058 §6 added `device_revoke_withdraw_by_identity` at `DOC_SCHEMA_V = 30`, behind the structural feature `core.revoke_withdraw_authority`. [#1318](https://github.com/justin13888/Sunrise/issues/1318) added `share_grant` at `DOC_SCHEMA_V = 32`, behind no feature: it writes no entity, and a build that cannot read it parks it and fails only to re-seal the share. [#1325](https://github.com/justin13888/Sunrise/issues/1325) added `share_revoke`, `share_decline` and `share_reseal_request`, and `share_grant`'s optional `reseal`, at `DOC_SCHEMA_V = 33`, behind no feature for the same reason. [ADR-0076](../11-adr/0076-a-shared-stream-carries-its-writer-certs-and-re-sealed-grants.md) ([#1336](https://github.com/justin13888/Sunrise/issues/1336)) added `stream_writer_cert` and `stream_share_grant`, the two control families logged in a shared Stream's own log, at `DOC_SCHEMA_V = 34`, behind no feature: the account's own replicas store nothing from either. `snapshot` remains unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
 
 The six are **not** the `OpKind`-tagged shape sketched above. The inner op is a Rust enum encoded externally tagged, so what is on the wire is a one-entry map from the variant name to its payload — the same shape the 21 domain variants already have. This is the encoder's shape, and it is normative:
 
@@ -236,6 +240,8 @@ InnerOp /= { "KeyEnvelope" => KeyEnvelopePayload }
          / { "ShareRevoke" => ShareRevokePayload }
          / { "ShareDecline" => ShareDeclinePayload }
          / { "ShareResealRequest" => ShareResealRequestPayload }
+         / { "StreamWriterCert" => StreamWriterCertPayload }   ; in a shared Stream's own log
+         / { "StreamShareGrant" => StreamShareGrantPayload }   ; in a shared Stream's own log
 
 FeatureList = {
     "features" => [ + feature-id ],   ; never emitted empty
@@ -305,6 +311,18 @@ ShareResealRequestPayload = {
 
 ResealRecipient = {
     "identity_id" => bstr .size 16,
+}
+
+StreamWriterCertPayload = {
+    "cert"  => bstr,        ; canonical-CBOR DeviceCert
+    "chain" => bstr,        ; the account's identity chain record (§Identity chain record), genesis first
+    * tstr => any,
+}
+
+StreamShareGrantPayload = {
+    "grant" => bstr,        ; a re-seal's canonical ShareGrantPayload, at most 8 KiB
+    "chain" => bstr,        ; the account's identity chain record, genesis first
+    * tstr => any,
 }
 
 IdentityTransitionPayload = {

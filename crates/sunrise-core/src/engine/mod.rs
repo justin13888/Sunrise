@@ -92,6 +92,7 @@ mod routine;
 mod saved_view;
 mod search;
 mod share_grant;
+mod shared_stream;
 mod shift;
 mod snapshot;
 mod stream;
