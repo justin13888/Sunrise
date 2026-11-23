@@ -327,26 +327,43 @@ vault — a Task opens its editor, a Block moves the grid onto the day it is on
 | `sunrise://entity/<EntityRef>` | **live** | Opens the screen the entity lives on **and the entity on it** — a Block routes to the calendar, moved onto the block's own day; a Task routes to Today and opens its editor, which shows the task whether or not Today happens to hold it. This is the link a block reminder carries and the one "Copy permalink" writes ([`../02-domain/identifiers.md`](../02-domain/identifiers.md)). An id this vault does not hold opens the screen and reveals nothing. |
 | `sunrise://task/<id>?action=…` | **live** | `complete`, `open`, or a snooze span. This is what a notification action button fires. |
 | `sunrise://focus/<TaskId>` | **live** | Starts a one-pomodoro session on that task and opens Focus — the same write `F` on a row makes. It declines while another session is running rather than opening a second one the screen cannot show; you land on Focus either way, so what is running is the first thing you see. Also reachable by `F` on a row and from the sidebar. |
-| `sunrise://share/<token>` | **specified, not built** | See below. |
+| `sunrise://share/<token>` | **parsed, not routed** | See below. |
 
 All deep links are validated; unknown shapes are ignored (no shell injection).
 A link naming an entity that does not exist resolves to the nearest sensible
 screen rather than an error dialog, because a notification tapped after its task
 was deleted elsewhere is an ordinary event, not a failure.
 
-### `sunrise://share/<token>` — specified, not built
+##### `sunrise://share/<token>` — parsed, not routed
 
-> **Specified, not built.** The parser refuses this shape, and nothing in
-> either app writes one. Sharing is a MUST in the parity matrix, not built,
-> and ranked as [#133](https://github.com/justin13888/Sunrise/issues/133): a token names a grant, there
-> is no grant model to name, and a route that accepted the token and then had
-> nowhere to take it would be the one failure this section rules out — a link
-> that goes somewhere plausible and wrong. The shape is kept because it is
-> still the design; it will be built with the sharing model,
-> and is tracked by [#133](https://github.com/justin13888/Sunrise/issues/133),
-> which is closed by whatever change introduces that model rather than on its
-> own.
+The link an owner hands the person a Stream is shared with
+([`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
+§Granting access, step 4). The token is base64url, unpadded, of
+`0x01 || claim_token (32) || granter_id_s_pub (32) || grant`:
 
-## Conflict-of-shortcut handling
+* `claim_token` claims the relay viewer grant the owner registered
+  ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md) §1).
+  It is a credential: a client never logs it.
+* `granter_id_s_pub` is the key the grant's signature verifies under, and what
+  the recipient compares with the owner's fingerprint out of band. The grant
+  does not name it, and the relay has no lookup from an identity to its keys.
+* `grant` is the canonical `ShareGrantPayload`.
+
+`sunrise-client-core`'s `links::ShareLink` builds and parses it. A token that is
+not canonical unpadded base64url, has another version byte or a short head,
+runs past the largest grant, or carries a grant that is not a well-formed
+viewer grant is refused like any other unknown shape. Nothing is verified at
+parse time: the signature covers the recipient's `ID_D_pub`, which only the
+recipient holds.
+
+> **Not routed.** No client acts on the link yet, and the Apple app's parser
+> still refuses the shape. Claiming the relay grant, opening the grant and
+> holding the Stream key it seals are not built, and a route that accepted the
+> link with nowhere to take it would be the one failure this section rules out:
+> a link that goes somewhere plausible and wrong. The accept sheet, the CLI's
+> `share` and `accept`, and the route are
+> [#1333](https://github.com/justin13888/Sunrise/issues/1333).
+
+ Conflict-of-shortcut handling
 
 Where platform-standard shortcuts disagree (e.g. `Cmd+T` is "new tab" on a browser), the web app yields and uses `Cmd+Shift+T` for new task; the desktop app uses `Cmd+N`. No global "consistent across all platforms" mandate that fights the OS.
