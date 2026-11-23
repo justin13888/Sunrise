@@ -82,7 +82,7 @@ the code rather than from the issue:
   sentence that mentions the table.
 - Since migration 0028 the key-distribution side reads `device_read_bounds`
   rather than the register, so the register's own predicate `Engine::is_revoked`
-  (`crates/sunrise-core/src/engine/revocation.rs:704#is_revoked`) has exactly
+  (`crates/sunrise-core/src/engine/revocation.rs:714#is_revoked`) has exactly
   **one** non-test caller and it is not on the apply path at all: the revoking
   command reads it to report whether its own row survived the fold
   (`crates/sunrise-core/src/engine/revocation.rs:355#revoke_device`). What the
@@ -176,7 +176,7 @@ Revocation today is a **register plus a read bound**:
   transaction, when the fold finds the revocation effective
   (`crates/sunrise-core/src/engine/revocation.rs:422-429#revoke_device`), and
   `relay_intents::drain` retries it on every session
-  (`crates/sunrise-core/src/relay_intents.rs:89#drain`). The
+  (`crates/sunrise-core/src/relay_intents.rs:121#drain`). The
   bound is real and **conditional**: the relay enforces only against a
   device-signed request, and `require_device_sig` defaults to false, so in the
   default deployment it is not in force
@@ -245,7 +245,7 @@ took five review rounds to bottom out, and it is not about convergence:
   ascending so a later row overwrites an earlier one
   (`crates/sunrise-core/src/engine/revocation.rs:1257-1258#refold_device_revocations`),
   a cut that landed wrong is corrected by revoking again from a healthy device
-  (`crates/sunrise-core/src/engine/revocation.rs:1504-1510#apply_device_revoke`),
+  (`crates/sunrise-core/src/engine/revocation.rs:1540-1546#apply_device_revoke`),
   and since ADR-0041 a re-fold can lower a cut or drop the row outright, because
   the register is a pure function of the op set rather than something edited in
   place
@@ -339,7 +339,7 @@ The guarantee, stated positively and in the terms a reader of
 > (`crates/sunrise-core/src/engine/revocation.rs:1310-1324#refold_device_revocations`).
 > The one other writer is a joiner adopting its sponsor's bound in the
 > transaction that creates its vault
-> (`crates/sunrise-core/src/engine/revocation.rs:1708-1715#adopt_sponsor_read_bounds`),
+> (`crates/sunrise-core/src/engine/revocation.rs:1716-1722#adopt_sponsor_read_bounds`),
 > so on a paired device a row can bound a device whose revocation every fold
 > there gates — the #282 case, and the point of the adoption
 > ([ADR-0041 §5. A paired device adopts its sponsor's read

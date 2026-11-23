@@ -71,7 +71,7 @@ pub(super) const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// How long this client will wait for the *next* piece of an **attachment**.
 ///
 /// Fifteen seconds, and the number is not this module's own. It is
-/// `KEEP_ALIVE_SECS` (`crates/sunrise-server/src/api/sync/stream.rs:38#KEEP_ALIVE_SECS`), the
+/// `KEEP_ALIVE_SECS` (`crates/sunrise-server/src/api/sync/stream.rs:39#KEEP_ALIVE_SECS`), the
 /// only value in this repository that says how long silence on a live
 /// connection is *normal* rather than broken, and
 /// `docs/05-sync/wire-protocol.md:360-366` states it in exactly this bound's
@@ -158,7 +158,7 @@ pub(super) const BLOB_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// mobile reconnect into a refused one.
 ///
 /// Fifteen seconds for the reason [`BLOB_IDLE_TIMEOUT`] is: `KEEP_ALIVE_SECS`
-/// (`crates/sunrise-server/src/api/sync/stream.rs:38#KEEP_ALIVE_SECS`) is the only value in
+/// (`crates/sunrise-server/src/api/sync/stream.rs:39#KEEP_ALIVE_SECS`) is the only value in
 /// this repository that says how long silence from the relay is normal, and
 /// a client that tolerates fifteen seconds of it on one route cannot call less
 /// a dead peer on another. It applies to the event stream's open too: the
