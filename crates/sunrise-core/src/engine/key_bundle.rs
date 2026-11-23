@@ -189,6 +189,15 @@ impl Engine {
                     learned.push((k.stream_id, k.epoch));
                 }
             }
+            // A restored device that holds `ID_S_priv` re-seals to a Stream's
+            // shares any epoch it now holds and they were never sealed, as
+            // it would on learning the key from an envelope.
+            let mut streams: Vec<[u8; 16]> = learned.iter().map(|(s, _)| *s).collect();
+            streams.sort_unstable();
+            streams.dedup();
+            for stream_id in &streams {
+                self.backfill_share_grants(tx, stream_id, now_ms)?;
+            }
             Ok(learned)
         })?;
         let mut events = Vec::new();

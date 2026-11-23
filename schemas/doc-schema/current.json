@@ -1936,7 +1936,9 @@
         "RoutineCreate",
         "RoutineDelete",
         "RoutineUpdate",
+        "ShareDecline",
         "ShareGrant",
+        "ShareRevoke",
         "StreamCreate",
         "StreamDelete",
         "StreamDigest",
@@ -1984,8 +1986,16 @@
             "variant": "Patch"
         },
         {
+            "payload": "ShareDeclinePayload",
+            "variant": "ShareDecline"
+        },
+        {
             "payload": "ShareGrantOpPayload",
             "variant": "ShareGrant"
+        },
+        {
+            "payload": "ShareRevokePayload",
+            "variant": "ShareRevoke"
         },
         {
             "payload": "StreamDigestPayload",
@@ -2544,6 +2554,25 @@
         {
             "fields": [
                 {
+                    "name": "declined_at_ms",
+                    "type": "u64"
+                },
+                {
+                    "name": "recipient_identity_id",
+                    "type": "[u8;16]"
+                },
+                {
+                    "name": "stream_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "ShareDeclinePayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
                     "name": "grant",
                     "type": "Vec<u8>"
                 },
@@ -2554,10 +2583,33 @@
                 {
                     "name": "recipient_id_d_pub",
                     "type": "[u8;32]"
+                },
+                {
+                    "name": "reseal",
+                    "type": "bool"
                 }
             ],
             "keeps_unknowns": true,
             "name": "ShareGrantOpPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "effective_at_ms",
+                    "type": "u64"
+                },
+                {
+                    "name": "recipient_identity_id",
+                    "type": "[u8;16]"
+                },
+                {
+                    "name": "stream_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "ShareRevokePayload",
             "shape": "record"
         },
         {

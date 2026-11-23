@@ -319,7 +319,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// entity, and a build that cannot read it parks it and only fails to
 /// re-seal the share, which a device without `ID_S_priv` cannot do either.
 /// Every v1..v31 payload shape is unchanged, so the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 32;
+///
+/// `33` adds the control families `ShareRevoke` and `ShareDecline` (#1325),
+/// which end a share, and the `reseal` flag on `ShareGrant`, absent when
+/// false, which marks a grant that carries a share forward rather than
+/// sharing anew. A v32 grant decodes as fresh, which every v32 grant made by
+/// `share_stream` is. A v32 build parks the two new families, so its own
+/// rotation still re-seals to a share they ended; no client shares yet. The
+/// floor does not move.
+pub const DOC_SCHEMA_V: u16 = 33;
 
 mod fingerprint;
 #[cfg(test)]

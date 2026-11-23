@@ -128,7 +128,7 @@ pub(crate) use self::rebuild::check::{
 pub use self::rebuild::RebuildReport;
 pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};
 pub use self::search::SearchReindex;
-pub use self::share_grant::StreamShare;
+pub use self::share_grant::{EndedShare, ShareEnd, StreamShare};
 pub use self::snapshot::{SnapshotApplied, StreamRecord, SNAPSHOT_FORMAT_V};
 
 /// Vault-meta op-log stream id: 16 zero bytes.

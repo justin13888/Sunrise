@@ -46,6 +46,11 @@
 //! grant and the recipient key a rotation re-seals the next epoch to
 //! (`docs/03-crypto/sharing-with-others.md`).
 //!
+//! [`ShareRevokePayload`] and [`ShareDeclinePayload`] arrive at
+//! `DOC_SCHEMA_V = 33`, with `ShareGrantOpPayload::reseal`: the account's
+//! record that a share ended, by the owner's revocation or the recipient's
+//! decline, and which grants only carry a share forward.
+//!
 //! These are **not** entities. They have no row, no LWW stamp and no
 //! materialization: `inner_op`'s `OpEffect::Control` variant exists so the
 //! compiler cannot route one into the entity materializer, where the `_ =>`
@@ -469,6 +474,60 @@ pub struct ShareGrantOpPayload {
     /// [`sunrise_crypto::MAX_SHARE_GRANT_BYTES`].
     #[serde(with = "serde_bytes")]
     pub grant: Vec<u8>,
+    /// This grant carries a share forward to a later epoch, as a rotation or
+    /// a backfill re-seals it, rather than sharing the Stream anew
+    /// (`DOC_SCHEMA_V = 33`). Absent on the wire when false, so a fresh
+    /// grant encodes as it did at 32. A re-seal never revives a share a
+    /// `ShareRevoke` or `ShareDecline` ended; only a fresh grant does.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub reseal: bool,
+    /// Fields this build does not know, kept byte for byte.
+    #[serde(flatten)]
+    pub unknown: sunrise_domain::Unknowns,
+}
+
+/// The owner's account ends one share: `stream_id` is no longer shared with
+/// `recipient_identity_id` (`docs/03-crypto/sharing-with-others.md`
+/// §Revoking access, `DOC_SCHEMA_V = 33`).
+///
+/// The op ends every grant of that recipient the sender's replica had logged
+/// before it. The emitter rotates the Stream key beside it, and that
+/// rotation's re-seal, and every later one, leaves the recipient out. Only a
+/// fresh `ShareGrant` logged after it shares the Stream with them again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShareRevokePayload {
+    /// The Stream no longer shared.
+    #[serde(with = "serde_bytes")]
+    pub stream_id: [u8; 16],
+    /// The recipient identity the share was sealed to.
+    #[serde(with = "serde_bytes")]
+    pub recipient_identity_id: [u8; 16],
+    /// When the owner revoked, on the emitting device's clock: the cutoff a
+    /// recipient discards later ops at.
+    pub effective_at_ms: u64,
+    /// Fields this build does not know, kept byte for byte.
+    #[serde(flatten)]
+    pub unknown: sunrise_domain::Unknowns,
+}
+
+/// The owner's account records that a recipient declined one share
+/// (`docs/03-crypto/sharing-with-others.md` §Granting access step 7,
+/// `DOC_SCHEMA_V = 33`).
+///
+/// It ends the share as a [`ShareRevokePayload`] does, with no rotation of
+/// its own: the recipient chose not to read. The recipient's decline reaches
+/// the owner out of band, as the grant reached the recipient; this op is the
+/// owner account's record of it, so every owner device stops re-sealing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShareDeclinePayload {
+    /// The Stream the recipient declined.
+    #[serde(with = "serde_bytes")]
+    pub stream_id: [u8; 16],
+    /// The recipient identity that declined.
+    #[serde(with = "serde_bytes")]
+    pub recipient_identity_id: [u8; 16],
+    /// When the decline was recorded, on the recording device's clock.
+    pub declined_at_ms: u64,
     /// Fields this build does not know, kept byte for byte.
     #[serde(flatten)]
     pub unknown: sunrise_domain::Unknowns,
@@ -549,6 +608,19 @@ sunrise_id::describe_value_types! {
             person: EntityRef;
             recipient_id_d_pub: [u8; 32];
             grant: Vec<u8>;
+            reseal: bool;
+            ..unknown
+        }
+        ShareRevokePayload {
+            stream_id: [u8; 16];
+            recipient_identity_id: [u8; 16];
+            effective_at_ms: u64;
+            ..unknown
+        }
+        ShareDeclinePayload {
+            stream_id: [u8; 16];
+            recipient_identity_id: [u8; 16];
+            declined_at_ms: u64;
             ..unknown
         }
         PatchPayload {
@@ -626,6 +698,8 @@ op_payloads! {
     DeviceRevokeWithdraw(DeviceRevokeWithdrawPayload),
     DeviceRevokeWithdrawByIdentity(DeviceRevokeWithdrawByIdentityPayload),
     ShareGrant(ShareGrantOpPayload),
+    ShareRevoke(ShareRevokePayload),
+    ShareDecline(ShareDeclinePayload),
 }
 
 #[cfg(test)]
@@ -747,6 +821,7 @@ mod tests {
                 person: EntityRef::new(sunrise_id::EntityKind::Person, [1u8; 16]),
                 recipient_id_d_pub: [2u8; 32],
                 grant: vec![3u8; 4],
+                reseal: true,
                 unknown: Unknowns::new(),
             },
             &[],
@@ -776,7 +851,43 @@ mod tests {
         );
     }
 
-    /// Every described record is reached by the wire test above.
+    /// The share families' records, beside the test above.
+    #[test]
+    fn share_payload_records_write_their_described_names() {
+        assert_wire_names(
+            "ShareGrantOpPayload",
+            &ShareGrantOpPayload {
+                person: EntityRef::new(sunrise_id::EntityKind::Person, [1u8; 16]),
+                recipient_id_d_pub: [2u8; 32],
+                grant: vec![3u8; 4],
+                reseal: false,
+                unknown: Unknowns::new(),
+            },
+            &["reseal"],
+        );
+        assert_wire_names(
+            "ShareRevokePayload",
+            &ShareRevokePayload {
+                stream_id: [1u8; 16],
+                recipient_identity_id: [2u8; 16],
+                effective_at_ms: 3,
+                unknown: Unknowns::new(),
+            },
+            &[],
+        );
+        assert_wire_names(
+            "ShareDeclinePayload",
+            &ShareDeclinePayload {
+                stream_id: [1u8; 16],
+                recipient_identity_id: [2u8; 16],
+                declined_at_ms: 3,
+                unknown: Unknowns::new(),
+            },
+            &[],
+        );
+    }
+
+    /// Every described record is reached by the wire tests above.
     #[test]
     fn every_described_payload_record_is_checked_on_the_wire() {
         let checked = [
@@ -791,6 +902,8 @@ mod tests {
             "VaultRequiresPayload",
             "DeviceFeaturesPayload",
             "ShareGrantOpPayload",
+            "ShareRevokePayload",
+            "ShareDeclinePayload",
             "PatchPayload",
             "GroupWire",
             "StreamDigestPayload",

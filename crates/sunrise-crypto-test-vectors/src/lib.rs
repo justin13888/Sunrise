@@ -342,6 +342,9 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// The 31 → 32 re-freeze (#1318, the `ShareGrant` op family) moved the same
 /// three regions and nothing else.
 ///
+/// The 32 → 33 re-freeze (#1325, the `ShareRevoke` and `ShareDecline` op
+/// families) moved the same three regions and nothing else.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -359,10 +362,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58401c",
-        "db3768c79f490a9d17957c70ace36c8bc6bdd58761a7e169e6c9244f4ab3",
-        "3aca0f75af1bb91514421adac74e0715e4a877924e11071690c9ba1c58bf",
-        "96110d0c18200d48ec0dc7290af1db0e",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584045",
+        "d93c0abe21f3e89f4b0cc179495192bc46bf5f1723c5d8f748ead40b726f",
+        "2cffd8556f02f23cfd47439901cc858b07ab54cf8bc0589c0a5b4487537f",
+        "167b050c18210d48ddc794727fc36401",
     ));
 }
 
@@ -465,6 +468,10 @@ pub mod signed_only_envelope {
 /// The 31 → 32 re-freeze (#1318, the `ShareGrant` op family) moved the same
 /// four regions; the ciphertext at `[94..117]` is again untouched.
 ///
+/// The 32 → 33 re-freeze (#1325, the `ShareRevoke` and `ShareDecline` op
+/// families) moved the same four regions; the ciphertext at `[94..117]` is
+/// again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -484,11 +491,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb83cabe5",
-        "073bab74d42e40f37887f191f20b58402707e9d951a92614d26c78268614",
-        "4571b2c7a0afc6f07c83289b6f3e37e4d27bfe5d3498ae0c01e40a61c80a",
-        "d989ff887c3d0d9a2bb0780303928db6df3ade0b0c18200d48ec0dc7290a",
-        "f1db0e",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8b35eb9",
+        "47fc400039cda5c8ff1b4d57820b584025a720bc9b0b2e771bf051fc09a2",
+        "c873f620be64d48a6728e92ba3d09bc39aff33c8f907aea8e26605c218e0",
+        "ae2ea64bb4881c1abb216e72839337db3d2c88010c18210d48ddc794727f",
+        "c36401",
     ));
 }
 
