@@ -20,7 +20,7 @@ fn join(f: &mut fmt::Formatter<'_>, items: &[Expr], sep: &str) -> fmt::Result {
 }
 
 /// A name as one item of a comma list: bare when it can be, else quoted.
-fn list_name(name: &str) -> String {
+pub(super) fn list_name(name: &str) -> String {
     if name
         .chars()
         .any(|c| c.is_whitespace() || matches!(c, '(' | ')' | ','))
@@ -32,7 +32,7 @@ fn list_name(name: &str) -> String {
 }
 
 /// A name after `#` or `@`, where a comma is part of the name.
-fn shorthand_name(name: &str) -> String {
+pub(super) fn shorthand_name(name: &str) -> String {
     if name
         .chars()
         .any(|c| c.is_whitespace() || matches!(c, '(' | ')'))

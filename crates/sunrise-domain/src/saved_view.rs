@@ -22,16 +22,21 @@
 //! ([`ViewFilter::is_complete`]): showing more than the newer build would is
 //! better than silently showing less.
 //!
+//! # The text part
+//!
+//! [`ViewFilter::text`] of a Search view is a query in the search grammar
+//! (`docs/08-features/search.md`), saved in its canonical text and run by
+//! the core's search on every read, so a saved search means the same thing
+//! on every device. For every other view it is a plain case-insensitive
+//! match on the title.
+//!
 //! # Not built yet
 //!
 //! * `TODO(#339)`: a place predicate. Places are an entity now (#1128), but
 //!   a filter cannot name one yet.
-//! * `TODO(#345)`: [`ViewFilter::text`] is the search grammar for a Search
-//!   view, run by the core's search; for every other view it is a plain
-//!   case-insensitive match on the title.
 //!
-//! Each arrives as a new named part of [`ViewFilter`], which an older build
-//! keeps as an unknown field, so none of them needs a new entity shape.
+//! It arrives as a new named part of [`ViewFilter`], which an older build
+//! keeps as an unknown field, so it needs no new entity shape.
 
 use crate::common::Energy;
 use crate::time::SunriseTime;

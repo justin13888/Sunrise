@@ -5,7 +5,9 @@
 //! re-tokenizes.
 
 use sunrise_core::{SearchGroup, SearchHit, SearchNotice, SearchResults};
-use sunrise_domain::search::{Highlighted, SearchKind};
+use sunrise_domain::search::{
+    complete, Completion, CompletionKind, CompletionNames, Highlighted, SearchKind,
+};
 use sunrise_id::EntityRef;
 
 /// A kind of search hit. The declaration order is the order groups come in.
@@ -198,4 +200,73 @@ impl From<sunrise_core::SearchReindex> for SearchReindexItem {
             finished: r.finished,
         }
     }
+}
+
+/// What an autocomplete suggestion is. A client describes it by this and
+/// by [`SearchCompletionItem::key`] and [`SearchCompletionItem::value`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SearchCompletionKindItem {
+    /// An operator key (`is:`, `due:`, …).
+    Key,
+    /// A value of an operator (`late` after `is:`, `today` after `due:`).
+    Value,
+    /// A stream's name, after `#` or `stream:`.
+    Stream,
+    /// A context's name, after `@` or `context:`.
+    Context,
+}
+
+/// One way to finish the word at the end of the search field. See
+/// [`sunrise_domain::search::complete`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SearchCompletionItem {
+    /// The whole field after accepting it.
+    pub text: String,
+    /// The operator, value or name as it will read in the field.
+    pub label: String,
+    /// What it is.
+    pub kind: SearchCompletionKindItem,
+    /// The operator it belongs to: the key itself for a key, the operator
+    /// for a value (`date` for every date operator), and `stream` or
+    /// `context` for a name.
+    pub key: String,
+    /// The value's keyword, for a value.
+    pub value: Option<String>,
+}
+
+impl From<Completion> for SearchCompletionItem {
+    fn from(c: Completion) -> Self {
+        let (kind, key, value) = match c.kind {
+            CompletionKind::Key(k) => (SearchCompletionKindItem::Key, k, None),
+            CompletionKind::Value { key, value } => {
+                (SearchCompletionKindItem::Value, key, Some(value.to_owned()))
+            }
+            CompletionKind::Stream => (SearchCompletionKindItem::Stream, "stream", None),
+            CompletionKind::Context => (SearchCompletionKindItem::Context, "context", None),
+        };
+        Self {
+            text: c.text,
+            label: c.label,
+            kind,
+            key: key.to_owned(),
+            value,
+        }
+    }
+}
+
+/// The ways to finish the word at the end of `text`, best first: operator
+/// keys, their values, and the stream and context names given. Pure and
+/// cheap, so a field may ask on every keystroke; the names are the caller's,
+/// read once with the list it already shows.
+#[uniffi::export]
+#[must_use]
+pub fn search_completions(
+    text: String,
+    streams: Vec<String>,
+    contexts: Vec<String>,
+) -> Vec<SearchCompletionItem> {
+    complete(&text, &CompletionNames { streams, contexts })
+        .into_iter()
+        .map(SearchCompletionItem::from)
+        .collect()
 }
