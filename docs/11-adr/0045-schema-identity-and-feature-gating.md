@@ -2,6 +2,12 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0075](./0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md)
+§9, decided and not built — §4 gains a parking reason, `editor_authority`,
+and a replay trigger: an attestation, a cut or a writer cert landing in a
+shared Stream retries the ops parked there for that reason. An op that
+verifies is still applied or parked.
+
 **Amends** [ADR-0009](./0009-protocol-versioning-spec.md). ADR-0009 names the
 versioned surfaces and their refusal rules. This record keeps the surfaces and
 the integers. It adds:

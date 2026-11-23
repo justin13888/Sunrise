@@ -14,7 +14,8 @@
 //!     1: bstr .size 16,  ; stream_id
 //!     2: uint,           ; epoch
 //!     3: bstr .size 16,  ; recipient_identity_id
-//!     4: tstr,           ; role: "viewer" (the only role this build grants)
+//!     4: tstr,           ; role: "viewer" (the only role this build grants;
+//!                        ;   "editor" is decided by ADR-0075 and refused)
 //!     5: uint?,          ; expires_at_ms
 //!     6: bstr,           ; hpke_ct
 //!     7: bstr .size 64,  ; identity_sig
@@ -87,8 +88,13 @@ pub const MAX_SHARE_GRANT_BYTES: usize = 8 * 1024;
 /// The role a grant confers. This build grants only read access.
 ///
 /// The role is a text field on the wire, so an `editor` grant is a value a
-/// later build can add without a new field; this one refuses it rather than
-/// reading it as something it is not.
+/// later build can add without a new field. ADR-0075
+/// (`docs/11-adr/0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md`)
+/// fixes what an editor may write and makes every replica that applies the
+/// Stream enforce it. None of that boundary is built, so this build refuses
+/// `editor` ([`ShareGrantError::UnsupportedRole`]) rather than reading it as
+/// something it is not. It must not accept `editor` until all of that ADR's
+/// §8 is built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShareRole {
     /// Reads the Stream; every op the holder emits into it is dropped.
@@ -331,9 +337,12 @@ pub struct SharedEpoch<'a> {
 ///
 /// A recipient is left out when its identity is in `revoked` or its grant has
 /// expired at `now_ms`; every other one receives a grant at the new epoch
-/// carrying its unchanged expiry. The grants come back ordered by recipient
-/// identity, so one rotation's output does not depend on the order its
-/// recipients were listed in.
+/// carrying its unchanged expiry. Every grant it seals is a viewer grant,
+/// because a viewer is the only recipient a share can have here. Once
+/// `editor` is built, [`ShareRecipient`] carries each recipient's role and the
+/// re-seal keeps it unchanged (ADR-0075 §7). The grants come back ordered by
+/// recipient identity, so one rotation's output does not depend on the order
+/// its recipients were listed in.
 ///
 /// # Errors
 /// [`ShareGrantError::DuplicateRecipient`] where one identity is listed twice,

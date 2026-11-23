@@ -195,6 +195,8 @@ fn a_re_signed_ciphertext_does_not_open_under_the_impostor() {
     assert!(open(&g, &alice, &bob, 0).is_ok());
 }
 
+/// `editor` is decided (ADR-0075) but its boundary is not built, so it must
+/// stay refused here until that ADR's §8 is.
 #[test]
 fn a_role_this_build_does_not_grant_is_refused() {
     let (alice, bob) = (identity(1), identity(2));

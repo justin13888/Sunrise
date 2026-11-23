@@ -8,6 +8,13 @@ was proposed with are answered in §Resolved questions, and §4 and §5 are
 amended where the answers changed them. Fields 14 and 15, the three
 `derive_key` contexts and the `StreamDigest` shape are now contracts.
 
+**Amended by:** [ADR-0075](./0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md)
+§9, decided and not built — for a fork by a revoked editor's device at a
+position its revocation cut covers, and for no other fork, §4's "the first is
+the one applied" gives way to the cut: the half the cut names is applied,
+whichever arrived first, and the other moves into `fork_evidence`. Both
+halves are kept and the fork is surfaced as before. §3 is unchanged.
+
 **Relates to:**
 
 - [ADR-0044](./0044-per-field-ops.md) (accepted), which makes convergence
