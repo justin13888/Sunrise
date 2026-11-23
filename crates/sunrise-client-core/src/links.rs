@@ -72,7 +72,7 @@ const MAX_SHARE_TOKEN_CHARS: usize = (SHARE_TOKEN_HEAD + MAX_SHARE_GRANT_BYTES).
 ///   (ADR-0074 §1). It is a credential, so [`Debug`] never prints it.
 /// * `granter_id_s_pub` is the key the grant's `identity_sig` verifies under,
 ///   and what the recipient compares with the owner's fingerprint out of band
-///   (step 2). The grant cannot name it: the relay offers no lookup from an
+///   (step 5). The grant cannot name it: the relay offers no lookup from an
 ///   identity to its keys.
 /// * `grant` is the canonical `ShareGrantPayload` `Engine::share_stream`
 ///   returns, decoded here and refused unless it is a viewer grant within its

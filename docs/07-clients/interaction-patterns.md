@@ -334,7 +334,7 @@ A link naming an entity that does not exist resolves to the nearest sensible
 screen rather than an error dialog, because a notification tapped after its task
 was deleted elsewhere is an ordinary event, not a failure.
 
-##### `sunrise://share/<token>` — parsed, not routed
+### `sunrise://share/<token>` — parsed, not routed
 
 The link an owner hands the person a Stream is shared with
 ([`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
@@ -364,6 +364,6 @@ recipient holds.
 > `share` and `accept`, and the route are
 > [#1333](https://github.com/justin13888/Sunrise/issues/1333).
 
- Conflict-of-shortcut handling
+## Conflict-of-shortcut handling
 
 Where platform-standard shortcuts disagree (e.g. `Cmd+T` is "new tab" on a browser), the web app yields and uses `Cmd+Shift+T` for new task; the desktop app uses `Cmd+N`. No global "consistent across all platforms" mandate that fights the OS.
