@@ -241,33 +241,98 @@ pub(super) async fn a_reinstatement_signed_before_the_revoke_changes_nothing(
         Ok(Reinstatement::Reinstated(2))
     ));
 
-    // All or nothing: rows revoked under different dates (the device
-    // registered a third row after the first two were revoked, and that one
-    // was revoked later) are not split by a reinstatement signed between them.
-    let t3 = again + 2_000;
-    let t4 = t3 + 2_000;
+    // Rows of one vault id revoked under different dates by one revoker are no
+    // longer reachable through registration: a third row registered after the
+    // first two were revoked is refused (#1300). The store still reinstates
+    // all or nothing, for rows that predate that refusal.
+}
+
+/// A revoked device cannot register its way back (#1300): not with its key,
+/// not with a fresh key under its vault id, and not with its key under a fresh
+/// vault id. The refusal writes nothing, reaches no other account, and ends
+/// once the revoker reinstates the device.
+pub(super) async fn a_revoked_device_cannot_register_again(store: &dyn MetadataStore) {
+    let alice = store
+        .resolve_account(&subject("reregister-alice"), true, NOW)
+        .await
+        .unwrap();
+    let bob = store
+        .resolve_account(&subject("reregister-bob"), true, NOW)
+        .await
+        .unwrap();
+    let account = alice.account_id.as_str();
+    let laptop = "key-laptop";
+    let phone = device("phone", PHONE);
+    let first = store.register_device(account, &phone, NOW).await.unwrap();
     store
-        .revoke_devices_by_vault_id(account, LAPTOP, Some(by(laptop, t3)), NOW + 3)
+        .register_device(account, &device("tablet", TABLET), NOW)
         .await
         .unwrap();
     store
-        .register_device(account, &device("laptop", LAPTOP), NOW)
+        .revoke_devices_by_vault_id(account, PHONE, Some(by(laptop, SIGNED)), NOW + 1)
         .await
         .unwrap();
-    store
-        .revoke_devices_by_vault_id(account, LAPTOP, Some(by(laptop, t4)), NOW + 4)
-        .await
-        .unwrap();
-    assert!(matches!(
-        store
-            .reinstate_devices_by_vault_id(account, LAPTOP, by(laptop, t3 + 1_000))
-            .await,
-        Ok(Reinstatement::PredatesRevocation)
-    ));
-    for id in [&first.device_id, &second.device_id] {
+    let before = store.list_devices(account).await.unwrap();
+
+    let fresh_key = NewDevice {
+        device_pub_s: "key-phone-fresh".to_owned(),
+        ..phone.clone()
+    };
+    let fresh_vault_id = NewDevice {
+        vault_device_id: Some(LAPTOP.to_owned()),
+        ..phone.clone()
+    };
+    let no_vault_id = NewDevice {
+        vault_device_id: None,
+        ..phone.clone()
+    };
+    for (what, attempt) in [
+        ("its key and vault id", &phone),
+        ("a fresh key under its vault id", &fresh_key),
+        ("its key under a fresh vault id", &fresh_vault_id),
+        ("its key and no vault id", &no_vault_id),
+    ] {
         assert!(
-            store.active_device(account, id).await.unwrap().is_none(),
-            "a reinstatement signed between two revokes reinstated neither"
+            matches!(
+                store.register_device(account, attempt, NOW + 2).await,
+                Err(MetadataError::DeviceRevoked)
+            ),
+            "a revoked device registering {what} is refused"
         );
     }
+    assert_eq!(
+        store.list_devices(account).await.unwrap(),
+        before,
+        "a refused registration wrote nothing"
+    );
+
+    // An active device registering again is still a second row, and another
+    // account holding the same key is not this account's revoked device.
+    store
+        .register_device(account, &device("tablet", TABLET), NOW + 2)
+        .await
+        .unwrap();
+    store
+        .register_device(&bob.account_id, &phone, NOW + 2)
+        .await
+        .unwrap();
+
+    // The revoker's reinstatement leaves no revoked row behind, and the device
+    // registers again.
+    assert!(matches!(
+        store
+            .reinstate_devices_by_vault_id(account, PHONE, by(laptop, LATER))
+            .await,
+        Ok(Reinstatement::Reinstated(1))
+    ));
+    let again = store
+        .register_device(account, &phone, NOW + 3)
+        .await
+        .unwrap();
+    assert_ne!(again.device_id, first.device_id);
+    assert!(store
+        .active_device(account, &again.device_id)
+        .await
+        .unwrap()
+        .is_some());
 }

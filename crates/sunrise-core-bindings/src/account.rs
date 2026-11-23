@@ -232,7 +232,11 @@ impl SunriseCore {
     ///
     /// Also the path a founding device takes when its id was never recorded:
     /// the relay treats a second registration of the same key as a second row
-    /// rather than an error, so this cannot fail for having run before.
+    /// rather than an error, so this cannot fail for having run before. The
+    /// exception is a revoked device: the relay refuses a key or vault device
+    /// id that a revoked row of the account carries, with `403
+    /// DEVICE_REVOKED_REGISTER`
+    /// ([#1300](https://github.com/justin13888/Sunrise/issues/1300)).
     ///
     /// The returned id is the caller's to record, for the reason
     /// [`dto::AccountBootstrap::device_id`] gives.

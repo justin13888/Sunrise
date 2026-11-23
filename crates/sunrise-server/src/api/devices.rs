@@ -187,6 +187,14 @@ pub async fn list(
 /// Bootstrap route: a device cannot sign before it exists, so an absent binding
 /// is accepted here even where the server demands one elsewhere. A binding that
 /// *is* supplied is still verified in full.
+///
+/// Because a bearer alone reaches it, a key or vault device id that a revoked
+/// device of this account carries is refused with `403
+/// DEVICE_REVOKED_REGISTER`: otherwise a revoked device still holding a bearer
+/// would register its own key again and sign under the fresh row. Registering
+/// the same key again while no row carrying it is revoked is still a second
+/// row rather than an error. The way back for a revoked device is its
+/// revoker's reinstatement (ADR-0056 §5), or pairing again under new keys.
 #[kynos::post("/api/v1/devices", operation_id = "registerDevice")]
 pub async fn register(
     Inject(state): Inject<ServerState>,

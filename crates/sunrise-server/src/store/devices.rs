@@ -148,6 +148,26 @@ pub struct NewDevice {
 
 impl Store {
     /// Register a device under an account.
+    ///
+    /// A device registering again with the same key is a second row rather
+    /// than an error, which is what lets a client run the bootstrap on every
+    /// start — **unless a revoked row of this account carries the same
+    /// `device_pub_s`, or the same `vault_device_id`**. That is
+    /// [`StoreError::DeviceRevoked`], and nothing is written (#1300).
+    ///
+    /// The route rides the bootstrap exemption and asks only for a bearer, so
+    /// without the check a revoked device still holding one registers its key
+    /// again and signs under the fresh active row, and the revocation no
+    /// longer holds at the relay. Either field is enough to refuse: the key is
+    /// what the relay verifies, and the vault id is the name every
+    /// revocation and reinstatement is addressed by, so a fresh key under a
+    /// revoked vault id is the same device trying again. The way back is the
+    /// revoker's reinstatement ([`Self::reinstate_devices_by_vault_id`],
+    /// ADR-0056 §5), which leaves no revoked row behind, or pairing again,
+    /// which mints a new key and a new vault id.
+    ///
+    /// The check and the insert share one transaction on the one connection,
+    /// so no revoke lands between them.
     pub fn register_device(
         &self,
         account_id: &str,
@@ -155,8 +175,21 @@ impl Store {
         now_ms: u64,
     ) -> Result<Device, StoreError> {
         let device_id = mint_id(now_ms);
-        let conn = self.tx("store.register_device");
-        conn.execute(
+        let mut conn = self.tx("store.register_device");
+        let tx = conn.transaction()?;
+        // `vault_device_id = NULL` is never true, so a registration without
+        // one is checked on its key alone.
+        let revoked: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM devices \
+             WHERE account_id = ?1 AND revoked = 1 \
+             AND (device_pub_s = ?2 OR vault_device_id = ?3))",
+            params![account_id, new.device_pub_s, new.vault_device_id],
+            |r| r.get(0),
+        )?;
+        if revoked {
+            return Err(StoreError::DeviceRevoked);
+        }
+        tx.execute(
             "INSERT INTO devices (device_id, account_id, device_pub_s, device_pub_d, device_cert, \
              vault_device_id, nickname, platform, app_version, created_at_ms, last_seen_at_ms, \
              revoked) \
@@ -174,6 +207,7 @@ impl Store {
                 i64::try_from(now_ms).unwrap_or(i64::MAX),
             ],
         )?;
+        tx.commit()?;
         Ok(Device {
             device_id,
             account_id: account_id.to_string(),

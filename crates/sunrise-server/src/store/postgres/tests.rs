@@ -340,6 +340,173 @@ async fn reading_an_expired_session_spares_one_refreshed_since() {
     assert_eq!(sessions.count().await.unwrap(), 1, "the expired row went");
 }
 
+/// A vault device id the register-versus-revoke races below share.
+const RACED_VAULT_ID: &str = "01J8ZQ7X9K3M5N7P9R1T3V5W7Y";
+
+fn raced_device() -> crate::store::NewDevice {
+    crate::store::NewDevice {
+        device_pub_s: "key-raced".to_owned(),
+        device_pub_d: None,
+        device_cert: None,
+        vault_device_id: Some(RACED_VAULT_ID.to_owned()),
+        nickname: "raced".to_owned(),
+        platform: "linux".to_owned(),
+        app_version: None,
+    }
+}
+
+/// Whether `task` ends up waiting on a lock the backend `holder` holds, or
+/// `false` once it finished without ever waiting. A store call that does not
+/// take the account lock finishes while the holder is still open, which is
+/// what the two races below catch.
+async fn waits_on<T>(store: &PgStore, holder: i32, task: &tokio::task::JoinHandle<T>) -> bool {
+    loop {
+        if task.is_finished() {
+            return false;
+        }
+        let waiting: i64 = store
+            .client()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+                &[&holder],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if waiting > 0 {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// A registration that starts while a revoke of its vault id is in flight
+/// waits for it and is refused, rather than reading the rows before the revoke
+/// commits and inserting an active row beside the revoked ones (#1300). The
+/// holder plays the revoke between its account lock and its commit.
+#[tokio::test]
+async fn a_registration_beside_a_revoke_waits_and_is_refused() {
+    let Some(url) = url() else { return };
+    let store = store(&url).await;
+    let account = store
+        .resolve_account(&Subject::new("iss", "race-register"), true, 1)
+        .await
+        .unwrap()
+        .account_id;
+    store
+        .register_device(&account, &raced_device(), 2)
+        .await
+        .unwrap();
+
+    let mut holder = store.client().await.unwrap();
+    let revoke = holder.transaction().await.unwrap();
+    let pid: i32 = revoke
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    super::lifecycle::lock_account(&revoke, &account)
+        .await
+        .unwrap();
+    revoke
+        .execute(
+            "UPDATE devices SET revoked = TRUE, revoked_at_ms = 3
+             WHERE account_id = $1 AND vault_device_id = $2",
+            &[&account, &RACED_VAULT_ID],
+        )
+        .await
+        .unwrap();
+
+    let register = tokio::spawn({
+        let store = store.clone();
+        let account = account.clone();
+        async move { store.register_device(&account, &raced_device(), 4).await }
+    });
+    let waited = waits_on(&store, pid, &register).await;
+    revoke.commit().await.unwrap();
+    let registered = register.await.unwrap();
+    assert!(
+        waited,
+        "the registration waits for the revoke's account lock"
+    );
+    assert!(
+        matches!(registered, Err(crate::store::MetadataError::DeviceRevoked)),
+        "the registration sees the committed revoke: {registered:?}"
+    );
+}
+
+/// A revoke by vault id that starts while a registration of that id is in
+/// flight waits for it and revokes the new row too, rather than revoking only
+/// the rows its snapshot holds and leaving the new one active. The holder
+/// plays the registration between its account lock and its commit.
+#[tokio::test]
+async fn a_revoke_beside_a_registration_waits_and_revokes_it_too() {
+    let Some(url) = url() else { return };
+    let store = store(&url).await;
+    let account = store
+        .resolve_account(&Subject::new("iss", "race-revoke"), true, 1)
+        .await
+        .unwrap()
+        .account_id;
+    store
+        .register_device(&account, &raced_device(), 2)
+        .await
+        .unwrap();
+
+    let mut holder = store.client().await.unwrap();
+    let register = holder.transaction().await.unwrap();
+    let pid: i32 = register
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    super::lifecycle::lock_account(&register, &account)
+        .await
+        .unwrap();
+    register
+        .execute(
+            "INSERT INTO devices (device_id, account_id, device_pub_s, vault_device_id,
+                     nickname, platform, created_at_ms, last_seen_at_ms, revoked)
+                 VALUES ('dev-raced', $1, 'key-raced', $2, 'raced', 'linux', 3, 3, FALSE)",
+            &[&account, &RACED_VAULT_ID],
+        )
+        .await
+        .unwrap();
+
+    let revoke = tokio::spawn({
+        let store = store.clone();
+        let account = account.clone();
+        async move {
+            let by = crate::store::SignedBy {
+                key: "key-revoker",
+                at_ms: 4,
+            };
+            store
+                .revoke_devices_by_vault_id(&account, RACED_VAULT_ID, Some(by), 4)
+                .await
+        }
+    });
+    let waited = waits_on(&store, pid, &revoke).await;
+    register.commit().await.unwrap();
+    let revoked = revoke.await.unwrap().unwrap();
+    assert!(
+        waited,
+        "the revoke waits for the registration's account lock"
+    );
+    assert_eq!(
+        revoked, 2,
+        "the revoke reaches the row registered beside it"
+    );
+    assert!(store
+        .list_devices(&account)
+        .await
+        .unwrap()
+        .iter()
+        .all(|d| d.revoked));
+}
+
 /// Erasing an account while its channels are being appended to completes on
 /// both sides: the erasure holds the account lock every append shares, first.
 #[tokio::test]
