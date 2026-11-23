@@ -49,8 +49,14 @@ fn skipped(reason: &str, stream_id: &[u8; 16], epoch: u32) {
 }
 
 impl Engine {
-    /// Whether `stream_id` has a share in force on this replica. Cheap where
-    /// the account has never shared anything.
+    /// Whether `stream_id` has a share in force on this replica.
+    ///
+    /// Not cheap, and every write into a Stream whose log holds no cert of
+    /// this device under the live epoch asks it: `ops` has no index on
+    /// `inner_kind`, so the `EXISTS` below walks every vault-meta op, and
+    /// once any share exists the whole share fold runs, grant signatures
+    /// included. An index on `ops (stream_id, inner_kind)` is the fix; it is
+    /// a storage migration of its own (#1339).
     pub(super) fn has_share_in_force(
         &self,
         conn: &Connection,
