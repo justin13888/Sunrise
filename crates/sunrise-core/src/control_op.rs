@@ -742,6 +742,16 @@ mod tests {
             &[],
         );
         assert_wire_names(
+            "ShareGrantOpPayload",
+            &ShareGrantOpPayload {
+                person: EntityRef::new(sunrise_id::EntityKind::Person, [1u8; 16]),
+                recipient_id_d_pub: [2u8; 32],
+                grant: vec![3u8; 4],
+                unknown: Unknowns::new(),
+            },
+            &[],
+        );
+        assert_wire_names(
             "PatchPayload",
             &PatchPayload {
                 target: EntityRef::new(sunrise_id::EntityKind::Task, [1u8; 16]),
@@ -780,6 +790,7 @@ mod tests {
             "KeyShare",
             "VaultRequiresPayload",
             "DeviceFeaturesPayload",
+            "ShareGrantOpPayload",
             "PatchPayload",
             "GroupWire",
             "StreamDigestPayload",
