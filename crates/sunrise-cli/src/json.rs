@@ -369,6 +369,48 @@ pub fn day_schedule(day: &sunrise_core::PlannerDay, reader: &TimeZone, lead_s: u
     })
 }
 
+/// `shift status`: the shift in force and what it has gathered so far.
+///
+/// `{shift, away}`: `shift` is `{id, name, starts_ms, ends_ms, zone, place,
+/// primary_streams, primary_contexts}` (`ends_ms`, `zone` and `place` `null`
+/// when unset), `null` when no shift is in force; `away` is `{window:
+/// {start_ms, end_ms}, missed: [{routine, key, at_ms}], deadlines_passed,
+/// captured}`, the last two arrays of task ids, `null` with no shift.
+#[must_use]
+pub fn shift_status(
+    shift: Option<&sunrise_domain::Shift>,
+    away: Option<&sunrise_domain::AwaySummary>,
+) -> Value {
+    let shift = shift.map(|s| {
+        json!({
+            "id": s.id.to_str(),
+            "name": s.name,
+            "starts_ms": s.starts_at.as_millisecond(),
+            "ends_ms": s.ends_at.map(jiff::Timestamp::as_millisecond),
+            "zone": s.zone,
+            "place": s.place.map(|p| p.to_str()),
+            "primary_streams": ids(&s.primary_streams),
+            "primary_contexts": ids(&s.primary_contexts),
+        })
+    });
+    let away = away.map(|a| {
+        json!({
+            "window": a.window.map(|(start, end)| json!({
+                "start_ms": start.as_millisecond(),
+                "end_ms": end.as_millisecond(),
+            })),
+            "missed": a.missed.iter().map(|m| json!({
+                "routine": m.routine.to_str(),
+                "key": m.key,
+                "at_ms": m.at.as_millisecond(),
+            })).collect::<Vec<_>>(),
+            "deadlines_passed": ids(&a.deadlines_passed),
+            "captured": ids(&a.captured),
+        })
+    });
+    json!({ "shift": shift, "away": away })
+}
+
 /// Print `v` as one line on stdout: the whole of a `--json` command's output.
 #[allow(clippy::print_stdout)]
 pub fn print(v: &Value) {
@@ -445,6 +487,52 @@ mod tests {
         assert_eq!(v["late_acknowledged_at_ms"], Value::Null);
         assert_eq!(v["routine"], Value::Null);
         assert_eq!(v["hard_constraint_violated"], false);
+    }
+
+    #[test]
+    fn a_shift_status_has_the_documented_fields() {
+        let at = |ms| jiff::Timestamp::from_millisecond(ms).unwrap();
+        let routine = EntityRef::new(sunrise_id::EntityKind::Routine, [2; 16]);
+        let shift = sunrise_domain::Shift {
+            id: EntityRef::new(sunrise_id::EntityKind::Shift, [3; 16]),
+            created_at: at(0),
+            updated_at: at(0),
+            name: "Travel: Tokyo".into(),
+            starts_at: at(1_000),
+            ends_at: None,
+            zone: Some("Asia/Tokyo".into()),
+            place: None,
+            primary_streams: std::collections::BTreeSet::new(),
+            primary_contexts: std::collections::BTreeSet::new(),
+            deleted: false,
+            unknown: sunrise_domain::Unknowns::new(),
+        };
+        let away = sunrise_domain::AwaySummary {
+            window: Some((at(1_000), at(5_000))),
+            missed: vec![sunrise_domain::MissedOccurrence {
+                routine,
+                key: "2026-11-20T09:00".into(),
+                at: at(2_000),
+            }],
+            deadlines_passed: Vec::new(),
+            captured: Vec::new(),
+        };
+        let v = shift_status(Some(&shift), Some(&away));
+        assert_eq!(v["shift"]["starts_ms"], 1_000);
+        assert_eq!(v["shift"]["ends_ms"], Value::Null);
+        assert_eq!(v["shift"]["place"], Value::Null);
+        assert_eq!(
+            v["away"]["window"],
+            json!({"start_ms": 1_000, "end_ms": 5_000})
+        );
+        assert_eq!(
+            v["away"]["missed"],
+            json!([{"routine": routine.to_str(), "key": "2026-11-20T09:00", "at_ms": 2_000}])
+        );
+        assert_eq!(
+            shift_status(None, None),
+            json!({"shift": null, "away": null})
+        );
     }
 
     /// A task with every field at its empty value.

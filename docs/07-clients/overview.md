@@ -131,6 +131,7 @@ since_ms}`: `state` one of `late_hard`, `late_soft`, `stale`, `on_track`, and
 | `streams` | array of `{id, name, color, open_tasks, archived, paused, sort_order}` |
 | `contexts` | array of `{id, name, description, tasks, archived}` |
 | `routines` | array of `{id, title, rule, next_ms, paused, streak}` |
+| `shift status` | `{shift, away}`: `shift` the context shift in force ([ADR-0073](../11-adr/0073-context-shift.md)), `{id, name, starts_ms, ends_ms, zone, place, primary_streams, primary_contexts}` with `ends_ms`, `zone` and `place` `null` when unset and the focus lists arrays of stream and context ids, or `null` when none is in force; `away` what it has gathered so far (ADR-0073 §6), `{window: {start_ms, end_ms}, missed: [{routine, key, at_ms}], deadlines_passed, captured}` with `deadlines_passed` and `captured` arrays of task ids, or `null` with no shift |
 | `blocks [day\|week]` | array of `{id, title, stream, starts_at, ends_at, tasks}` |
 | `devices` | array of `{id, nickname, platform, this_device, revoked, read_bounded, current, admitted_after_revocation, revoked_by_authority, withdrawable}` |
 | `identity [status]` | `{account, current, rotations, this_device_is_current, holds_recovery_key, can_sponsor}` |
