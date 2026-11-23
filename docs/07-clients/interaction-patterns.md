@@ -107,15 +107,18 @@ they cannot honour.
 
 Android and Web are omitted; see [`parity-matrix.md`](./parity-matrix.md).
 The iOS column is not a second implementation: every modifier below sits in a
-shared file with no platform fork but one: the grip a block is dragged onto a
-task by is the Mac's alone. Three things still differ. The gesture is a
-long-press drag where the Mac has a click-drag. Two cells split outright —
+shared file with two platform forks: the grip a block is dragged onto a
+task by is the Mac's alone, and *Task → Task (reorder)* is a row drop on the
+Mac but the list's own `onMove` on iOS. Four things still differ. The gesture
+is a long-press drag where the Mac has a click-drag. Reorder takes a different
+route to the same `Task.sort_order` write, per the section below. Two cells
+split outright —
 *Task → Calendar block* and *Calendar block → Task* are each a **Yes** on
 macOS and a **No** on iOS — which is not about the gesture at all, but about
 which surfaces the shell can put in front of a user at once. And one is
 narrowed rather than lost: *File → Task* is a plain **Yes** on the Mac and
 iPad-only on iOS, because dragging a file in from another app needs two apps
-on screen. The gesture is the whole of the first difference; the other two
+on screen. The gesture is the whole of the first difference; the others
 are set out below.
 
 | From → To | macOS | iOS | CLI |
