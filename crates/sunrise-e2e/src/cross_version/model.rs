@@ -12,7 +12,11 @@
 //!   every replica has seen every earlier write;
 //! - a field's expected value is the last value it was given in the last epoch
 //!   that wrote it, and when more than one writer wrote it in that epoch, any
-//!   of their last values is acceptable.
+//!   of their last values is acceptable;
+//! - a newer-build field write is a whole `Task`, but the harness stamps it after
+//!   everything the settle before it saw and before every write issued after
+//!   it, so its other fields only repeat what that settle left, and it counts
+//!   as a write of the one field it changes (#1327).
 //!
 //! The control run (`HEAD` against `HEAD`) is what shows the reference is the
 //! one `HEAD` produces: it may show no violation at all. Its devices write
