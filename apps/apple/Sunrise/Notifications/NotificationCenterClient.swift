@@ -17,6 +17,9 @@ protocol NotificationCenterClient: Sendable {
     /// Ask. Only meaningful once; afterwards the system answers from its own
     /// record without showing anything.
     func requestAuthorization() async -> NotificationAuthorization
+    /// Whether time-sensitive requests are delivered as such, re-read for the
+    /// same reason as ``authorization()``.
+    func timeSensitiveDelivery() async -> TimeSensitiveDelivery
     /// Install the action buttons. Idempotent, and cheap enough to repeat.
     func registerCategories() async
     /// Route button presses and body taps back to the app.
@@ -56,6 +59,10 @@ struct SystemNotificationCenter: NotificationCenterClient {
             return .unavailable(error.localizedDescription)
         }
         return await authorization()
+    }
+
+    func timeSensitiveDelivery() async -> TimeSensitiveDelivery {
+        TimeSensitiveDelivery(await center.notificationSettings().timeSensitiveSetting)
     }
 
     func registerCategories() async {

@@ -188,6 +188,39 @@
         }
       }
     },
+    "apple.account.notification_kinds.not_now": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not Now"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.open_focus_settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Focus Settings…"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.open_notification_settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Notification Settings…"
+          }
+        }
+      }
+    },
     "apple.account.notification_kinds.place_arrival": {
       "extractionState": "manual",
       "localizations": {
@@ -232,6 +265,28 @@
         }
       }
     },
+    "apple.account.notification_kinds.sleep_focus_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wind-down reaches you as you wind down, which is often after a Sleep Focus has started. A Sleep Focus holds it unless Sunrise is one of that Focus's allowed apps, and only you can add it there."
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.sleep_focus_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Let wind-down through Sleep"
+          }
+        }
+      }
+    },
     "apple.account.notification_kinds.sync_stalled": {
       "extractionState": "manual",
       "localizations": {
@@ -250,6 +305,72 @@
           "stringUnit": {
             "state": "translated",
             "value": "Task reminders"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.time_sensitive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Time-sensitive delivery"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.time_sensitive_allowed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allowed"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.time_sensitive_off": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.time_sensitive_off_caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Time-sensitive notifications are off for Sunrise in System Settings, so any Focus holds wind-down until it ends."
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.time_sensitive_unsupported": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not available"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.time_sensitive_unsupported_caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This build of Sunrise cannot send time-sensitive notifications, so wind-down arrives as an ordinary notification that a Focus can hold."
           }
         }
       }

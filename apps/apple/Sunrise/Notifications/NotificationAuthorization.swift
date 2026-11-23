@@ -1,3 +1,6 @@
+#if os(iOS)
+import UIKit
+#endif
 import UserNotifications
 
 /// Whether this app may post notifications, and what to say when it may not.
@@ -93,5 +96,103 @@ enum NotificationAuthorization: Equatable, Sendable {
         #endif
         @unknown default: self = .denied
         }
+    }
+}
+
+/// Whether this device lets Sunrise send at the time-sensitive level, the one
+/// wind-down asks for (`docs/08-features/notifications.md` §Wind-down).
+///
+/// Separate from ``NotificationAuthorization`` because it answers a separate
+/// question: a user can allow notifications and still turn time-sensitive
+/// delivery off, and then a Focus holds wind-down however Sunrise is
+/// configured. Settings shows it beside the wind-down row, the one switch it
+/// affects.
+///
+/// Even ``allowed`` does not carry wind-down through a Sleep Focus: a Focus
+/// that silences time-sensitive notifications still holds it unless Sunrise is
+/// one of its allowed apps, which only the user can set. That is what the
+/// explanation shown on turning wind-down on is for.
+enum TimeSensitiveDelivery: Equatable, Sendable {
+    /// The system delivers a `.timeSensitive` request as one.
+    case allowed
+    /// The user turned it off for Sunrise; requests arrive as active.
+    case off
+    /// This build cannot ask for it: the system reports the setting as not
+    /// supported, which is what a binary without the Time Sensitive
+    /// Notifications entitlement sees.
+    case unsupported
+
+    /// Lift the system's own answer.
+    ///
+    /// `@unknown default` maps to ``off`` rather than ``allowed``, for the
+    /// reason ``NotificationAuthorization/init(_:)`` gives: a value this build
+    /// has never heard of must not be read as permission.
+    init(_ setting: UNNotificationSetting) {
+        switch setting {
+        case .enabled: self = .allowed
+        case .disabled: self = .off
+        case .notSupported: self = .unsupported
+        @unknown default: self = .off
+        }
+    }
+
+    /// Whether the row draws a tick or a warning triangle.
+    var isAllowed: Bool { self == .allowed }
+
+    /// The short value beside the row's label.
+    var summary: String {
+        switch self {
+        case .allowed: L10n.Account.NotificationKinds.timeSensitiveAllowed
+        case .off: L10n.Account.NotificationKinds.timeSensitiveOff
+        case .unsupported: L10n.Account.NotificationKinds.timeSensitiveUnsupported
+        }
+    }
+
+    /// The sentence under the row, where there is something to say. `nil`
+    /// when delivery is allowed: the wind-down caption above already says
+    /// what a Sleep Focus does, and a second line repeating it is noise.
+    var caption: String? {
+        switch self {
+        case .allowed: nil
+        case .off: L10n.Account.NotificationKinds.timeSensitiveOffCaption
+        case .unsupported: L10n.Account.NotificationKinds.timeSensitiveUnsupportedCaption
+        }
+    }
+
+    /// Where the user lets wind-down through a Sleep Focus.
+    ///
+    /// On the Mac, the Focus pane of System Settings, where Sleep's allowed
+    /// apps are listed. iOS publishes no URL for the Focus settings, and the
+    /// private `App-prefs:` scheme is grounds for App Review to refuse the
+    /// app, so on iPhone and iPad it is Sunrise's own notification settings:
+    /// the public page nearest to it, and the one that holds the
+    /// time-sensitive switch this row reports.
+    @MainActor
+    static var focusSettingsURL: URL? {
+        #if os(macOS)
+        URL(string: "x-apple.systempreferences:com.apple.Focus-Settings.extension")
+        #else
+        URL(string: UIApplication.openNotificationSettingsURLString)
+        #endif
+    }
+
+    /// The label of the button that opens ``focusSettingsURL``, naming the
+    /// page it really opens.
+    static var focusSettingsLabel: String {
+        #if os(macOS)
+        L10n.Account.NotificationKinds.openFocusSettings
+        #else
+        L10n.Account.NotificationKinds.openNotificationSettings
+        #endif
+    }
+
+    /// Whether flipping a kind's switch should explain the Sleep Focus.
+    ///
+    /// Only wind-down, and only on the way from off to on: that is the moment
+    /// the user has asked for something a Sleep Focus will quietly hold, and
+    /// explaining it on turning it off, or again while it stays on, would
+    /// teach them to dismiss it unread.
+    static func explainsSleepFocus(_ kind: NotificationKind, wasOn: Bool, isOn: Bool) -> Bool {
+        kind == .windDown && !wasOn && isOn
     }
 }

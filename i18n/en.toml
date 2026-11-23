@@ -316,6 +316,34 @@ place_arrival = "Arriving at a place"
 # Caption under the wind-down row. Must keep that a Sleep Focus holds it until
 # Sunrise is allowed in that Focus, and that it needs a sleep time.
 wind_down_caption = "Fires before your sleep time from the day schedule. A Sleep Focus holds it unless Sunrise is allowed in that Focus."
+# Label of the row under wind-down that says whether this device lets Sunrise
+# send time-sensitive notifications (the level wind-down is sent at).
+time_sensitive = "Time-sensitive delivery"
+# That row's value, one of three.
+time_sensitive_allowed = "Allowed"
+time_sensitive_off = "Off"
+time_sensitive_unsupported = "Not available"
+# The sentence under the row when delivery is off. Must keep that wind-down
+# then waits for any Focus to end, and where to turn it back on.
+time_sensitive_off_caption = "Time-sensitive notifications are off for Sunrise in System Settings, so any Focus holds wind-down until it ends."
+# The sentence under the row when this build cannot send time-sensitive
+# notifications at all. Must keep that wind-down still arrives, as an ordinary
+# notification a Focus can hold.
+time_sensitive_unsupported_caption = "This build of Sunrise cannot send time-sensitive notifications, so wind-down arrives as an ordinary notification that a Focus can hold."
+# Title of the explanation shown when the user turns wind-down on.
+sleep_focus_title = "Let wind-down through Sleep"
+# Its message. Must keep that a Sleep Focus holds the notification unless
+# Sunrise is one of that Focus's allowed apps, and that only the user can add
+# it there.
+sleep_focus_message = "Wind-down reaches you as you wind down, which is often after a Sleep Focus has started. A Sleep Focus holds it unless Sunrise is one of that Focus's allowed apps, and only you can add it there."
+# Button, on the Mac, that opens the system's Focus settings. Under the
+# wind-down row, and in the explanation above.
+open_focus_settings = "Open Focus Settings…"
+# Button, on iPhone and iPad, that opens Sunrise's notification settings, where
+# time-sensitive delivery is turned on. Same places.
+open_notification_settings = "Open Notification Settings…"
+# Dismisses the explanation without opening anything.
+not_now = "Not Now"
 
 [apple.account.quiet_hours]
 # Settings: the heading of the quiet-hours section.

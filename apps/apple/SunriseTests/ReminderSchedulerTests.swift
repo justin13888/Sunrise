@@ -37,6 +37,8 @@ actor FakeNotificationCenter: NotificationCenterClient {
         return status
     }
 
+    func timeSensitiveDelivery() async -> TimeSensitiveDelivery { .allowed }
+
     func registerCategories() async { categoryRegistrations += 1 }
 
     func install(delegate: ReminderResponder) async { hasDelegate = true }
