@@ -33,7 +33,7 @@
 //! that applies an older record loses nothing: applying a snapshot is a join.
 
 use crate::api::account_deletion::refuse_if_pending;
-use crate::api::blobs::{account, not_found};
+use crate::api::blobs::{account, not_found, reader_account, GrantQuery};
 use crate::api::error::ApiError;
 use crate::api::ids::{hex_pattern, parse_blob_id, parse_hex16};
 use crate::api::signed::{Signed, SignedParts};
@@ -43,6 +43,7 @@ use crate::store::PinnedSnapshot;
 use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
 use kynos::extract::params::path::Path;
+use kynos::extract::params::query::Query;
 use kynos::openapi::Schema as OpenApiSchema;
 use serde::{Deserialize, Serialize};
 use sunrise_cbor::magic::{decode_prefix, MagicKind};
@@ -199,17 +200,25 @@ pub async fn pin(
 }
 
 /// The stream's pinned snapshot, or `404` when none is.
+///
+/// With `?grant=`, the pin is the one the account that registered the viewer
+/// grant (ADR-0074) holds for the Stream, once the grant is in force for the
+/// caller and names that Stream; the blob it names is then fetched with the
+/// same `?grant=`. That is what a viewer whose cursor fell behind the owner's
+/// retention resolves its `SYNC_CURSOR_GAP` with.
 #[kynos::get("/api/v1/snapshots/{stream_id}", operation_id = "fetchStreamSnapshot")]
 pub async fn latest(
     Inject(state): Inject<ServerState>,
     Path(path): Path<StreamPath>,
+    Query(query): Query<GrantQuery>,
     SignedParts(caller): SignedParts,
 ) -> Result<Json<StreamSnapshot>, ApiError> {
     let stream_id = parse_hex16(&path.stream_id.0, "stream_id")?;
-    let account_id = &caller.principal.account.account_id;
+    let account_id =
+        reader_account(&state, &caller, query.grant.as_ref(), Some(&stream_id)).await?;
     let pin = state
         .store
-        .pinned_snapshot(account_id, &stream_id)
+        .pinned_snapshot(&account_id, &stream_id)
         .await?
         .ok_or_else(not_found)?;
     Ok(Json(StreamSnapshot::of(&pin)))
@@ -401,5 +410,75 @@ mod tests {
             latest(&client, BEARER).await.json()["blob_id"],
             blob_id.as_str()
         );
+    }
+
+    /// The issue's case: a viewer whose cursor fell behind the owner's
+    /// retention finds the owner's pin through its grant and fetches the
+    /// record it names with the same grant.
+    #[tokio::test]
+    async fn a_viewer_reads_the_owners_pin_and_record_through_a_grant() {
+        use crate::api::blobs::tests::{get_as, grant_to_bob, sharing_relay};
+        let (client, _clock, _guard) = sharing_relay();
+        let bytes = record(3);
+        let blob_id = upload(&client, BEARER, &bytes).await;
+        pin(&client, BEARER, &blob_id)
+            .await
+            .assert_status(StatusCode::OK);
+        let grant_id = grant_to_bob(&client, STREAM, 1, None).await;
+
+        let res = get_as(
+            &client,
+            SECOND_BEARER,
+            &format!("/api/v1/snapshots/{STREAM}?grant={grant_id}"),
+        )
+        .await;
+        res.assert_status(StatusCode::OK);
+        assert_eq!(res.json()["stream_id"], STREAM);
+        assert_eq!(res.json()["blob_id"], blob_id.as_str());
+        let fetched = get_as(
+            &client,
+            SECOND_BEARER,
+            &format!("/api/v1/blobs/{blob_id}?grant={grant_id}"),
+        )
+        .await;
+        fetched.assert_status(StatusCode::OK);
+        assert_eq!(fetched.bytes, bytes);
+
+        // Without the grant, bob's own Stream of that id, which has no pin.
+        let own = latest(&client, SECOND_BEARER).await;
+        own.assert_status(StatusCode::NOT_FOUND);
+        assert_eq!(own.json()["code"], codes::BLOB_NOT_FOUND);
+    }
+
+    /// A grant reads the one Stream it names: on any other Stream's path it
+    /// is refused as if it were not held, and so is one no longer in force.
+    #[tokio::test]
+    async fn a_pin_read_through_a_grant_not_in_force_for_that_stream_is_refused() {
+        use crate::api::blobs::tests::{
+            assert_not_in_force, get_as, grant_to_bob, sharing_relay, withdraw_grant, THIRD_BEARER,
+        };
+        let (client, _clock, _guard) = sharing_relay();
+        let blob_id = upload(&client, BEARER, &record(4)).await;
+        pin(&client, BEARER, &blob_id)
+            .await
+            .assert_status(StatusCode::OK);
+        let other = "fedcba9876543210fedcba9876543210";
+        let elsewhere = grant_to_bob(&client, other, 1, None).await;
+        let here = grant_to_bob(&client, STREAM, 2, None).await;
+        let read = |grant: &str| format!("/api/v1/snapshots/{STREAM}?grant={grant}");
+
+        let unknown = get_as(&client, SECOND_BEARER, &read(&"0".repeat(32))).await;
+        assert_not_in_force(&unknown, &unknown, "an unknown grant");
+        let wrong_stream = get_as(&client, SECOND_BEARER, &read(&elsewhere)).await;
+        assert_not_in_force(&wrong_stream, &unknown, "a grant on another Stream");
+        let third = get_as(&client, THIRD_BEARER, &read(&here)).await;
+        assert_not_in_force(&third, &unknown, "another account's grant");
+
+        get_as(&client, SECOND_BEARER, &read(&here))
+            .await
+            .assert_status(StatusCode::OK);
+        withdraw_grant(&client, SECOND_BEARER, &here).await;
+        let declined = get_as(&client, SECOND_BEARER, &read(&here)).await;
+        assert_not_in_force(&declined, &unknown, "a declined grant");
     }
 }

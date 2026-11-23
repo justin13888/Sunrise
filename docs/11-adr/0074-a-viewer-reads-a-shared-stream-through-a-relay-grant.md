@@ -12,7 +12,8 @@ who may *read* a channel) and
 [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
 §Revoking access step 3 and §Share expiration (the relay stops serving a
 withdrawn or expired grant, as hygiene rather than as the guarantee).
-**Built by** [#1319](https://github.com/justin13888/Sunrise/issues/1319).
+**Built by** [#1319](https://github.com/justin13888/Sunrise/issues/1319), and
+§6 by [#1322](https://github.com/justin13888/Sunrise/issues/1322).
 
 ## Context
 
@@ -166,6 +167,33 @@ expired grants, so the cap counts live ones. Grants cascade from both account
 rows, so erasing either account erases every grant it is party to, and a
 stream reading the owner's channel ends on its next re-check.
 
+### 6. The same grant reads the owner's snapshot and blobs, and a publish wakes the viewer
+
+A viewer's reads do not end at the op log. `GET /api/v1/snapshots/{stream_id}`
+and `GET /api/v1/blobs/{blob_id}` take an optional `?grant=`; with it, the read
+is served from the account that registered the grant instead of the caller's
+own. The snapshot read requires the grant to name the path's Stream, so a
+viewer whose cursor fell behind the owner's retention resolves its
+`SYNC_CURSOR_GAP` from the owner's pin (ADR-0068) and fetches the record it
+names, and the Stream's attachments, with the same grant. The query is part of
+the signed target, which was already `path_and_query` on both sides.
+
+The grant is checked before anything of the owner's is read, and a grant not
+in force is the same `403 RELAY_GRANT_REVOKED` §2 gives a subscription,
+whichever case it was. So neither read is an oracle for which grants exist,
+nor for which blobs the owner holds.
+
+The relay files a blob by account and content address and records no Stream
+for it, so a grant reaches the owner's blobs **by id**, not only its Stream's.
+That is a metadata cost and never a content one: a blob id travels only inside
+sealed ops, and the ciphertext of any other Stream is under a key the viewer
+was never sealed. A viewer's download is charged to its own budget.
+
+A fresh batch the owner publishes queues a push wake for the account of every
+grant in force on that Stream, beside the owner's own, so a viewer's devices
+with no stream open are woken as the owner's are. The grants are read off the
+append path, and only when a push provider is configured.
+
 ## Alternatives considered
 
 - **No relay grant: anyone who knows the owner's account key and the Stream id
@@ -195,7 +223,8 @@ stream reading the owner's channel ends on its next re-check.
 - **Four routes** in the `account` rate-limit group: `createViewerGrant`,
   `claimViewerGrant`, `listViewerGrants`, `withdrawViewerGrant`. One request
   field, `StreamSubscription.grant`, optional, so a client that predates it
-  subscribes exactly as before. No new error code.
+  subscribes exactly as before. One query parameter, `grant`, optional, on
+  `fetchStreamSnapshot` and `fetchBlob` (§6). No new error code.
 - **The relay learns the sharing graph at account granularity**: which account
   reads which Stream of which other account, since when, and until when.
   [`sharing-with-others.md`](../03-crypto/sharing-with-others.md) §Privacy
@@ -209,11 +238,6 @@ stream reading the owner's channel ends on its next re-check.
   that calls the re-seal: [#1318](https://github.com/justin13888/Sunrise/issues/1318).
 - The deep link that carries the claim token and the sealed grant, and every
   client surface: [#1320](https://github.com/justin13888/Sunrise/issues/1320).
-- A viewer's reads beyond the op log: the owner's pinned snapshot (ADR-0068),
-  its blobs, and a push wake-up when the owner publishes
-  ([#1322](https://github.com/justin13888/Sunrise/issues/1322)). A viewer whose
-  cursor falls behind retention gets `SYNC_CURSOR_GAP` and nothing to resolve
-  it with.
 
 ## Revisit if
 
@@ -224,3 +248,5 @@ stream reading the owner's channel ends on its next re-check.
    owner's relay only.
 3. **The relay gains an identity directory**: naming the recipient directly
    becomes possible, and §1's reason for a token is worth re-reading.
+4. **A grant must not reach the owner's other Streams' blobs by id**: blobs
+   gain a Stream in the ledger, and §6's blob read checks it.

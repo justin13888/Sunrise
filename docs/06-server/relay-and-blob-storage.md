@@ -57,10 +57,22 @@ fan-out are the same machinery on the owner's channel (`Session::channel`).
   hands ciphertext and metadata to. What keeps contents from anyone is the
   Stream key, sealed to the recipient's identity by the owner's device, and
   the rotation that seals the next epoch to everyone but a revoked recipient.
-- **Not yet routed:** the owner's pinned snapshot, its blobs, and a push wake
-  when the owner publishes ([#1322](https://github.com/justin13888/Sunrise/issues/1322)).
-  A viewer whose cursor falls behind retention gets `SYNC_CURSOR_GAP` with
-  nothing to resolve it.
+- **The owner's snapshot and blobs, through the same grant.**
+  `GET /snapshots/{stream_id}?grant=…` answers the owner's pin for that
+  Stream, so a viewer whose cursor fell behind retention resolves its
+  `SYNC_CURSOR_GAP` from it, and `GET /blobs/{blob_id}?grant=…` reads the
+  owner's blob tree (`account_key(owner)`), for the record and for the Stream's
+  attachments. The grant is checked first and refused with the same
+  `403 RELAY_GRANT_REVOKED` whatever the case, so neither read says which
+  grants exist or which blobs the owner holds. Blobs are filed by account and
+  content address, never by Stream, so a grant reaches the owner's blobs by
+  id: the id travels only inside sealed ops, and any other Stream's
+  ciphertext is under a key the viewer was never sealed
+  ([#1322](https://github.com/justin13888/Sunrise/issues/1322)).
+- **A publish wakes the viewers.** A fresh batch the owner publishes queues a
+  push wake for the account of every grant in force on that Stream, beside
+  the owner's own account, so a viewer's devices with no stream open learn of
+  it the way the owner's other devices do.
 
 ## Storage layout (managed — design target, not implemented)
 
