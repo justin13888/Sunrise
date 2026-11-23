@@ -1750,3 +1750,7 @@ mod planner;
 /// Sharing a Stream with another account, and opening what it sent.
 #[cfg(test)]
 mod share;
+
+/// Reading a shared Stream as its recipient (ADR-0076).
+#[cfg(test)]
+mod shared_read;
