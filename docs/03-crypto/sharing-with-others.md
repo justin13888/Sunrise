@@ -6,16 +6,29 @@ status: accepted
 
 A user shares a **Stream** (and all its descendant entities) with one or more other identities. The Stream is the unit; there is no per-Task ACL.
 
-## Implementation status: a MUST in the parity matrix, not built
+## Implementation status: the viewer grant's cryptography is built; nothing carries it
 
-**Nothing in this document is implemented.** The "accept invite" and "view shared stream as editor" rows are MUST in the [parity matrix](../07-clients/parity-matrix.md), not built, and ranked on the roadmap ([`../roadmap.md`](../roadmap.md)) as [#133](https://github.com/justin13888/Sunrise/issues/133); [ADR-0024](../11-adr/0024-key-hierarchy.md) explains the cryptographic blocker underneath it.
+The "accept invite" and "view shared stream as editor" rows are MUST in the [parity matrix](../07-clients/parity-matrix.md), not built, and ranked on the roadmap ([`../roadmap.md`](../roadmap.md)) as [#133](https://github.com/justin13888/Sunrise/issues/133), which tracks the whole of sharing.
 
-* `share_grant`, `share_revoke` and `share_decline` appear in no Rust or Swift file. They are not among the 21 `InnerOp` variants in `crates/sunrise-core/src/inner_op.rs`.
-* `ShareGrantPayload` field 6 is an HPKE single-shot seal. `hpke = "0.13"` is declared in `[workspace.dependencies]` and **no member crate depends on it**; it is not in `Cargo.lock`.
+**Built:** the cryptographic half of a **viewer** grant, in `crates/sunrise-crypto/src/share_grant.rs` with a frozen vector (`sunrise-crypto-test-vectors`, `share_grant`):
+
+* the `ShareGrantPayload` codec below, canonical CBOR, refusing an unknown, repeated, missing or mis-sized field;
+* the HPKE Base seal of the Stream key, name and color to the recipient's `ID_D_pub`, and its open;
+* the granting identity's `identity_sig`, and its verification;
+* the recipient's `expires_at` check (§Share expiration);
+* the re-seal a Stream-key rotation emits: a grant of the new epoch to every recipient but the revoked and the expired (§Revoking access, step 2).
+
+The only role it grants is `viewer`, the answer recorded for #133: a read-only grant per Stream, with expiry, revocable by key rotation ([ADR-0020](../11-adr/0020-v1-must-demotions.md) §Addendum). A grant whose role is anything else is refused rather than read as a viewer.
+
+**Not built:**
+
+* `share_grant`, `share_revoke` and `share_decline` as ops. None is among the `InnerOp` variants in `crates/sunrise-core/src/inner_op.rs`, so nothing emits, stores or applies a grant, and no rotation calls the re-seal.
 * `crates/sunrise-domain/src/person.rs` defines `struct Person` and `0013_baseline.sql` creates a `persons` table that nothing reads or writes.
-* The deeper blocker is the key hierarchy, not the missing ops. Every Stream key today derives from one account-wide vault root, so there is no unit smaller than "the whole vault" to grant. ADR-0024 decision 4 — independently random per-`(stream_id, epoch)` keys distributed by HPKE `key_envelope` ops — is what makes selective sharing expressible at all.
+* Relay routing of a Stream to a second account: the relay's channel key is `(account_id_hash, stream_id)`, so a Stream belongs to one account by construction.
+* The `sunrise://share/<token>` deep link, the accept and decline UI, and the CLI surface.
+* The `editor` role.
 
-The primitives this spec composes *are* real and frozen: Ed25519 identity signatures, X25519, XChaCha20-Poly1305, `wrap_stream_key`/`unwrap_stream_key`, the `OpEnvelope` codec and `DeviceCert`, all in `sunrise-crypto` with frozen vectors. The sharing-specific layer above them is not.
+ADR-0024 decision 4 — independently random per-`(stream_id, epoch)` keys distributed by HPKE — is what makes selective sharing expressible at all, and it is built.
 
 ## Roles
 
@@ -37,15 +50,18 @@ There is no `admin` and no `commenter` role. Granting and revoking is a privileg
        2: uint,              ; epoch (current Stream-key epoch)
        3: bstr .size 16,     ; recipient_identity_id_bytes
        4: tstr,              ; role: "viewer" / "editor"
-       5: uint?,             ; expires_at (ms since epoch; optional)
+       5: uint?,             ; expires_at (ms since epoch; absent, not null, when it never expires)
        6: bstr,              ; hpke_ct: HPKE single-shot to recipient ID_D_pub
                              ;   info = "sunrise.hpke.share_grant.v1" || stream_id || u32_be(epoch) || recipient_identity_id
+                             ;   aad  = granter_identity_id || canonical_cbor(fields_1_through_5)
                              ;   plaintext = canonical_cbor({1: stream_key (32 B), 2: stream_metadata})
        7: bstr .size 64      ; identity_sig: Ed25519_sign(ID_S_priv,
                              ;     "sunrise.share_grant.v1" || canonical_cbor(fields_1_through_6))
    }
    ```
-   `stream_metadata` carries the Stream's name and color (so the recipient sees a meaningful entry before a full sync).
+   `stream_metadata` is `{1: name (tstr), 2: color (tstr)}`, the Stream's name and its color's wire spelling (so the recipient sees a meaningful entry before a full sync). Each is at most 1024 bytes, and an encoded grant at most 8 KiB.
+
+   **Why the granter is in the AAD.** HPKE Base authenticates no sender, and `identity_sig` alone does not stop a third identity re-signing the owner's `hpke_ct` as its own grant: the recipient would then hold the owner's Stream key under the impostor's name. `granter_identity_id` is `identity_id_from_pub` of the `ID_S_pub` the recipient verifies `identity_sig` under, so a ciphertext opens only beside the signature of the identity that sealed it. It is not a field: the recipient derives it from the key it already checked.
 4. **Owner publishes the `share_grant` op** to the relay. The relay routes it to the recipient's account.
 5. **Recipient receives** the envelope on next sync. UI shows "Stream X shared with you by Y. Accept?" The recipient's client verifies `identity_sig` against the granting identity's published `ID_S_pub`.
 6. **On accept:** recipient's device opens the HPKE ciphertext using its `ID_D_priv`, stores `stream_key_<epoch>` locally (wrapped under its own `vault_root`), subscribes to the Stream on the relay, decrypts ops, renders.
@@ -63,14 +79,14 @@ Owner triggers revoke. This is implemented as:
        3: uint               ; effective_at_ms
    }
    ```
-2. Perform a Stream key rotation (see [`key-rotation.md`](./key-rotation.md)). The rotation re-wraps the new epoch for all sibling devices and remaining peers, **excluding** the revoked recipient.
+2. Perform a Stream key rotation (see [`key-rotation.md`](./key-rotation.md)). The rotation re-wraps the new epoch for all sibling devices and remaining peers, **excluding** the revoked recipient. A peer whose grant has expired at the rotating device's clock is excluded too: its grant has ended, and a grant of a new epoch would extend it. Each remaining peer's grant of the new epoch carries its `expires_at` unchanged. `reseal_share_grants` in `sunrise-crypto` is this step's peer half.
 3. Nothing is asked of the relay. A revoked recipient stops receiving *readable* content because the epoch has rotated and no envelope is sealed to it under the new key; there is no relay-side grant check and no revocation error frame. The relay keeps forwarding whatever it is given, so a revoked recipient may still receive post-cutoff ciphertext it cannot open, and discards it locally on applying the `share_revoke`.
 
 The revoked recipient retains historical decryption ability for ops that were created under the previous epoch (the same property this document's target state assumes for revoked sibling devices — note that *that* is also target state: revocation as implemented stops nothing, see [`key-rotation.md`](./key-rotation.md) §Revocation). UI states this explicitly: "Y will no longer receive new updates. Y still has the copy of the data they had at revocation time." Already-decrypted local copies persist; revocation is **not** a guarantee of forgetting, only of stopping new data flow.
 
 ## Share expiration
 
-`expires_at` (the optional field on `ShareGrantPayload`) is enforced **client-side** by recipients: a recipient with `now >= expires_at` MUST stop applying ops from that grant. Already-applied ops remain in the local vault (same as revoke).
+`expires_at` (the optional field on `ShareGrantPayload`) is enforced **client-side** by recipients: a recipient with `now >= expires_at` MUST stop applying ops from that grant, and a grant opened at or after its expiry refuses to open (`ShareGrantError::Expired`). Already-applied ops remain in the local vault (same as revoke).
 
 There is no server-side expiry enforcement, and the guarantee does not need one: a hostile relay that keeps forwarding post-expiry ops changes nothing, because the recipient checks `expires_at` before applying. What the client-side-only gate does not buy is bandwidth — an expired recipient may still be sent ops it will discard.
 

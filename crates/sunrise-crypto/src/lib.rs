@@ -7,6 +7,8 @@
 //! - `docs/03-crypto/data-encryption-format.md` — `OpEnvelope` byte-exact codec.
 //! - `docs/03-crypto/key-rotation.md` — Stream-key wrap/unwrap.
 //! - `docs/03-crypto/recovery.md` — Argon2id-derived recovery blob.
+//! - `docs/03-crypto/sharing-with-others.md` — the viewer `share_grant`
+//!   payload, sealed to another identity.
 //!
 //! All algorithm choices are FROZEN for v1 (ADR-0004): Ed25519, X25519,
 //! XChaCha20-Poly1305, ChaCha20-Poly1305 (HPKE-internal), HPKE Base, Noise XX,
@@ -46,6 +48,7 @@ pub mod keys;
 pub mod merkle;
 pub mod op_envelope;
 pub mod recovery;
+pub mod share_grant;
 pub mod stream_key;
 pub mod suite;
 
@@ -65,7 +68,7 @@ pub use blob_chunk::{
 pub use device_cert::{DeviceCert, DeviceCertError, DeviceCertInner, MAX_NICKNAME_BYTES};
 pub use hpke_seal::{
     hpke_open, hpke_open_identity, hpke_seal, identity_carry_info, identity_share_info,
-    key_envelope_info, HpkeError, HPKE_ENC_LEN, HPKE_TAG_LEN,
+    key_envelope_info, share_grant_info, HpkeError, HPKE_ENC_LEN, HPKE_TAG_LEN,
 };
 pub use identity::{device_id_from_pub, identity_id_from_pub, DeviceId, IdentityId};
 pub use identity_chain::{
@@ -101,6 +104,11 @@ pub use op_envelope::{
 pub use recovery::{
     retired_check_matches, seal_recovery_blob, unseal_recovery_blob, RecoveryError,
     RECOVERY_NONCE_LEN, RECOVERY_SALT_LEN, RETIRED_CHECK_LEN,
+};
+pub use share_grant::{
+    decode_share_grant, reseal_share_grants, seal_share_grant, OpenedShareGrant, ShareGrant,
+    ShareGrantError, ShareGrantTerms, ShareRecipient, ShareRole, SharedEpoch, StreamMetadata,
+    MAX_SHARE_GRANT_BYTES, MAX_SHARE_METADATA_TEXT_BYTES,
 };
 pub use stream_key::{
     stream_key_id, unwrap_stream_key, wrap_stream_key, StreamKeyWrapError, STREAM_KEY_ID_LEN,
