@@ -104,6 +104,13 @@ under each. The emitting device logs its own writer cert under that epoch
 first (§1), so the recipient can verify the op that gives it the next epoch
 with what it already holds.
 
+A device that re-seals while holding no key at that epoch logs no copy
+(`core.share.stream_copy_skipped`, `no_previous_key`), and nothing logs one
+later: the vault-meta re-seal already moved the share to the new epoch, so no
+backfill re-seals it, and the next rotation's copy is sealed under the epoch
+the recipient never received. That recipient stays at the epoch it holds
+until the owner shares the Stream with it again (Revisit item 3).
+
 The recipient checks it exactly as it checks the grant its link carried
 (`sharing-with-others.md` §Granting access step 5), against the identity that
 signed it rather than the link's: that identity must be on a chain that
@@ -187,3 +194,7 @@ share.
    item).
 2. **The relay gains per-recipient delivery**: §2's grants could travel
    there, off the Stream's log.
+3. **A device of the account can re-seal an epoch without holding the one
+   before it**: a skipped copy then strands its recipient (§2). Have a
+   holder of the earlier key log the missing copy when it learns the
+   re-seal, or have such a device leave the re-seal to a holder.
