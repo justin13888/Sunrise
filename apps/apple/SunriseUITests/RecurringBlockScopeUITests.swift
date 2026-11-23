@@ -65,12 +65,14 @@ final class RecurringBlockScopeUITests: SunriseUITestCase {
         )
     }
 
-    /// *This and following events*: this week and the next move, the week
-    /// before does not.
-    func testThisAndFollowingMovesThisWeekAndLater() {
+    /// *This and following events* is not offered for a drag: the planner
+    /// does not plan it (`docs/08-features/planner.md` §Recurring blocks).
+    /// The question offers the other two, and cancelling it moves nothing.
+    func testADragDoesNotOfferThisAndFollowing() {
         dragThisWeeksEvent(
-            answering: "block-reach.thisAndFollowing",
-            moves: Weeks(last: false, this: true, next: true)
+            answering: "block-reach.cancel",
+            moves: Weeks(last: false, this: false, next: false),
+            absent: "block-reach.thisAndFollowing"
         )
     }
 
@@ -209,10 +211,12 @@ final class RecurringBlockScopeUITests: SunriseUITestCase {
 
     /// Measure last week, this week and next, drag this week's event an hour
     /// down, answer the question with `answer`, and check each week moved an
-    /// hour or not at all, as `moves` says.
+    /// hour or not at all, as `moves` says. `absent`, where given, is an
+    /// answer the question must not offer.
     private func dragThisWeeksEvent(
         answering answer: String,
         moves: Weeks,
+        absent: String? = nil,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
@@ -240,6 +244,20 @@ final class RecurringBlockScopeUITests: SunriseUITestCase {
         ))
         grip.press(forDuration: 0.4, thenDragTo: grip.withOffset(CGVector(dx: 0, dy: Self.hourHeight)))
 
+        if let absent {
+            XCTAssertTrue(
+                app.buttons[answer].firstMatch.waitForExistence(timeout: 10),
+                "the question is up",
+                file: file,
+                line: line
+            )
+            XCTAssertFalse(
+                app.buttons[absent].firstMatch.exists,
+                "a drag's question does not offer \(absent)",
+                file: file,
+                line: line
+            )
+        }
         activate(
             app.buttons[answer].firstMatch,
             named: "the question's \(answer) — dragging one event of a repeating block asks which events",

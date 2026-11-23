@@ -243,7 +243,9 @@ The core uses it ([#1148](https://github.com/justin13888/Sunrise/issues/1148)):
 The macOS calendar draws one chip per occurrence row, keyed by block id and
 occurrence key, and asks *this event*, *this and following events* or *all
 events* before a move, edit or delete of one, sending the matching scope; a
-block that does not recur asks nothing. *All events* moves the anchor by as
+block that does not recur asks nothing. A drag of one event is planned
+(`../08-features/planner.md` §Recurring blocks) and offers *this event* and
+*all events* only. *All events* moves the anchor by as
 much as the occurrence moved. A fixed block is drawn solid with a pin, a
 flexible one dashed. Merging an occurrence is refused, since the tombstone
 would take the whole series.

@@ -349,8 +349,8 @@ final class CalendarModel {
     }
 
     /// Set a block's times outright: from the Adjust times sheet, where the
-    /// person typed both, or from a drag of one event of a repeating block,
-    /// which the planner cannot preview (``CalendarPlanner/repeatingSpan(of:mode:toMs:timeZone:)``).
+    /// person typed both. A drag goes through the planner instead
+    /// (``CalendarPlanner``), one event of a repeating block too.
     ///
     /// The kind is preserved: dragging a floating block an hour later must
     /// not quietly pin it to a zone. `reach` is the answer to "which

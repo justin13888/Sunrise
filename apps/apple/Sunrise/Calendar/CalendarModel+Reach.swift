@@ -30,6 +30,22 @@ enum BlockEditReach: String, CaseIterable, Identifiable {
         case .allEvents: .all
         }
     }
+
+    /// The answers a planned drag of one event offers. *This and following*
+    /// splits the series into a new block, which a planner commit cannot
+    /// undo, so the planner does not plan it (`docs/08-features/planner.md`
+    /// §Recurring blocks) and a drag does not offer it.
+    static let planned: [BlockEditReach] = [.thisEvent, .allEvents]
+
+    /// The scope a planned drag of one event sends for this answer, or `nil`
+    /// for an answer the planner does not plan.
+    var occurrenceScope: OccurrenceScope? {
+        switch self {
+        case .thisEvent: .this
+        case .thisAndFollowing: nil
+        case .allEvents: .all
+        }
+    }
 }
 
 /// Which change is waiting on the reach question, for its heading.
@@ -49,11 +65,42 @@ enum BlockReachAction: Equatable {
 
 /// A change to one event of a repeating block, held until the person says
 /// how far it reaches. `commit` runs with the answer; dismissing the question
-/// drops the change, so nothing is written on a guess.
+/// drops the change, so nothing is written on a guess, and runs `dismissed`,
+/// which a planned drag uses to take its plan off the grid.
 struct PendingBlockReach: Identifiable {
     let id = UUID()
     let action: BlockReachAction
+    /// The answers offered, in order.
+    let reaches: [BlockEditReach]
+    let dismissed: () -> Void
     let commit: (BlockEditReach) -> Void
+
+    init(
+        action: BlockReachAction,
+        reaches: [BlockEditReach] = BlockEditReach.allCases,
+        dismissed: @escaping () -> Void = {},
+        commit: @escaping (BlockEditReach) -> Void
+    ) {
+        self.action = action
+        self.reaches = reaches
+        self.dismissed = dismissed
+        self.commit = commit
+    }
+
+    /// "Which events?" for a planned drag of one event: it offers only the
+    /// answers the planner plans (``BlockEditReach/planned``), and `commit`
+    /// runs with the scope the answer sends. *This and following* is not
+    /// offered: the planner does not plan it (`docs/08-features/planner.md`
+    /// §Recurring blocks), and the block editor still makes that change.
+    static func planned(
+        dismissed: @escaping () -> Void,
+        commit: @escaping (OccurrenceScope) -> Void
+    ) -> PendingBlockReach {
+        PendingBlockReach(action: .move, reaches: BlockEditReach.planned, dismissed: dismissed) { reach in
+            guard let scope = reach.occurrenceScope else { return dismissed() }
+            commit(scope)
+        }
+    }
 }
 
 extension BlockGridRow {
@@ -67,12 +114,36 @@ extension BlockGridRow {
     }
 
     /// One event of a repeating block, so a change to it asks how far it
-    /// reaches.
+    /// reaches, and a planned drag of it names its occurrence.
     var recurs: Bool { occurrenceKey != nil }
 
     /// Planning may not move it. The core sends the effective kind, so any
     /// spelling but `fixed` is the flexible default.
     var isFixed: Bool { block.kind == "fixed" }
+}
+
+extension PlanIntentItem {
+    /// The intent with its reach changed to `scope`, for a drag of one event
+    /// of a repeating block; any other intent as it is.
+    func reaching(_ scope: OccurrenceScope) -> PlanIntentItem {
+        switch self {
+        case let .moveBlockOccurrence(block, key, _, toStart):
+            .moveBlockOccurrence(block: block, key: key, scope: scope, toStart: toStart)
+        case let .resizeBlockOccurrence(block, key, _, edge, to):
+            .resizeBlockOccurrence(block: block, key: key, scope: scope, edge: edge, to: to)
+        default:
+            self
+        }
+    }
+
+    /// The occurrence a drag of one event names, or `nil` for any other
+    /// intent.
+    var occurrenceKey: String? {
+        switch self {
+        case let .moveBlockOccurrence(_, key, _, _), let .resizeBlockOccurrence(_, key, _, _, _): key
+        default: nil
+        }
+    }
 }
 
 extension BlockEdit {
