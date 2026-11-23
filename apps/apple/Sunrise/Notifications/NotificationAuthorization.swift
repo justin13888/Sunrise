@@ -1,3 +1,5 @@
+import Observation
+import SwiftUI
 #if os(iOS)
 import UIKit
 #endif
@@ -194,5 +196,42 @@ enum TimeSensitiveDelivery: Equatable, Sendable {
     /// teach them to dismiss it unread.
     static func explainsSleepFocus(_ kind: NotificationKind, wasOn: Bool, isOn: Bool) -> Bool {
         kind == .windDown && !wasOn && isOn
+    }
+}
+
+/// The wind-down row's state in ``NotificationKindsSection``: the
+/// time-sensitive setting it shows, and whether the Sleep Focus explanation is
+/// up (`docs/08-features/notifications.md` §Wind-down).
+///
+/// The view only forwards to it, so the tests drive this with a fake
+/// ``NotificationCenterClient`` and cover the same wiring the screen runs.
+@MainActor
+@Observable
+final class WindDownDeliveryModel {
+    /// `nil` until the first read answers, so the row never claims a state it
+    /// has not seen.
+    private(set) var timeSensitive: TimeSensitiveDelivery?
+    var explainingSleepFocus = false
+
+    private let center: any NotificationCenterClient
+
+    init(center: any NotificationCenterClient) {
+        self.center = center
+    }
+
+    /// Re-read the setting when the app is at the front, which is every return
+    /// from the System Settings page the explanation's button opens; any other
+    /// phase keeps the last answer.
+    func refresh(in phase: ScenePhase) async {
+        guard phase == .active else { return }
+        timeSensitive = await center.timeSensitiveDelivery()
+    }
+
+    /// A kind's switch moved; raise the explanation when
+    /// ``TimeSensitiveDelivery/explainsSleepFocus(_:wasOn:isOn:)`` says so.
+    func switchFlipped(_ kind: NotificationKind, wasOn: Bool, isOn: Bool) {
+        if TimeSensitiveDelivery.explainsSleepFocus(kind, wasOn: wasOn, isOn: isOn) {
+            explainingSleepFocus = true
+        }
     }
 }
