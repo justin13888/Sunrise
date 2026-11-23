@@ -270,7 +270,9 @@ pub(super) fn materialize_member(
         | InnerOp::ShareGrant(_)
         | InnerOp::ShareRevoke(_)
         | InnerOp::ShareDecline(_)
-        | InnerOp::ShareResealRequest(_) => {}
+        | InnerOp::ShareResealRequest(_)
+        | InnerOp::StreamWriterCert(_)
+        | InnerOp::StreamShareGrant(_) => {}
     }
     Ok(())
 }

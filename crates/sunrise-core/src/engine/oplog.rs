@@ -631,6 +631,10 @@ impl Engine {
         now_ms: u64,
     ) -> rusqlite::Result<LogSlot> {
         let (epoch, key) = self.ensure_stream_epoch(tx, stream, now_ms)?;
+        // A shared Stream's recipients verify this op under a cert logged
+        // in the Stream under this epoch (ADR-0076 §1), so it goes first and
+        // takes its `seq` before this op's.
+        self.ensure_own_writer_cert(tx, stream, (epoch, &key), now_ms)?;
         let seq = self.next_seq_tx(tx, stream)?;
         let lww = self.lww_stamp(seq);
         Ok(LogSlot {

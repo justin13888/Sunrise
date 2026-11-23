@@ -15,24 +15,24 @@ use sunrise_crypto::{
 use sunrise_domain::Person;
 
 /// The identity a Stream is shared with: a stranger to the account.
-struct Recipient {
-    signing: IdentitySigningKeyPair,
-    dh: IdentityDhKeyPair,
+pub(super) struct Recipient {
+    pub(super) signing: IdentitySigningKeyPair,
+    pub(super) dh: IdentityDhKeyPair,
 }
 
 impl Recipient {
-    fn new(seed: u8) -> Self {
+    pub(super) fn new(seed: u8) -> Self {
         Self {
             signing: IdentitySigningKeyPair::from_secret_bytes(&[seed; 32]),
             dh: IdentityDhKeyPair::from_secret_bytes([seed ^ 0xff; 32]),
         }
     }
 
-    fn identity_id(&self) -> [u8; 16] {
+    pub(super) fn identity_id(&self) -> [u8; 16] {
         identity_id_from_pub(&self.signing.public_bytes())
     }
 
-    fn person(&self) -> Person {
+    pub(super) fn person(&self) -> Person {
         Person {
             id: EntityRef::new(EntityKind::Person, [0x9e; 16]),
             created_at: jiff::Timestamp::UNIX_EPOCH,
@@ -47,14 +47,14 @@ impl Recipient {
 
 /// A device holding `ID_S_priv`, with real random Stream keys, so a rotation
 /// mints a key the previous epoch's holder does not have.
-fn founder(seed: [u8; 32]) -> (Engine, Db) {
+pub(super) fn founder(seed: [u8; 32]) -> (Engine, Db) {
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
     (engine_random_keys(ROOT, seed, clock), db_root(ROOT))
 }
 
 /// Two such devices of one account, each trusting the other, B holding A's
 /// vault-meta key as pairing would have handed it over.
-fn founders() -> (Engine, Db, Engine, Db) {
+pub(super) fn founders() -> (Engine, Db, Engine, Db) {
     let (ea, mut dba) = founder([1u8; 32]);
     let (eb, mut dbb) = founder([2u8; 32]);
     trust(&ea, &mut dba, &eb);
@@ -74,7 +74,7 @@ fn paired_meta(device: &Engine, db: &mut Db, sponsor: &Engine, sdb: &mut Db) {
     hand_over_key(device, db, sponsor, sdb, &META_STREAM);
 }
 
-fn work_stream(e: &Engine, db: &mut Db) -> EntityRef {
+pub(super) fn work_stream(e: &Engine, db: &mut Db) -> EntityRef {
     e.apply(
         db,
         Command::CreateStream(StreamDraft {
@@ -87,7 +87,7 @@ fn work_stream(e: &Engine, db: &mut Db) -> EntityRef {
     .entity
 }
 
-fn rotate(e: &Engine, db: &mut Db, stream: EntityRef) {
+pub(super) fn rotate(e: &Engine, db: &mut Db, stream: EntityRef) {
     e.apply(db, Command::RotateStreamKey { stream }).unwrap();
 }
 
@@ -97,7 +97,7 @@ fn live_epoch(e: &Engine, db: &mut Db, stream: EntityRef) -> (u32, StreamKey) {
         .unwrap()
 }
 
-fn shares(e: &Engine, db: &Db, stream: EntityRef) -> Vec<StreamShare> {
+pub(super) fn shares(e: &Engine, db: &Db, stream: EntityRef) -> Vec<StreamShare> {
     e.stream_shares(db, stream).unwrap()
 }
 
@@ -1038,7 +1038,13 @@ fn a_holders_backfill_leaves_out_a_share_the_paired_device_revoked() {
 /// Every op `from` logged whose `inner_kind` `pick` accepts, delivered to
 /// `to` in each stream's order: a relay that hands some ops over late, or
 /// drops them.
-fn deliver_where(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db, pick: fn(&str) -> bool) {
+pub(super) fn deliver_where(
+    from: &Engine,
+    from_db: &Db,
+    to: &Engine,
+    to_db: &mut Db,
+    pick: fn(&str) -> bool,
+) {
     let device = from.keychain.device_id();
     let envs: Vec<(String, Vec<u8>)> = {
         let mut stmt = from_db

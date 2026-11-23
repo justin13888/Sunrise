@@ -328,7 +328,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// fresh, which every v32 grant made by `share_stream` is. A v32 build parks
 /// the three new families, so its own rotation still re-seals to a share they
 /// ended; no client shares yet. The floor does not move.
-pub const DOC_SCHEMA_V: u16 = 33;
+///
+/// `34` adds the control families `StreamWriterCert` and `StreamShareGrant`
+/// (ADR-0076, #1336), logged in a shared Stream's own log rather than the
+/// vault-meta stream: a device's identity-signed cert, and a copy of a
+/// re-sealed grant, each beside the account's identity chain record, for a
+/// recipient that reads only that Stream. They need no feature: the
+/// account's own replicas store nothing from either, and a v33 build parks
+/// them at no cost to itself. The floor does not move.
+pub const DOC_SCHEMA_V: u16 = 34;
 
 mod fingerprint;
 #[cfg(test)]
