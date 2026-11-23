@@ -59,7 +59,7 @@ impl Run {
         // before the scenario goes on. Then the op's other fields, which
         // carry what this settle left, never win over a later write, and the
         // model needs to record only the field the op changes.
-        let stamped = future::stamp_ms(now_ms);
+        let stamped = self.future.stamp_ms(now_ms);
         while self.c.now_ms() <= stamped {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }

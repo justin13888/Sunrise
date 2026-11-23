@@ -28,9 +28,9 @@ use std::sync::Mutex;
 use proptest::prelude::*;
 use sunrise_e2e::cross_version::baseline::DRIVER_ENV;
 use sunrise_e2e::cross_version::events::install_event_capture;
-use sunrise_e2e::cross_version::future::FutureWrite;
+use sunrise_e2e::cross_version::future::{FutureWrite, STAMP_LEAD_MS};
 use sunrise_e2e::cross_version::gaps::{expected_gaps, KnownGap};
-use sunrise_e2e::cross_version::{run, Mode, Report, Side, Step};
+use sunrise_e2e::cross_version::{run_with_stamp_lead, Mode, Report, Side, Step};
 
 /// One run at a time in this binary: the `HEAD` cores share one captured log,
 /// and a run reads it as its own.
@@ -45,6 +45,10 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 fn execute(mode: &Mode, steps: &[Step]) -> Report {
+    execute_with_stamp_lead(mode, steps, STAMP_LEAD_MS)
+}
+
+fn execute_with_stamp_lead(mode: &Mode, steps: &[Step], lead_ms: u64) -> Report {
     let _serial = SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -52,7 +56,7 @@ fn execute(mode: &Mode, steps: &[Step]) -> Report {
         install_event_capture(),
         "another subscriber owns this process's log, so HEAD-side corruption would go unseen"
     );
-    runtime().block_on(run(mode, steps))
+    runtime().block_on(run_with_stamp_lead(mode, steps, lead_ms))
 }
 
 fn baseline_mode() -> Mode {
@@ -281,9 +285,13 @@ fn every_reproduction_runs_clean_between_head_devices() {
 
 /// A rename issued right after a newer op, on the side still owed it, wins on
 /// both sides (#1327). The newer op is a whole `Task` carrying the old title,
-/// and it used to be stamped one millisecond past the wall clock, so a rename
-/// within that millisecond lost to it, and the outcome turned on timing no
-/// seed fixes.
+/// stamped past the wall clock, so a rename B stamps before the clock passes
+/// the op's stamp loses to it, and the outcome turns on timing no seed fixes.
+///
+/// A one-millisecond lead leaves the rename inside the stamp only when the
+/// delivery to A before it is quick, so the run stamps the op a second ahead:
+/// the rename lands inside the stamp every time, and only the harness's wait
+/// for the clock to pass it makes the rename win.
 #[test]
 fn a_rename_right_after_a_newer_op_wins_on_both_sides() {
     let steps = [
@@ -304,7 +312,7 @@ fn a_rename_right_after_a_newer_op_wins_on_both_sides() {
             title: 131,
         },
     ];
-    let report = execute(&Mode::HeadOnly, &steps);
+    let report = execute_with_stamp_lead(&Mode::HeadOnly, &steps, 1_000);
     assert!(report.violations.is_empty(), "{}", describe(&report));
 }
 
