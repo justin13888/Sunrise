@@ -187,6 +187,13 @@ doc = true
 bench = false
 
 [[bin]]
+name = "share_grant"
+path = "fuzz_targets/share_grant.rs"
+test = false
+doc = true
+bench = false
+
+[[bin]]
 name = "identity_chain"
 path = "fuzz_targets/identity_chain.rs"
 test = false
