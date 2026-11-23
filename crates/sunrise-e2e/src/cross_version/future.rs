@@ -161,10 +161,8 @@ impl FutureWriter {
             stream_id: self.stream_id,
             device_id: self.device_id,
             seq,
-            // One past the wall clock: a newer write the scenario issues after
-            // a settle must order after everything that settle saw.
             hlc: Hlc {
-                physical_ms: now_ms + 1,
+                physical_ms: stamp_ms(now_ms),
                 logical: 0,
             },
             aead_alg: AeadAlgId::XChaCha20Poly1305,
@@ -186,6 +184,21 @@ impl FutureWriter {
         )
         .expect("a well-formed envelope seals")
     }
+}
+
+/// The HLC physical time a newer op sealed at wall time `now_ms` carries.
+///
+/// One past the wall clock: a newer write the scenario issues after a settle
+/// must order after everything that settle saw. It must also order before
+/// every write the scenario issues after it, or which of the two wins is
+/// decided by how many milliseconds the steps between them took, which no
+/// seed fixes (#1327). Every shape but `OpKind` is a whole `Task`, so a
+/// concurrent rename on the side still owed the op would race the title it
+/// carries. The harness waits out this stamp before the next step
+/// (`Run::future`), which makes every later write, on either side and with
+/// or without the op, order after it.
+pub(crate) const fn stamp_ms(now_ms: u64) -> u64 {
+    now_ms + 1
 }
 
 /// A `task.update` op carrying `t`, in the externally tagged form every

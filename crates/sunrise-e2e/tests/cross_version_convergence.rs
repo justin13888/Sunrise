@@ -279,6 +279,35 @@ fn every_reproduction_runs_clean_between_head_devices() {
     }
 }
 
+/// A rename issued right after a newer op, on the side still owed it, wins on
+/// both sides (#1327). The newer op is a whole `Task` carrying the old title,
+/// and it used to be stamped one millisecond past the wall clock, so a rename
+/// within that millisecond lost to it, and the outcome turned on timing no
+/// seed fixes.
+#[test]
+fn a_rename_right_after_a_newer_op_wins_on_both_sides() {
+    let steps = [
+        Step::Create {
+            on: Side::A,
+            title: 0,
+            priority: None,
+        },
+        Step::Settle,
+        Step::Future {
+            task: 0,
+            write: FutureWrite::NestedKind,
+            first: Side::A,
+        },
+        Step::SetTitle {
+            on: Side::B,
+            task: 0,
+            title: 131,
+        },
+    ];
+    let report = execute(&Mode::HeadOnly, &steps);
+    assert!(report.violations.is_empty(), "{}", describe(&report));
+}
+
 /// Every gap expected of the baseline still happens against it.
 #[test]
 #[ignore = "needs SUNRISE_BASELINE_DRIVER; the Cross-version merge CI job runs it"]
