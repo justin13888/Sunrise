@@ -57,10 +57,13 @@ impl Engine {
     ) -> Result<QueryResult, EngineError> {
         let schedule = Self::day_schedule(db)?;
         let (today, day_start, day_end) = self.planner_day_at(&schedule, now_ms)?;
-        // "The week ahead": the seven planner days that follow today.
+        // "The week ahead": the seven planner days that follow today. In the
+        // calendar's last seven days they run out of dates, so the week
+        // saturates at the last date, whose bound saturates at the range's
+        // last instant (#1313).
         let last = today
             .checked_add(jiff::Span::new().days(7))
-            .map_err(|e| EngineError::Invalid(format!("week ahead: {e}")))?;
+            .unwrap_or(jiff::civil::Date::MAX);
         let (_, week_end) = self.planner_bounds(&schedule, last)?;
         let tasks = read_live_tasks(db.conn())?;
         Ok(QueryResult::EndOfDayPlan(Box::new(build_end_of_day_plan(
