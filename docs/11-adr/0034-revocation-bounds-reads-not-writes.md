@@ -245,7 +245,7 @@ took five review rounds to bottom out, and it is not about convergence:
   ascending so a later row overwrites an earlier one
   (`crates/sunrise-core/src/engine/revocation.rs:1257-1258#refold_device_revocations`),
   a cut that landed wrong is corrected by revoking again from a healthy device
-  (`crates/sunrise-core/src/engine/revocation.rs:1511-1517#apply_device_revoke`),
+  (`crates/sunrise-core/src/engine/revocation.rs:1540-1546#apply_device_revoke`),
   and since ADR-0041 a re-fold can lower a cut or drop the row outright, because
   the register is a pure function of the op set rather than something edited in
   place

@@ -784,7 +784,7 @@ pub(super) fn ops_run_end(
 /// `crates/sunrise-core/src/engine/revocation.rs:1325#refold_device_revocations`
 /// — precisely so a cut from a slow clock is corrected by revoking again from
 /// a healthy device. The rationale for choosing LWW over `MIN` is recorded at
-/// `crates/sunrise-core/src/engine/revocation.rs:1511-1517#apply_device_revoke`.
+/// `crates/sunrise-core/src/engine/revocation.rs:1540-1546#apply_device_revoke`.
 /// Nothing below rests on that, because nothing below un-writes an op row.
 ///
 /// # What the apply path consults, and what that read decides
