@@ -1064,4 +1064,398 @@ mod recurring {
             .iter()
             .any(|v| v.item == id && v.rule == PlanRule::Invalid && v.introduced));
     }
+
+    // ---- a drag of this and the following events (#1324) ----
+
+    /// What a split leaves and its undo restores: the series' anchor, rule,
+    /// exceptions and occurrence bindings.
+    type Series = (
+        SunriseTime,
+        SunriseTime,
+        Option<sunrise_domain::rrule::RRule>,
+        Vec<String>,
+        BTreeSet<OccurrenceBinding>,
+    );
+
+    fn series_of(block: &sunrise_domain::Block) -> Series {
+        (
+            block.starts_at.clone(),
+            block.ends_at.clone(),
+            block.rrule.clone(),
+            block.exceptions.keys().cloned().collect(),
+            block.occurrence_tasks.clone(),
+        )
+    }
+
+    /// Commit a drag of the standup's event on 2026-03-`day` and the ones
+    /// after it to `hour`:00.
+    fn commit_following(
+        e: &Engine,
+        db: &mut Db,
+        id: EntityRef,
+        day: i8,
+        hour: i8,
+    ) -> crate::engine::PlanCommitId {
+        let diff = e
+            .plan_preview(
+                db,
+                &drag(id, day, OccurrenceScope::ThisAndFollowing, hour),
+                NOW_MS,
+            )
+            .unwrap();
+        assert!(diff.committable, "{diff:#?}");
+        e.plan_apply(db, &diff, NOW_MS).unwrap().1
+    }
+
+    /// The standup's week 18, retitled, dragged an hour later with the weeks
+    /// after it: the series ends before it, and the block that continues it
+    /// from there runs an hour later and carries the retitled week and the
+    /// bound week 25 with it. The weeks before stay. One undo joins the
+    /// series back as it was and tombstones the continuation.
+    #[test]
+    fn a_drag_of_this_and_following_events_splits_the_series_and_its_undo_joins_it() {
+        let e = engine();
+        let mut db = db();
+        let (id, task) = standup(&e, &mut db);
+        let before = series_of(&read_block_row(&db, id));
+        let ops = op_count(&db);
+
+        let commit = commit_following(&e, &mut db, id, 18, 10);
+        assert_eq!(
+            op_count(&db),
+            ops + 2,
+            "the ended series and its continuation"
+        );
+        let ended = read_block_row(&db, id);
+        assert!(ended.rrule.as_ref().unwrap().until.is_some());
+        assert_eq!(keys(&ended), (vec![key(11)], Vec::new()));
+        let next = sunrise_domain::split_block_id(&id, &key(18));
+        let continuation = read_block_row(&db, next);
+        assert_eq!(slot(&db, next), (on(18, 10), on(18, 11)));
+        assert_eq!(continuation.split_from, Some(id));
+        assert_eq!(
+            continuation.occurrence_tasks,
+            BTreeSet::from([OccurrenceBinding::new("2026-03-25T10:00", task)])
+        );
+        assert_eq!(grid(&e, &db, 4), [row("Standup", &key(4), &[])]);
+        assert!(grid(&e, &db, 11).is_empty(), "the cancelled week stays so");
+        assert_eq!(grid(&e, &db, 18), [row("Retro", "2026-03-18T10:00", &[])]);
+        assert_eq!(
+            grid(&e, &db, 25),
+            [row("Standup", "2026-03-25T10:00", &["Demo"])]
+        );
+
+        let undone = e.plan_undo(&mut db, commit).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (3, 0),
+            "{undone:?}"
+        );
+        assert_eq!(series_of(&read_block_row(&db, id)), before);
+        assert!(
+            read_block_row(&db, next).deleted,
+            "the continuation is gone"
+        );
+        assert_eq!(grid(&e, &db, 4), [row("Standup", &key(4), &[])]);
+        assert!(grid(&e, &db, 11).is_empty());
+        assert_eq!(grid(&e, &db, 18), [row("Retro", &key(18), &[])]);
+        assert_eq!(grid(&e, &db, 25), [row("Standup", &key(25), &["Demo"])]);
+        assert!(matches!(
+            e.plan_undo(&mut db, commit),
+            Err(PlanError::Unknown)
+        ));
+        e.assert_rebuild_identity(&db);
+    }
+
+    /// The preview of a drag of this and the following events moves the
+    /// event alone and sees the later ones moving with it: the event a week
+    /// later is not in its way.
+    #[test]
+    fn the_later_events_are_not_in_the_way_of_this_and_following() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let mut onto_next_week = drag(id, 11, OccurrenceScope::ThisAndFollowing, 9);
+        if let PlanIntent::MoveBlock { to_start, .. } = &mut onto_next_week {
+            *to_start = on(18, 9);
+        }
+        let diff = e.plan_preview(&db, &onto_next_week, NOW_MS).unwrap();
+        assert!(diff.committable, "{diff:#?}");
+        assert_eq!(diff.moves.len(), 1, "{diff:#?}");
+        let mut onto_last_week = drag(id, 11, OccurrenceScope::ThisAndFollowing, 9);
+        if let PlanIntent::MoveBlock { to_start, .. } = &mut onto_last_week {
+            *to_start = on(4, 9);
+        }
+        let diff = e.plan_preview(&db, &onto_last_week, NOW_MS).unwrap();
+        assert!(
+            diff.violations
+                .iter()
+                .any(|v| v.item == id && v.with == Some(id) && v.rule == PlanRule::OverlapsFixed),
+            "{diff:#?}"
+        );
+    }
+
+    /// A drag of the earlier events' block after the split writes its rule
+    /// again and leaves it as it was, so the split's undo still joins the
+    /// series; the later drag's own undo then restores its event.
+    #[test]
+    fn a_later_drag_of_an_earlier_event_keeps_the_splits_undo() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let before = series_of(&read_block_row(&db, id));
+        let split = commit_following(&e, &mut db, id, 18, 10);
+        let diff = e
+            .plan_preview(&db, &drag(id, 4, OccurrenceScope::This, 11), NOW_MS)
+            .unwrap();
+        let alone = e.plan_apply(&mut db, &diff, NOW_MS).unwrap().1;
+
+        let undone = e.plan_undo(&mut db, split).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (3, 0),
+            "{undone:?}"
+        );
+        assert_eq!(grid(&e, &db, 18)[0].1.as_deref(), Some(key(18).as_str()));
+        let undone = e.plan_undo(&mut db, alone).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (2, 0),
+            "{undone:?}"
+        );
+        assert_eq!(series_of(&read_block_row(&db, id)), before);
+        e.assert_rebuild_identity(&db);
+    }
+
+    /// A continuation edited since the split is left as it is, and so is the
+    /// ended series: the undo joins both or neither, and reports every field
+    /// it left.
+    #[test]
+    fn a_split_whose_continuation_was_edited_since_is_left_split() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let split = commit_following(&e, &mut db, id, 18, 10);
+        let next = sunrise_domain::split_block_id(&id, &key(18));
+        let retitle = BlockPatch {
+            title: Some(Some("Retro".into())),
+            ..BlockPatch::default()
+        };
+        e.apply(&mut db, scoped_update(next, EditScope::All, retitle))
+            .unwrap();
+        let ended = read_block_row(&db, id);
+
+        let undone = e.plan_undo(&mut db, split).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (0, 3),
+            "{undone:?}"
+        );
+        assert_eq!(read_block_row(&db, id), ended);
+        assert!(!read_block_row(&db, next).deleted);
+        assert_eq!(grid(&e, &db, 18), [row("Retro", "2026-03-18T10:00", &[])]);
+    }
+
+    /// The standup split at week 18 and moved to 10:00, then its
+    /// continuation's week 25 dragged to 11:00 with the weeks after it: the
+    /// two commits, and the second continuation, the one from week 25.
+    fn split_twice(
+        e: &Engine,
+        db: &mut Db,
+        id: EntityRef,
+    ) -> (
+        crate::engine::PlanCommitId,
+        crate::engine::PlanCommitId,
+        EntityRef,
+    ) {
+        let first = commit_following(e, db, id, 18, 10);
+        let next = sunrise_domain::split_block_id(&id, &key(18));
+        let again = PlanIntent::MoveBlock {
+            block: next,
+            occurrence: Some(PlanOccurrence {
+                key: "2026-03-25T10:00".into(),
+                scope: OccurrenceScope::ThisAndFollowing,
+            }),
+            to_start: on(25, 11),
+        };
+        let diff = e.plan_preview(db, &again, NOW_MS).unwrap();
+        assert!(diff.committable, "{diff:#?}");
+        let second = e.plan_apply(db, &diff, NOW_MS).unwrap().1;
+        let last = sunrise_domain::split_block_id(&id, "2026-03-25T10:00");
+        assert_eq!(slot(db, last), (on(25, 11), on(25, 12)));
+        (first, second, last)
+    }
+
+    /// A continuation split again since, by a drag of its own later events,
+    /// still holds the anchor the first split's undo would restore, but its
+    /// rule is no longer the one the split gave it: joining the first split
+    /// would restore the whole series beside the second continuation, every
+    /// event from week 25 shown twice. The undo leaves all three blocks as
+    /// they are and reports every row skipped; the second split's own undo
+    /// still joins its series.
+    #[test]
+    fn a_split_whose_continuation_was_split_again_is_left_split() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let (first, second, last) = split_twice(&e, &mut db, id);
+        let next = sunrise_domain::split_block_id(&id, &key(18));
+        let (ended, continuation) = (read_block_row(&db, id), read_block_row(&db, next));
+
+        let undone = e.plan_undo(&mut db, first).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (0, 3),
+            "{undone:?}"
+        );
+        assert_eq!(read_block_row(&db, id), ended);
+        assert_eq!(read_block_row(&db, next), continuation);
+        assert!(!read_block_row(&db, last).deleted);
+        assert_eq!(grid(&e, &db, 18), [row("Standup", "2026-03-18T10:00", &[])]);
+        assert_eq!(grid(&e, &db, 25), [row("Standup", "2026-03-25T11:00", &[])]);
+        assert_eq!(grid(&e, &db, 4), [row("Standup", &key(4), &[])]);
+
+        let undone = e.plan_undo(&mut db, second).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (3, 0),
+            "{undone:?}"
+        );
+        assert!(read_block_row(&db, last).deleted);
+        assert_eq!(grid(&e, &db, 25), [row("Standup", "2026-03-25T10:00", &[])]);
+        e.assert_rebuild_identity(&db);
+    }
+
+    /// Undone newest first, the second split joins the continuation back as
+    /// the first split gave it, so the first split's undo then joins the
+    /// whole series.
+    #[test]
+    fn two_splits_undone_newest_first_join_the_whole_series() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let before = series_of(&read_block_row(&db, id));
+        let (first, second, last) = split_twice(&e, &mut db, id);
+
+        for commit in [second, first] {
+            let undone = e.plan_undo(&mut db, commit).unwrap();
+            assert_eq!(
+                (undone.restored, undone.skipped.len()),
+                (3, 0),
+                "{undone:?}"
+            );
+        }
+        assert_eq!(series_of(&read_block_row(&db, id)), before);
+        assert!(read_block_row(&db, last).deleted);
+        let next = sunrise_domain::split_block_id(&id, &key(18));
+        assert!(read_block_row(&db, next).deleted);
+        assert_eq!(grid(&e, &db, 25), [row("Standup", &key(25), &[])]);
+        e.assert_rebuild_identity(&db);
+    }
+
+    /// A continuation bound to a task as a whole since the split is left as
+    /// it is, and so is the ended series: joining would tombstone the block
+    /// the task is bound to and drop the binding with it. No command binds a
+    /// task to a recurring block as a whole, so another build writes it, in
+    /// a vault of field ops: the `Patch` adds to `tasks` alone, and the
+    /// continuation's anchor rows are still held.
+    #[test]
+    fn a_split_whose_continuation_was_bound_to_a_task_is_left_split() {
+        let e = engine();
+        let mut db = db();
+        let id = e
+            .apply(
+                &mut db,
+                Command::CreateBlock(block_draft(9, 1, Some("Standup"))),
+            )
+            .unwrap()
+            .entity;
+        e.require_features(&mut db, &[crate::feature::BLOCK_RECURRENCE_FEATURE], true)
+            .unwrap();
+        recur(&e, &mut db, id, "FREQ=WEEKLY");
+        let split = commit_following(&e, &mut db, id, 18, 10);
+        let next = sunrise_domain::split_block_id(&id, &key(18));
+        let task = new_task(&e, &mut db, "Demo");
+        let mut bound = read_block_row(&db, next);
+        bound.tasks.insert(task);
+        let stream = crate::engine::ids::domain_bytes(bound.stream_id);
+        let op = InnerOp::BlockUpdate(Box::new(bound));
+        db.with_tx(|tx| e.append_and_fold(tx, &op, &stream, NOW_MS).map(|_| ()))
+            .unwrap();
+        let (ended, continuation) = (read_block_row(&db, id), read_block_row(&db, next));
+        assert!(continuation.tasks.contains(&task));
+
+        let undone = e.plan_undo(&mut db, split).unwrap();
+        assert_eq!(
+            (undone.restored, undone.skipped.len()),
+            (0, 3),
+            "{undone:?}"
+        );
+        assert_eq!(read_block_row(&db, id), ended);
+        assert_eq!(read_block_row(&db, next), continuation);
+    }
+
+    /// A drag of this and the following events at a key the series was
+    /// split at already, whose continuation is live, is refused: here
+    /// another build wrote the ended block's rule back without its `UNTIL`,
+    /// so the series produces the key again.
+    #[test]
+    fn this_and_following_where_the_series_was_split_already_is_refused() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        commit_following(&e, &mut db, id, 18, 10);
+        recur(&e, &mut db, id, "FREQ=WEEKLY");
+
+        let diff = e
+            .plan_preview(
+                &db,
+                &drag(id, 18, OccurrenceScope::ThisAndFollowing, 11),
+                NOW_MS,
+            )
+            .unwrap();
+        assert!(!diff.committable, "{diff:#?}");
+        assert!(diff
+            .violations
+            .iter()
+            .any(|v| v.item == id && v.rule == PlanRule::Invalid && v.introduced));
+    }
+
+    /// From the series' first event nothing is left before it: the drag
+    /// moves every event, as a drag of all of them does, and splits nothing.
+    #[test]
+    fn this_and_following_from_the_first_event_moves_the_whole_series() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let commit = commit_following(&e, &mut db, id, 4, 11);
+        assert_eq!(slot(&db, id), (on(4, 11), on(4, 12)));
+        assert!(read_block_row(&db, id).rrule.unwrap().until.is_none());
+        let undone = e.plan_undo(&mut db, commit).unwrap();
+        assert_eq!(undone.restored, 2);
+        assert_eq!(slot(&db, id), (on(4, 9), on(4, 10)));
+    }
+
+    /// An event an exception already moved on its own cannot carry the
+    /// following ones, as it cannot carry every event.
+    #[test]
+    fn this_and_following_from_an_event_moved_alone_is_refused() {
+        let e = engine();
+        let mut db = db();
+        let id = weekly(&e, &mut db);
+        let alone = e
+            .plan_preview(&db, &drag(id, 11, OccurrenceScope::This, 10), NOW_MS)
+            .unwrap();
+        e.plan_apply(&mut db, &alone, NOW_MS).unwrap();
+        let mut following = drag(id, 11, OccurrenceScope::ThisAndFollowing, 12);
+        if let PlanIntent::MoveBlock { to_start, .. } = &mut following {
+            *to_start = on(11, 12);
+        }
+        let diff = e.plan_preview(&db, &following, NOW_MS).unwrap();
+        assert!(!diff.committable, "{diff:#?}");
+        assert!(diff
+            .violations
+            .iter()
+            .any(|v| v.item == id && v.rule == PlanRule::Invalid && v.introduced));
+    }
 }

@@ -31,18 +31,17 @@ enum BlockEditReach: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The answers a planned drag of one event offers. *This and following*
-    /// splits the series into a new block, which a planner commit cannot
-    /// undo, so the planner does not plan it (`docs/08-features/planner.md`
-    /// §Recurring blocks) and a drag does not offer it.
-    static let planned: [BlockEditReach] = [.thisEvent, .allEvents]
+    /// The answers a planned drag of one event offers: every one. The
+    /// planner plans *this and following* as a split of the series, and its
+    /// undo joins the series back (`docs/08-features/planner.md` §Recurring
+    /// blocks).
+    static let planned: [BlockEditReach] = allCases
 
-    /// The scope a planned drag of one event sends for this answer, or `nil`
-    /// for an answer the planner does not plan.
-    var occurrenceScope: OccurrenceScope? {
+    /// The scope a planned drag of one event sends for this answer.
+    var occurrenceScope: OccurrenceScope {
         switch self {
         case .thisEvent: .this
-        case .thisAndFollowing: nil
+        case .thisAndFollowing: .thisAndFollowing
         case .allEvents: .all
         }
     }
@@ -87,18 +86,15 @@ struct PendingBlockReach: Identifiable {
         self.commit = commit
     }
 
-    /// "Which events?" for a planned drag of one event: it offers only the
+    /// "Which events?" for a planned drag of one event: it offers the
     /// answers the planner plans (``BlockEditReach/planned``), and `commit`
-    /// runs with the scope the answer sends. *This and following* is not
-    /// offered: the planner does not plan it (`docs/08-features/planner.md`
-    /// §Recurring blocks), and the block editor still makes that change.
+    /// runs with the scope the answer sends.
     static func planned(
         dismissed: @escaping () -> Void,
         commit: @escaping (OccurrenceScope) -> Void
     ) -> PendingBlockReach {
         PendingBlockReach(action: .move, reaches: BlockEditReach.planned, dismissed: dismissed) { reach in
-            guard let scope = reach.occurrenceScope else { return dismissed() }
-            commit(scope)
+            commit(reach.occurrenceScope)
         }
     }
 }

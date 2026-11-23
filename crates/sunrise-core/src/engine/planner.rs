@@ -6,7 +6,10 @@
 //! Nothing here decides a position. [`sunrise_domain::planner::solve`] does,
 //! and this module only reads rows into its inputs and writes its answer.
 
-use super::block::{move_anchor, read_block};
+mod split;
+
+use self::split::{join_split, place_move, split_rows, Placed};
+use super::block::{move_anchor, read_block, SeriesSplit};
 use super::day_schedule::schedule_in;
 use super::ids::{blob16, domain_bytes, ms_to_ts, time_from_parts, time_to_parts};
 use super::snapshot::in_tx;
@@ -78,6 +81,10 @@ pub enum PlanField {
     OccurrenceStartsAt,
     /// The end one occurrence's exception overrides.
     OccurrenceEndsAt,
+    /// The `UNTIL` of a recurring block's rule, which a drag of this and the
+    /// following events ends the series at. Its undo restores it and takes
+    /// the block that continued the series back into it.
+    Until,
 }
 
 impl PlanField {
@@ -88,6 +95,7 @@ impl PlanField {
             Self::PlannedAt => "scheduled_at",
             Self::StartsAt | Self::OccurrenceStartsAt => "starts_at",
             Self::EndsAt | Self::OccurrenceEndsAt => "ends_at",
+            Self::Until => "rrule",
         }
     }
 
@@ -134,10 +142,15 @@ impl Written {
                 key: Some(key.to_owned()),
             });
         }
-        [PlanField::PlannedAt, PlanField::StartsAt, PlanField::EndsAt]
-            .into_iter()
-            .find(|f| f.register() == name)
-            .map(Self::plain)
+        [
+            PlanField::PlannedAt,
+            PlanField::StartsAt,
+            PlanField::EndsAt,
+            PlanField::Until,
+        ]
+        .into_iter()
+        .find(|f| f.register() == name)
+        .map(Self::plain)
     }
 }
 
@@ -262,16 +275,18 @@ impl Engine {
             if m.item.kind() != EntityKind::Block {
                 continue;
             }
-            let Some(mut block) = read_block(db.conn(), m.item.bytes())? else {
+            let Some(block) = read_block(db.conn(), m.item.bytes())? else {
                 continue;
             };
             let occurrence = m.occurrence.as_ref().and(diff.intent.occurrence());
-            let placed = place_block(
-                &mut block,
+            let placed = place_move(
+                db.conn(),
+                block,
                 occurrence,
                 &m.before,
                 start.clone(),
                 end.clone(),
+                ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX)),
                 &tz,
             );
             if let Err(PlanError::Invalid(_)) = placed {
@@ -292,8 +307,11 @@ impl Engine {
     /// event moves the anchor by as much as the event moved, and that write,
     /// like any move of an anchor, re-keys the block's `exceptions` and
     /// `occurrence_tasks` to the occurrences they named, as an edit of the
-    /// whole block does (`move_anchor`). Returns how many items it moved, and
-    /// the commit whose inverse it stored.
+    /// whole block does (`move_anchor`). A drag of this and the following
+    /// events splits the series at the event, as an edit of "this and
+    /// future" events does, and moves the block that continues it as a drag
+    /// of every event moves a series (`place_move`). Returns how many items
+    /// it moved, and the commit whose inverse it stored.
     ///
     /// In the same transaction it stores the commit's inverse
     /// (`planner_commits`, `planner_commit_fields`): for each field whose
@@ -381,9 +399,60 @@ impl Engine {
                             "{item} is a block off the grid"
                         )));
                     };
-                    let mut block = read_block(db.conn(), item.bytes())?
+                    let block = read_block(db.conn(), item.bytes())?
                         .ok_or_else(|| EngineError::NotFound(format!("block {item}")))?;
                     let occurrence = diff.intent.occurrence().filter(|_| of_occurrence);
+                    let tz = self.device_zone();
+                    let placed = place_move(
+                        db.conn(),
+                        block.clone(),
+                        occurrence,
+                        before,
+                        start,
+                        end,
+                        ms_to_ts(write_ms.cast_signed()),
+                        &tz,
+                    )?;
+                    let mut placed = match placed {
+                        Placed::One(placed) => *placed,
+                        // This event and the following ones: the series
+                        // ends before it, and the block that continues it
+                        // moves as the drag moved the event.
+                        Placed::Split { split, from } => {
+                            let SeriesSplit {
+                                mut ended,
+                                continuation: mut next,
+                                existing,
+                            } = *split;
+                            ended.updated_at = ms_to_ts(write_ms.cast_signed());
+                            next.updated_at = ended.updated_at;
+                            let until = Written::plain(PlanField::Until);
+                            let anchor = [
+                                (Written::plain(PlanField::StartsAt), from.0),
+                                (Written::plain(PlanField::EndsAt), from.1),
+                            ];
+                            priors.push(Prior {
+                                item,
+                                field: until.clone(),
+                                value: block.rrule.as_ref().and_then(|r| r.until.clone()),
+                                undefer: false,
+                            });
+                            priors.extend(anchor.iter().map(|(field, value)| Prior {
+                                item: next.id,
+                                field: field.clone(),
+                                value: Some(value.clone()),
+                                undefer: false,
+                            }));
+                            carried.push((block, vec![until]));
+                            carried.push((
+                                existing.clone().unwrap_or_else(|| next.clone()),
+                                anchor.into_iter().map(|(w, _)| w).collect(),
+                            ));
+                            blocks.push((ended, false));
+                            blocks.push((next, existing.is_none()));
+                            continue;
+                        }
+                    };
                     let stored: Vec<(Written, Option<SunriseTime>)> = match occurrence {
                         // One event: its exception's start and end.
                         Some(o) if o.scope == OccurrenceScope::This => {
@@ -406,7 +475,8 @@ impl Engine {
                                 ),
                             ]
                         }
-                        // The block, or every event: its anchor.
+                        // The block, or every event from the series' first:
+                        // its anchor.
                         _ => vec![
                             (
                                 Written::plain(PlanField::StartsAt),
@@ -418,36 +488,28 @@ impl Engine {
                             ),
                         ],
                     };
-                    let was = block.clone();
-                    place_block(
-                        &mut block,
-                        occurrence,
-                        before,
-                        start,
-                        end,
-                        &self.device_zone(),
-                    )?;
-                    block.updated_at = ms_to_ts(write_ms.cast_signed());
-                    carried.push((was, stored.iter().map(|(w, _)| w.clone()).collect()));
+                    placed.updated_at = ms_to_ts(write_ms.cast_signed());
+                    carried.push((block, stored.iter().map(|(w, _)| w.clone()).collect()));
                     priors.extend(stored.into_iter().map(|(field, value)| Prior {
                         item,
                         field,
                         value,
                         undefer: false,
                     }));
-                    blocks.push(block);
+                    blocks.push((placed, false));
                 }
                 _ => return Err(PlanError::Invalid(format!("{item} cannot be planned"))),
             }
         }
-        let moved = u32::try_from(tasks.len() + blocks.len()).unwrap_or(u32::MAX);
+        // A split writes two blocks for the one item it moves.
+        let moved = u32::try_from(diff.moves.len() + diff.unscheduled.len()).unwrap_or(u32::MAX);
         let mut commit = [0u8; 16];
         self.rng.fill_bytes(&mut commit);
         let commit = PlanCommitId(commit);
         let renewed: Vec<(EntityRef, Vec<Written>)> = carried
             .iter()
             .zip(&blocks)
-            .map(|((was, own), now)| (now.id, renewed(was, now, own)))
+            .map(|((was, own), (now, _))| (now.id, renewed(was, now, own)))
             .collect();
         in_tx(db, |tx| {
             let before = priors
@@ -461,11 +523,13 @@ impl Engine {
                 for w in &tasks {
                     members.extend(w.op_in(self, tx, mode)?);
                 }
-                for b in &blocks {
-                    members.push((
-                        InnerOp::BlockUpdate(Box::new(b.clone())),
-                        domain_bytes(b.stream_id),
-                    ));
+                for (b, create) in &blocks {
+                    let op = if *create {
+                        InnerOp::BlockCreate(Box::new(b.clone()))
+                    } else {
+                        InnerOp::BlockUpdate(Box::new(b.clone()))
+                    };
+                    members.push((op, domain_bytes(b.stream_id)));
                 }
                 self.append_and_fold_group(tx, members, write_ms)?;
             }
@@ -483,7 +547,10 @@ impl Engine {
     /// the value the commit replaced, as a new write; a restored deferral
     /// also takes one off `deferred_count`, and a drag of one event of a
     /// recurring block restores that occurrence's exception's start and end
-    /// (skipped where the exception is gone or cancelled since). A field
+    /// (skipped where the exception is gone or cancelled since). A drag of
+    /// this and the following events is joined back whole or not at all
+    /// (`join_split`): the continuation tombstoned, and the ended series'
+    /// `UNTIL`, exceptions and occurrence bindings restored. A field
     /// this undo's write renews and leaves as it was keeps every other kept
     /// commit's hold on it. A field written again since, by
     /// any device, is skipped and reported, as is every field of an item
@@ -509,7 +576,7 @@ impl Engine {
         let write_ms = self.clock.now_ms();
         let tz = self.device_zone();
         let done = in_tx(db, |tx| {
-            let Some((n, by_item)) = held_inverse(tx, commit)? else {
+            let Some((n, mut by_item)) = held_inverse(tx, commit)? else {
                 return Ok(None);
             };
             let mut out = PlanUndone::default();
@@ -518,6 +585,37 @@ impl Engine {
             let mut relinks: Vec<(InverseRow, bool)> = Vec::new();
             // What each block's write renews and leaves as it was.
             let mut renewing: Vec<(EntityRef, Vec<Written>)> = Vec::new();
+            // A drag of this and the following events: the series is joined
+            // back whole, or left split, never restored in part.
+            if let Some((ended, rows)) = split_rows(tx, &mut by_item)? {
+                if let Some(joined) = join_split(tx, ended, &rows, write_ms, &tz)? {
+                    renewing.push((
+                        ended,
+                        renewed(
+                            &joined.was,
+                            &joined.ended,
+                            &[Written::plain(PlanField::Until)],
+                        ),
+                    ));
+                    out.items.extend([ended, joined.continuation.id]);
+                    out.restored += u32::try_from(rows.len()).unwrap_or(u32::MAX);
+                    members.push((
+                        InnerOp::BlockUpdate(Box::new(joined.ended.clone())),
+                        domain_bytes(joined.ended.stream_id),
+                    ));
+                    members.push((
+                        InnerOp::BlockDelete(Box::new(joined.continuation.clone())),
+                        domain_bytes(joined.continuation.stream_id),
+                    ));
+                    relinks.extend(rows.into_iter().map(|r| (r, true)));
+                } else {
+                    out.skipped.extend(rows.iter().map(|r| PlanUndoSkip {
+                        item: r.item,
+                        field: r.field.field,
+                    }));
+                    relinks.extend(rows.into_iter().map(|r| (r, false)));
+                }
+            }
             for (item, fields) in by_item {
                 let mut restored = 0u32;
                 let mut skipped: Vec<PlanUndoSkip> = Vec::new();
@@ -1105,8 +1203,8 @@ fn relink(tx: &Transaction<'_>, n: i64, rows: Vec<(InverseRow, bool)>) -> rusqli
 
 /// The fields of a block a full-state write from `was` to `now` renews and
 /// leaves as they were, other than `own`, the ones the commit or undo
-/// writing it stores itself: the anchor's, and each exception's that the
-/// write keeps under the same key.
+/// writing it stores itself: the anchor's, the rule's, and each exception's
+/// that the write keeps under the same key.
 fn renewed(was: &Block, now: &Block, own: &[Written]) -> Vec<Written> {
     let mut out = Vec::new();
     if was.starts_at == now.starts_at {
@@ -1114,6 +1212,9 @@ fn renewed(was: &Block, now: &Block, own: &[Written]) -> Vec<Written> {
     }
     if was.ends_at == now.ends_at {
         out.push(Written::plain(PlanField::EndsAt));
+    }
+    if was.rrule.is_some() && was.rrule == now.rrule {
+        out.push(Written::plain(PlanField::Until));
     }
     for (key, x) in &was.exceptions {
         if now.exceptions.get(key) == Some(x) {
@@ -1210,13 +1311,16 @@ struct InverseRow {
 
 impl InverseRow {
     /// The undo can write this field back: it is held, and a block's anchor
-    /// always has a value to restore. A task's plan and an occurrence's
-    /// override may be restored to none.
+    /// always has a value to restore. A task's plan, an occurrence's override
+    /// and a rule's `UNTIL` may be restored to none.
     fn restorable(&self) -> bool {
         self.held
             && (matches!(
                 self.field.field,
-                PlanField::PlannedAt | PlanField::OccurrenceStartsAt | PlanField::OccurrenceEndsAt
+                PlanField::PlannedAt
+                    | PlanField::OccurrenceStartsAt
+                    | PlanField::OccurrenceEndsAt
+                    | PlanField::Until
             ) || self.prior.is_some())
     }
 }
@@ -1255,7 +1359,8 @@ fn inverse_rows(tx: &Transaction<'_>, commit: PlanCommitId) -> rusqlite::Result<
             PlanField::StartsAt
             | PlanField::EndsAt
             | PlanField::OccurrenceStartsAt
-            | PlanField::OccurrenceEndsAt => EntityKind::Block,
+            | PlanField::OccurrenceEndsAt
+            | PlanField::Until => EntityKind::Block,
         };
         out.push(InverseRow {
             item: EntityRef::new(kind, blob16(&raw)),

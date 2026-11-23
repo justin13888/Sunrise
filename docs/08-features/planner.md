@@ -32,10 +32,9 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   `MoveBlockOccurrence` and `ResizeBlockOccurrence` (§Recurring blocks):
 >   it previews as *this event*, with the ghost on the event dragged and on
 >   no other, and its drop, or Return after a planning key, asks "which
->   events?" with the plan still drawn. The question offers *this event* and
->   *all events* only; *this and following* is not planned
->   ([#1324](https://github.com/justin13888/Sunrise/issues/1324)), and the
->   block editor's Adjust times still makes that change as an ordinary edit.
+>   events?" with the plan still drawn. The question offers *this event*,
+>   *this and following* and *all events*, each committed at its scope
+>   ([#1324](https://github.com/justin13888/Sunrise/issues/1324)).
 > - A block's top edge is not draggable, so `ResizeBlock { edge: Start }` is
 >   never sent.
 > - The undo step is ordered against the command stack in Swift
@@ -86,8 +85,9 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   The newest 64 commits keep their inverse (`PLAN_UNDO_HISTORY`), and an
 >   undone commit is forgotten, so a second undo is `PLAN_UNKNOWN`.
 >   `PlanUndoSkip::field` is a `PlanField` (`PlannedAt`, `StartsAt`,
->   `EndsAt`, and `OccurrenceStartsAt` and `OccurrenceEndsAt` for the
->   exception a drag of one event wrote), and `restored` counts fields. An item deleted since the commit,
+>   `EndsAt`, `OccurrenceStartsAt` and `OccurrenceEndsAt` for the
+>   exception a drag of one event wrote, and `Until` for the rule a drag of
+>   this and the following events ended), and `restored` counts fields. An item deleted since the commit,
 >   or one its restored fields would leave invalid, is skipped whole. In a
 >   vault an older device shares, every write is a full-state op that writes
 >   every field, so an edit of any field of an item since the commit skips
@@ -190,6 +190,9 @@ pub enum OccurrenceScope {
     /// Every event: the commit moves the series' anchor by as much as the
     /// event moved.
     All,
+    /// That event and every later one: the commit splits the series at it
+    /// and moves the block that continues it by as much as the event moved.
+    ThisAndFollowing,
 }
 
 pub enum UnscheduleKeep {
@@ -445,8 +448,9 @@ by one snap re-solves one day's movable set and no more.
    ([ADR-0047](../11-adr/0047-deadlines-and-lateness.md) §4). Rippled items get
    positions only. Nothing else is written, and `target_at` and `hard_due_at`
    are never written. A recurring block is written as §Recurring blocks
-   says: a drag of one event writes that occurrence's exception, and a drag
-   of every event moves the series anchor. A move of the anchor carries its
+   says: a drag of one event writes that occurrence's exception, a drag
+   of every event moves the series anchor, and a drag of this and the
+   following events splits the series. A move of the anchor carries its
    exceptions and occurrence bindings with
    the occurrences they named, through the same path an edit of the whole
    block takes (`time-blocks.md` §Recurring blocks). A move that would leave
@@ -487,11 +491,44 @@ else that moves ever has one.
   moved on its own would stay where its exception puts it, so a drag of every
   event from it is flagged as a Blocking `Invalid` violation.
 
-"This and following" is not planned yet: it splits the series into a new
-block, which the per-field inverse below cannot undo
-([#1324](https://github.com/justin13888/Sunrise/issues/1324)). A client's
-drag does not offer that answer; its block editor makes the change as an
-ordinary edit.
+- **This and following.** The later occurrences of the series in the window
+  move with the dragged one, so none of them is in its way; the earlier ones
+  are fixed. The commit splits the series at the dragged event, as an edit of
+  "this and future" events does (`time-blocks.md` §Recurring blocks): the
+  block's rule ends before the event (its `UNTIL`), keeping the exceptions
+  and occurrence bindings before it, and the block at
+  `split_block_id(series root, key)` continues the series from the event with
+  the ones at or after it. The continuation's anchor then moves by as much as
+  the dragged event moved, as a drag of every event moves a series, carrying
+  its exceptions and bindings, both blocks in one group. A drag from an event
+  an exception already moved on its own is flagged as a Blocking `Invalid`
+  violation, as for every event, and so is one at a key the series was
+  already split at, whose continuation is live. From the series' first
+  event nothing is left before it, so the drag moves every event, as **All
+  events** does, and splits nothing
+  ([#1324](https://github.com/justin13888/Sunrise/issues/1324)).
+
+A drag of this and the following events stores its inverse as three rows: the
+ended block's rule (`Until`, the prior value its `UNTIL`, `None` where it had
+none), and the continuation's `StartsAt` and `EndsAt`, whose prior values are
+where the split put its anchor before the drag moved it. Its undo joins the
+series back whole or not at all: where all three rows are still held, both
+blocks are live, the continuation is bound to no task as a whole, and its
+rule is still the one the split gave it (the series' own, a `COUNT` reduced
+at most), the
+continuation's anchor goes back, which carries its exceptions and bindings
+back to the keys the series gave them, the ended block's `UNTIL` is restored
+and it takes those exceptions and bindings, and the continuation is
+tombstoned, in one group. Otherwise both blocks are left as they are and all
+three rows are reported skipped. A later commit or undo that renews the
+ended block's rule and leaves it as it was keeps the split's undo, as for any
+other field below. A later drag of this and the following events of the
+continuation renews its anchor the same way, but it writes the
+continuation's `UNTIL`, so the first split's undo then leaves the series
+split: joining it would restore the whole series beside the second
+continuation, every event from that continuation's key on shown twice. Undone newest first, the second split's
+undo gives the continuation its rule back, and the first split's undo then
+joins the whole series.
 
 A drag of one event stores its inverse against the occurrence's entry in the
 `exceptions` map (`OccurrenceStartsAt`, `OccurrenceEndsAt`, the prior value
