@@ -264,9 +264,11 @@ impl DaySchedule {
     }
 }
 
-/// A date at the start of the calendar, whose bounds have no instant. The end
-/// of the calendar never refuses: a bound past the timestamp range's last
-/// instant saturates at [`Timestamp::MAX`] (`day-schedule.md` §Planner day).
+/// A date at the edge of the calendar with no instant to answer with: a
+/// planner day at the start of the timestamp range, or a brief whose offset
+/// or next date leaves it. A planner-day bound past the range's last instant
+/// is never refused: it saturates at [`Timestamp::MAX`] (`day-schedule.md`
+/// §Planner day).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the planner day {0} has no instant in the timestamp range")]
 pub struct OutOfCalendar(pub Date);
