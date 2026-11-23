@@ -9,9 +9,12 @@
 //! on, lowers here too, and so does the feature gate's refusal of one.
 
 use sunrise_core::{
-    CommandResult, CoreError, DeviceRow, EngineError, Withdrawal, WithdrawalOutcome,
+    CommandResult, CoreError, DeviceRow, EngineError, RelayReinstatement, Withdrawal,
+    WithdrawalOutcome,
 };
-use sunrise_core_bindings::dto::{CommandOutcome, DeviceListRow, WithdrawalOutcomeKind};
+use sunrise_core_bindings::dto::{
+    CommandOutcome, DeviceListRow, RelayReinstatementKind, WithdrawalOutcomeKind,
+};
 use sunrise_core_bindings::{feature_refusal, BindingError, FeatureRefusal};
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -254,6 +257,21 @@ fn a_withdrawal_report_crosses_the_seam_whole() {
         ),
     ] {
         assert_eq!(WithdrawalOutcomeKind::from(core), seam);
+    }
+}
+
+/// **Each state of the relay's reinstatement crosses the seam as itself**
+/// (ADR-0056 §5): `Refused` is the one that tells a user to pair the device
+/// again, so a lowering that folded it into `Clear` would hide that the
+/// relay still refuses the device.
+#[test]
+fn each_relay_reinstatement_state_crosses_the_seam_as_itself() {
+    for (core, seam) in [
+        (RelayReinstatement::Clear, RelayReinstatementKind::Clear),
+        (RelayReinstatement::Pending, RelayReinstatementKind::Pending),
+        (RelayReinstatement::Refused, RelayReinstatementKind::Refused),
+    ] {
+        assert_eq!(RelayReinstatementKind::from(core), seam);
     }
 }
 

@@ -150,6 +150,10 @@ async fn keys_and_capture_refuse(core: &Core, joiner: &sunrise_pairing::PairingJ
         core.relay_revocation_pending(&[9; 16]),
     );
     refused(
+        "relay_reinstatement_pending",
+        core.relay_reinstatement_pending(&[9; 16]),
+    );
+    refused(
         "capture",
         core.capture("Call mum #home", &jiff::tz::TimeZone::UTC)
             .await,

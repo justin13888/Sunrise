@@ -242,6 +242,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "shift",
         sql: include_str!("../migrations/0054_shift.sql"),
     },
+    Migration {
+        id: 55,
+        name: "relay_reinstatement_intents",
+        sql: include_str!("../migrations/0055_relay_reinstatement_intents.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

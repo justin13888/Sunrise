@@ -925,13 +925,15 @@ pub struct Withdrawal {
     /// device reads those epochs because it was sent them now.
     pub keys_resent: u32,
     /// Whether this replica's queued, unsent telling of the relay was
-    /// cancelled. `false` means it was not: the relay was already told, and it
-    /// refuses the device until it is paired again; the revocation never
-    /// queued one; or the relay is still owed it, because the register still
+    /// cancelled. `false` means it was not: the relay was already told; the
+    /// revocation never queued one; or the relay is still owed it, because
+    /// the register still
     /// names the device or a live claim of this device's own (an
-    /// identity-signed revocation) does, and the row stays queued. The relay
-    /// has no reinstatement yet (ADR-0056 §5 is not built), so a caller says
-    /// the relay may still refuse the device when this is `false`.
+    /// identity-signed revocation) does, and the row stays queued. Where it
+    /// is `false` and no claim of this device's own stands, a reinstatement
+    /// is queued for the relay instead (ADR-0056 §5), and
+    /// `Core::relay_reinstatement_pending` says whether the relay has
+    /// accepted it, still owes it, or refused it.
     pub relay_intent_cancelled: bool,
 }
 

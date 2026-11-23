@@ -657,7 +657,12 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// `54` is migration `0054_shift.sql` (#1244, ADR-0073): `shifts`, the Shift
 /// entity's projection, which starts empty, and `routines.shift_policy`,
 /// `pause` on every existing row. No row is otherwise rewritten.
-pub const STORAGE_V: u16 = 54;
+///
+/// `55` is migration `0055_relay_reinstatement_intents.sql` (#1299, ADR-0056
+/// §5): `relay_reinstatement_intents`, the local queue that asks the relay to
+/// accept a device whose revocation this device withdrew. It starts empty; no
+/// row is rewritten and no projection moves.
+pub const STORAGE_V: u16 = 55;
 
 #[cfg(test)]
 mod tests;

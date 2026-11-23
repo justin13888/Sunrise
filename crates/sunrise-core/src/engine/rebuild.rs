@@ -195,6 +195,7 @@ pub(super) const TABLE_CLASSES: &[(&str, TableClass)] = {
         ("device_revoke_ops", Source),
         ("device_read_bounds", Source),
         ("relay_revocation_intents", Source),
+        ("relay_reinstatement_intents", Source),
         ("vault_required_features", Source),
         ("device_features", Source),
         // Local-only state no op carries.

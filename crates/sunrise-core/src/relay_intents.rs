@@ -35,15 +35,47 @@
 //! relay behind the register (#160's failure).
 //!
 //! What no row here can do is take back a revocation the relay has already
-//! been told. The drain deletes the row on the relay's answer, and nothing in
-//! the client sends the relay's inverse of `DELETE` yet (its reinstatement
-//! route and `Transport::reinstate_device` exist; the queue that would drive
-//! them is #1299), so an unwind after that point leaves the relay refusing
-//! the device. That matches the read bound, which an unwind never
-//! releases either: an unwound device is not back in at either bound.
+//! been told. The drain deletes the row on the relay's answer. Only a
+//! withdrawal sends the relay's inverse of `DELETE`, through the second
+//! queue below; an unwind does not, so an unwind after that point leaves the
+//! relay refusing the device. That matches the read bound, which an unwind
+//! never releases either: an unwound device is not back in at either bound.
 //! `docs/03-crypto/key-rotation.md` §Revocation states it for a reader.
+//!
+//! # The reinstatement queue (ADR-0056 §5)
+//!
+//! `relay_reinstatement_intents` is the inverse: "tell the relay this device
+//! is back". `Command::WithdrawRevocation` cancels an unsent row of the first
+//! queue; where there was none to cancel the relay may already have been
+//! told, so the command queues a row here instead, in its own transaction
+//! ([`queue_relay_reinstatement`]). [`drain_reinstatements`] sends it through
+//! `POST /api/v1/devices/by-vault-id/{id}/reinstate`, which the relay accepts
+//! only from the device it recorded as the revoker.
+//!
+//! The owed rule mirrors the first queue's: a row is owed only while the
+//! register does **not** call its device revoked
+//! ([`OWED_RELAY_REINSTATEMENTS_SQL`]), asked again before each send. So a
+//! device another device still revokes, or this one revoked again, is not
+//! reinstated at the relay, and the row is sent once the register lets it go.
+//! The two queues are therefore never owed for one device at once. A new
+//! `RevokeDevice` of the device deletes its row outright, so an unwind of
+//! that revocation cannot send a reversal queued before it.
+//!
+//! The relay's `403 DEVICE_NOT_REVOKER` says the relay recorded another
+//! revoker, or none, or that this device lost the key it revoked under. The
+//! row stays with `refused_at_ms` set, so
+//! [`Core::relay_reinstatement_pending`] can still say the relay refuses the
+//! device and that pairing it again is the remedy. It is not final, though.
+//! Where two devices revoked the device, the relay recorded only one of
+//! them, and when both withdraw, the other one's reinstatement may land after
+//! this one was refused; the relay then accepts the device, and asking again
+//! answers `204`. So a refused row is left out of a submit wake's pass and
+//! asked once more at each session start
+//! ([`ReinstatementPass::OwedAndRefused`]), and cleared once the relay
+//! accepts the device.
 
-use sunrise_sync::{RevokeOutcome, Transport, TransportError};
+use rusqlite::{params, Connection, OptionalExtension};
+use sunrise_sync::{ReinstateOutcome, RevokeOutcome, Transport, TransportError};
 
 use crate::bytes::hex_short;
 use crate::core::{Core, CoreError};
@@ -101,7 +133,13 @@ pub(crate) async fn drain<T: Transport + ?Sized>(core: &Core, transport: &mut T)
         }
         match transport.revoke_device(device_id).await {
             Ok(RevokeOutcome::Revoked) => {
-                let _ = core.clear_relay_revocation(device_id);
+                // No row left to clear means a withdrawal cancelled it while
+                // the send was in flight, believing the relay had not been
+                // told. It has now, so the reinstatement that withdrawal did
+                // not queue is queued here.
+                if let Ok(false) = core.clear_relay_revocation(device_id) {
+                    let _ = core.queue_relay_reinstatement_after_cancel(device_id);
+                }
                 tracing::info!(
                     ev = "sync.device.revoke_relayed",
                     subject_h = hex_short(&device_id),
@@ -141,6 +179,163 @@ pub(crate) const OWED_RELAY_REVOCATIONS_SQL: &str = "SELECT i.device_id
      FROM relay_revocation_intents i
      WHERE EXISTS (SELECT 1 FROM device_revocations r WHERE r.device_id = i.device_id)
      ORDER BY i.created_at_ms ASC, i.device_id ASC";
+
+/// Which rows of `relay_reinstatement_intents` one [`drain_reinstatements`]
+/// pass sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReinstatementPass {
+    /// Only what [`OWED_RELAY_REINSTATEMENTS_SQL`] calls owed: a submit
+    /// wake, which a user's every edit pokes.
+    Owed,
+    /// What is owed, then every refused row
+    /// ([`REFUSED_RELAY_REINSTATEMENTS_SQL`]) asked once more: a session
+    /// start. Reconnect backoff is then the schedule a refusal is re-asked
+    /// on, as it is for every other retry of the relay queues.
+    OwedAndRefused,
+}
+
+/// Ask the relay to accept again every device whose revocation this device
+/// withdrew and the relay may already have been told (ADR-0056 §5).
+///
+/// The counterpart of [`drain`], run beside it, after it, by the sync driver.
+/// It sends only what `pass` selects, asking again for each device right
+/// before its send, for the reason [`drain`] gives: a local command can
+/// revoke the device again while an earlier send is in flight.
+///
+/// - [`ReinstateOutcome::Reinstated`] clears the row, refused or not.
+/// - [`ReinstateOutcome::NotRevoker`] is not success: the relay recorded
+///   another revoker, or none, and refuses the device. The row stays, marked
+///   refused, so the seam can say so. It is asked again only by an
+///   [`ReinstatementPass::OwedAndRefused`] pass, because another device that
+///   revoked it too may reinstate it at the relay later (module doc).
+/// - [`ReinstateOutcome::Unknown`] is terminal and not success: the relay
+///   holds no row with that vault id, which says nothing about whether it
+///   accepts the device. The row is cleared and the drain warns.
+/// - [`TransportError::Unsupported`] is not an attempt, as in [`drain`].
+/// - Any other error counts an attempt and keeps the row, including the
+///   relay's `409 DEVICE_REINSTATE_PREDATES_REVOKE`, which a request signed
+///   again later clears.
+pub(crate) async fn drain_reinstatements<T: Transport + ?Sized>(
+    core: &Core,
+    transport: &mut T,
+    pass: ReinstatementPass,
+) {
+    let Ok(pending) = core.sendable_relay_reinstatements(pass) else {
+        return;
+    };
+    for device_id in pending {
+        match core.sendable_relay_reinstatements(pass) {
+            Ok(owed) if owed.contains(&device_id) => {}
+            Ok(_) => continue,
+            Err(_) => return,
+        }
+        match transport.reinstate_device(device_id).await {
+            Ok(ReinstateOutcome::Reinstated) => {
+                let _ = core.clear_relay_reinstatement(device_id);
+                tracing::info!(
+                    ev = "sync.device.reinstate_relayed",
+                    subject_h = hex_short(&device_id),
+                    "the relay accepts a device whose revocation this device withdrew"
+                );
+            }
+            Ok(ReinstateOutcome::NotRevoker) => {
+                let _ = core.refuse_relay_reinstatement(device_id, core.now_ms());
+                tracing::warn!(
+                    ev = "sync.device.reinstate_refused_by_relay",
+                    subject_h = hex_short(&device_id),
+                    "the relay recorded another revoker for this device and refuses it; it is \
+                     asked again each session, and pairing it again is the remedy unless that \
+                     revoker reinstates it"
+                );
+            }
+            Ok(ReinstateOutcome::Unknown) => {
+                let _ = core.clear_relay_reinstatement(device_id);
+                tracing::warn!(
+                    ev = "sync.device.reinstate_unknown_to_relay",
+                    subject_h = hex_short(&device_id),
+                    "the relay holds no device bound to this vault device id, so there was \
+                     nothing to reinstate"
+                );
+            }
+            Err(TransportError::Unsupported) => return,
+            Err(e) => {
+                let attempts = core
+                    .note_relay_reinstatement_attempt(device_id, core.now_ms())
+                    .unwrap_or(0);
+                tracing::warn!(
+                    ev = "sync.device.reinstate_not_relayed",
+                    subject_h = hex_short(&device_id),
+                    attempt = attempts,
+                    cause = %e,
+                    "the relay has not accepted a reinstatement; it still refuses that device"
+                );
+            }
+        }
+    }
+}
+
+/// The reinstatements the relay is owed, oldest first: rows of
+/// `relay_reinstatement_intents` it has not refused, whose device the
+/// register does **not** call revoked. See the module doc.
+pub(crate) const OWED_RELAY_REINSTATEMENTS_SQL: &str = "SELECT i.device_id
+     FROM relay_reinstatement_intents i
+     WHERE i.refused_at_ms IS NULL
+       AND NOT EXISTS (SELECT 1 FROM device_revocations r WHERE r.device_id = i.device_id)
+     ORDER BY i.created_at_ms ASC, i.device_id ASC";
+
+/// The reinstatements the relay refused, oldest first, whose device the
+/// register does not call revoked: what a session start asks again
+/// ([`ReinstatementPass::OwedAndRefused`]). Disjoint from
+/// [`OWED_RELAY_REINSTATEMENTS_SQL`] on `refused_at_ms`.
+pub(crate) const REFUSED_RELAY_REINSTATEMENTS_SQL: &str = "SELECT i.device_id
+     FROM relay_reinstatement_intents i
+     WHERE i.refused_at_ms IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM device_revocations r WHERE r.device_id = i.device_id)
+     ORDER BY i.created_at_ms ASC, i.device_id ASC";
+
+/// Queue a reinstatement of `device_id`, inside the caller's transaction.
+///
+/// One row per device. A row already there, sent or refused, is replaced by a
+/// fresh one: this is a new withdrawal, of a revocation the relay may have
+/// recorded under this device's current key, so an earlier refusal says
+/// nothing about it.
+pub(crate) fn queue_relay_reinstatement(
+    conn: &Connection,
+    device_id: &[u8; 16],
+    now_ms: u64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO relay_reinstatement_intents (device_id, created_at_ms) VALUES (?1, ?2)
+         ON CONFLICT (device_id) DO UPDATE SET
+             created_at_ms = excluded.created_at_ms,
+             attempts = 0,
+             last_attempt_ms = NULL,
+             refused_at_ms = NULL",
+        params![&device_id[..], i64::try_from(now_ms).unwrap_or(i64::MAX)],
+    )?;
+    Ok(())
+}
+
+/// Where the relay's half of a withdrawal stands, for one device
+/// (ADR-0056 §5): what [`Core::relay_reinstatement_pending`] answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayReinstatement {
+    /// Nothing is owed to the relay for this device: no withdrawal queued a
+    /// reinstatement, the relay accepted it, the relay held no row with that
+    /// id, or the register calls the device revoked again.
+    Clear,
+    /// A reinstatement is queued and will be sent on the next session. Until
+    /// then a relay that was told of the revocation still refuses the device.
+    Pending,
+    /// The relay refused the reinstatement the last time it was asked: it
+    /// recorded another device as the revoker, or none, or this device no
+    /// longer holds the key it revoked under. The relay refuses the device,
+    /// and the remedy is pairing it again. It is asked once more at each
+    /// session start, because where another device revoked it too, that
+    /// device's own reinstatement can make the relay accept it; the answer
+    /// then becomes [`Self::Clear`].
+    Refused,
+}
 
 impl Core {
     /// Devices this vault has revoked and not yet told the relay about.
@@ -189,16 +384,29 @@ impl Core {
         Ok(self.pending_relay_revocations()?.contains(device_id))
     }
 
-    /// Forget an intent the relay has answered.
+    /// Forget an intent the relay has answered. Returns whether there was a
+    /// row to forget: `false` means a withdrawal cancelled it first.
     ///
     /// # Errors
     /// Storage failures.
-    pub(crate) fn clear_relay_revocation(&self, device_id: [u8; 16]) -> Result<(), CoreError> {
+    pub(crate) fn clear_relay_revocation(&self, device_id: [u8; 16]) -> Result<bool, CoreError> {
         let db = self.db();
-        db.conn().execute(
+        let n = db.conn().execute(
             "DELETE FROM relay_revocation_intents WHERE device_id = ?",
             rusqlite::params![&device_id[..]],
         )?;
+        Ok(n > 0)
+    }
+
+    /// Queue the reinstatement a withdrawal did not, because it cancelled a
+    /// revocation the drain was sending at that moment.
+    ///
+    /// # Errors
+    /// Storage failures.
+    fn queue_relay_reinstatement_after_cancel(&self, device_id: [u8; 16]) -> Result<(), CoreError> {
+        let now_ms = self.now_ms();
+        let db = self.db();
+        queue_relay_reinstatement(db.conn(), &device_id, now_ms)?;
         Ok(())
     }
 
@@ -225,6 +433,185 @@ impl Core {
             |r| r.get(0),
         )?;
         Ok(u64::try_from(attempts).unwrap_or(0))
+    }
+
+    /// Devices the relay is owed a reinstatement of, oldest first. See
+    /// [`OWED_RELAY_REINSTATEMENTS_SQL`].
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub(crate) fn owed_relay_reinstatements(&self) -> Result<Vec<[u8; 16]>, CoreError> {
+        let db = self.db();
+        let mut stmt = db.conn().prepare(OWED_RELAY_REINSTATEMENTS_SQL)?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
+            .collect())
+    }
+
+    /// Devices one drain pass sends a reinstatement of: those
+    /// [`Self::owed_relay_reinstatements`] returns, then, for
+    /// [`ReinstatementPass::OwedAndRefused`], the refused rows
+    /// [`REFUSED_RELAY_REINSTATEMENTS_SQL`] returns.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub(crate) fn sendable_relay_reinstatements(
+        &self,
+        pass: ReinstatementPass,
+    ) -> Result<Vec<[u8; 16]>, CoreError> {
+        let mut ids = self.owed_relay_reinstatements()?;
+        if pass == ReinstatementPass::OwedAndRefused {
+            let db = self.db();
+            let mut stmt = db.conn().prepare(REFUSED_RELAY_REINSTATEMENTS_SQL)?;
+            let refused = stmt
+                .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids.extend(
+                refused
+                    .into_iter()
+                    .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok()),
+            );
+        }
+        Ok(ids)
+    }
+
+    /// Where the relay's half of withdrawing `device_id`'s revocation stands.
+    ///
+    /// The counterpart of [`Self::relay_revocation_pending`] (#160), for the
+    /// same reason: `WithdrawRevocation` commits the vault half when it
+    /// returns, while a relay that was already told keeps refusing the device
+    /// until a session sends the reinstatement. A client that reported only
+    /// the first would tell the user a device is back that cannot sync.
+    ///
+    /// [`RelayReinstatement::Pending`] is answered from the same set the
+    /// drain sends, so it always means "will be sent".
+    /// [`RelayReinstatement::Refused`] is the relay's last refusal, kept
+    /// after the drain ran so the remedy, pairing the device again, can still
+    /// be offered; the next session start asks again, and the row clears
+    /// once the relay accepts the device. Both read as [`RelayReinstatement::Clear`] while the
+    /// register calls the device revoked: the device is not back at all, and
+    /// the device list already says so.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub fn relay_reinstatement_pending(
+        &self,
+        device_id: &[u8; 16],
+    ) -> Result<RelayReinstatement, CoreError> {
+        self.ensure_open()?;
+        let db = self.db();
+        let row: Option<Option<i64>> = db
+            .conn()
+            .query_row(
+                "SELECT i.refused_at_ms
+                 FROM relay_reinstatement_intents i
+                 WHERE i.device_id = ?
+                   AND NOT EXISTS
+                       (SELECT 1 FROM device_revocations r WHERE r.device_id = i.device_id)",
+                params![&device_id[..]],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(match row {
+            None => RelayReinstatement::Clear,
+            Some(None) => RelayReinstatement::Pending,
+            Some(Some(_)) => RelayReinstatement::Refused,
+        })
+    }
+
+    /// Forget a reinstatement the relay has accepted, or has no row for.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub(crate) fn clear_relay_reinstatement(&self, device_id: [u8; 16]) -> Result<(), CoreError> {
+        let db = self.db();
+        db.conn().execute(
+            "DELETE FROM relay_reinstatement_intents WHERE device_id = ?",
+            params![&device_id[..]],
+        )?;
+        Ok(())
+    }
+
+    /// Record the relay's refusal of a reinstatement, keeping the row as its
+    /// trace and moving it from what every pass sends to what only a session
+    /// start asks again.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub(crate) fn refuse_relay_reinstatement(
+        &self,
+        device_id: [u8; 16],
+        now_ms: u64,
+    ) -> Result<(), CoreError> {
+        let now = i64::try_from(now_ms).unwrap_or(i64::MAX);
+        let db = self.db();
+        db.conn().execute(
+            "UPDATE relay_reinstatement_intents
+             SET attempts = attempts + 1, last_attempt_ms = ?1, refused_at_ms = ?1
+             WHERE device_id = ?2",
+            params![now, &device_id[..]],
+        )?;
+        Ok(())
+    }
+
+    /// Record a reinstatement the relay did not accept this time, so a relay
+    /// that keeps saying no is visible rather than retried in silence.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub(crate) fn note_relay_reinstatement_attempt(
+        &self,
+        device_id: [u8; 16],
+        now_ms: u64,
+    ) -> Result<u64, CoreError> {
+        let db = self.db();
+        db.conn().execute(
+            "UPDATE relay_reinstatement_intents
+             SET attempts = attempts + 1, last_attempt_ms = ?
+             WHERE device_id = ?",
+            params![i64::try_from(now_ms).unwrap_or(i64::MAX), &device_id[..]],
+        )?;
+        let attempts: i64 = db.conn().query_row(
+            "SELECT attempts FROM relay_reinstatement_intents WHERE device_id = ?",
+            params![&device_id[..]],
+            |r| r.get(0),
+        )?;
+        Ok(u64::try_from(attempts).unwrap_or(0))
+    }
+
+    /// Queue a reinstatement without going through
+    /// `Command::WithdrawRevocation`, for the driver's tests, which have no
+    /// second device to revoke and withdraw. Test-only.
+    #[cfg(test)]
+    pub(crate) fn queue_relay_reinstatement_for_test(
+        &self,
+        device_id: [u8; 16],
+    ) -> Result<(), CoreError> {
+        let db = self.db();
+        queue_relay_reinstatement(db.conn(), &device_id, 1)?;
+        Ok(())
+    }
+
+    /// The `attempts` of `device_id`'s reinstatement row, or `None` when
+    /// there is no row. Test-only.
+    #[cfg(test)]
+    pub(crate) fn relay_reinstatement_attempts_for_test(
+        &self,
+        device_id: [u8; 16],
+    ) -> Result<Option<i64>, CoreError> {
+        let db = self.db();
+        Ok(db
+            .conn()
+            .query_row(
+                "SELECT attempts FROM relay_reinstatement_intents WHERE device_id = ?",
+                params![&device_id[..]],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     /// Queue a relay revocation without going through `Command::RevokeDevice`.
