@@ -734,6 +734,16 @@ pub mod share {
         out
     }
 
+    /// the link above is made and works, but the share has not reached the relay yet ({error}), so this account's other devices do not know of it and will not re-seal a new key to it. Run `sunrise sync`.
+    #[must_use]
+    pub fn unpublished(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the link above is made and works, but the share has not reached the relay yet (");
+        out.push_str(error);
+        out.push_str("), so this account's other devices do not know of it and will not re-seal a new key to it. Run `sunrise sync`.");
+        out
+    }
+
     /// "{name}" is shared with you, read-only, by identity {identity}. Check that id with them over another channel.
     #[must_use]
     pub fn offered(name: &str, identity: &str) -> String {
@@ -766,11 +776,23 @@ pub mod share {
         out
     }
 
-    /// the relay's grant is for another Stream than the link's; nothing is accepted
+    /// the relay's grant is for another Stream than the link's, so it was declined again; nothing is accepted
     #[must_use]
     pub fn mismatch() -> String {
         let mut out = String::new();
-        out.push_str("the relay's grant is for another Stream than the link's; nothing is accepted");
+        out.push_str("the relay's grant is for another Stream than the link's, so it was declined again; nothing is accepted");
+        out
+    }
+
+    /// the relay's grant is for another Stream than the link's, and declining it failed ({error}), so this account still holds relay grant {grant}; do not trust the link, and ask whoever sent it to withdraw that grant
+    #[must_use]
+    pub fn mismatch_held(error: &str, grant: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the relay's grant is for another Stream than the link's, and declining it failed (");
+        out.push_str(error);
+        out.push_str("), so this account still holds relay grant ");
+        out.push_str(grant);
+        out.push_str("; do not trust the link, and ask whoever sent it to withdraw that grant");
         out
     }
 

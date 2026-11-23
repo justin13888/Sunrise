@@ -2552,6 +2552,9 @@ shared_until = "The share ends in {days, plural, one {# day} other {# days}}."
 # The share op is written but the relay refused or could not be reached.
 # {error} is what the relay said.
 unregistered = "the share is recorded, but the relay did not register it, so no link was made: {error}. Run the same command again."
+# The link is printed and the relay grant registered, but the share_grant op
+# has not reached the relay. {error} is why the push stopped.
+unpublished = "the link above is made and works, but the share has not reached the relay yet ({error}), so this account's other devices do not know of it and will not re-seal a new key to it. Run `sunrise sync`."
 # {name} is the Stream's name as the owner sealed it, {identity} the owner's
 # identity id in hex.
 offered = "\"{name}\" is shared with you, read-only, by identity {identity}. Check that id with them over another channel."
@@ -2559,7 +2562,12 @@ offered = "\"{name}\" is shared with you, read-only, by identity {identity}. Che
 offered_until = "The share ends at {date}."
 # {grant} is the relay's id for the grant, in hex.
 claimed = "Accepted: the relay grant {grant} now names this account."
-mismatch = "the relay's grant is for another Stream than the link's; nothing is accepted"
+# The relay's grant names another Stream than the link's, and this account
+# declined it again, so it holds nothing.
+mismatch = "the relay's grant is for another Stream than the link's, so it was declined again; nothing is accepted"
+# As `mismatch`, but declining failed, so the account still holds the grant.
+# {grant} is the relay's id for the grant in hex; {error} what the relay said.
+mismatch_held = "the relay's grant is for another Stream than the link's, and declining it failed ({error}), so this account still holds relay grant {grant}; do not trust the link, and ask whoever sent it to withdraw that grant"
 not_held = "the relay holds no share under this link for this account: it was withdrawn, it expired, another account accepted it first, or it is your own"
 not_yet_read = "Reading a shared Stream is not built yet: this account holds the grant, and no Stream appears in your lists."
 # Why a link did not open for this account.

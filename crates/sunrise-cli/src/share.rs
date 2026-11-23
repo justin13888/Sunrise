@@ -77,9 +77,34 @@ pub fn open_refusal(e: &CoreError) -> String {
     }
 }
 
+/// The sentence for a claimed relay grant whose Stream is not the link's.
+///
+/// The claim has already bound the grant to this account, so `accept`
+/// declines it again before refusing; `declined` is that withdrawal's
+/// outcome, and where it failed the sentence says the grant is still held
+/// rather than that nothing was accepted. `grant` is the grant's id in hex.
+#[must_use]
+pub fn mismatch_refusal(declined: Result<(), String>, grant: &str) -> String {
+    match declined {
+        Ok(()) => strings::share::mismatch(),
+        Err(e) => strings::share::mismatch_held(&e, grant),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mismatch_says_nothing_is_accepted_only_once_declined() {
+        let declined = mismatch_refusal(Ok(()), "0a0b");
+        assert!(declined.contains("nothing is accepted"), "{declined}");
+
+        let held = mismatch_refusal(Err("relay unreachable".to_owned()), "0a0b");
+        assert!(!held.contains("nothing is accepted"), "{held}");
+        assert!(held.contains("still holds relay grant 0a0b"), "{held}");
+        assert!(held.contains("relay unreachable"), "{held}");
+    }
 
     #[test]
     fn a_share_key_round_trips_and_nothing_else_reads_as_one() {

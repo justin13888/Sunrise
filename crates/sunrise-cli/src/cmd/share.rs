@@ -12,7 +12,9 @@
 //! on stderr.
 
 use sunrise_cli::i18n::strings;
-use sunrise_cli::share::{decode_share_key, encode_share_key, expiry_after_days, open_refusal};
+use sunrise_cli::share::{
+    decode_share_key, encode_share_key, expiry_after_days, mismatch_refusal, open_refusal,
+};
 use sunrise_cli::{livesync, login};
 use sunrise_client_core::links::{DeepLink, ShareLink};
 use sunrise_core::config::Rng as _;
@@ -112,7 +114,31 @@ async fn share_stream(ctx: &Ctx<'_>, stream: &str, key: &str, days: Option<Strin
     if let Some((n, _)) = expiry {
         eprintln!("{}", strings::share::shared_until(i64::from(n)));
     }
-    Ok(())
+    publish(core).await
+}
+
+/// Push the share_grant op to the relay before the command exits
+/// (`docs/03-crypto/sharing-with-others.md` §Granting access, step 4). The
+/// recipient reads the grant from the link, not the op; the op is the
+/// account's record of the share, which the owner's other devices fold to
+/// re-seal each later epoch to it, so an unpushed one is a share they do not
+/// know of. Where the push does not finish, the owner is told the link is
+/// made and that `sunrise sync` carries the rest.
+async fn publish(core: &sunrise_core::Core) -> CmdResult {
+    let waited = sunrise_client_core::sync::wait_until_caught_up(
+        core,
+        super::plumbing::DEADLINE_MS,
+        &mut |_| {},
+    )
+    .await
+    .map_err(|e| strings::share::unpublished(&e.to_string()))?;
+    waited.map_err(|last| {
+        strings::share::unpublished(&super::plumbing::not_caught_up(
+            &last,
+            core.sync_last_refusal(),
+        ))
+        .into()
+    })
 }
 
 /// `accept <sunrise://share/...>`.
@@ -158,7 +184,19 @@ pub(super) async fn accept(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
         other => other.to_string(),
     })?;
     if held.stream_id != offer.stream_id {
-        return Err(strings::share::mismatch().into());
+        // The claim already bound the relay grant to this account; decline
+        // it again so a refused link leaves nothing held, and say so where
+        // the relay would not let go of it.
+        let core_for_sign = std::sync::Arc::clone(ctx.shared);
+        let declined = grants::withdraw_viewer_grant(
+            &relay.caller(),
+            held.grant_id,
+            core.now_ms(),
+            move |m| core_for_sign.sign_with_device_key(m),
+        )
+        .await
+        .map_err(|e| e.to_string());
+        return Err(mismatch_refusal(declined, &hex16(&held.grant_id)).into());
     }
     println!("{}", hex16(&held.grant_id));
     eprintln!("{}", strings::share::claimed(&hex16(&held.grant_id)));
