@@ -1,6 +1,8 @@
 //! What `sunrise share` and `sunrise accept` read and write that is not a
-//! vault call: the share key, the share's length, and the reasons a link does
-//! not open, kept pure so they are tested without a vault or a relay.
+//! vault call: the share key, the share's length, the reasons a link does
+//! not open, an identity id as typed, which held share a word names, and
+//! which relay answers leave a grant gone, kept pure so they are tested
+//! without a vault or a relay.
 //!
 //! # The share key
 //!
@@ -14,8 +16,11 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use sunrise_core::keychain::HeldShare;
 use sunrise_core::{CoreError, KeychainError};
 use sunrise_crypto::ShareGrantError;
+use sunrise_id::{EntityKind, EntityRef};
+use sunrise_relay_client::grants::GrantError;
 
 use crate::i18n::strings;
 
@@ -91,9 +96,108 @@ pub fn mismatch_refusal(declined: Result<(), String>, grant: &str) -> String {
     }
 }
 
+/// The identity id in `text`: 32 hex digits, either case, as `share list`
+/// and `share` print it.
+#[must_use]
+pub fn parse_identity_id(text: &str) -> Option<[u8; 16]> {
+    let text = text.trim();
+    if text.len() != 32 || !text.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Whether a relay's answer to a withdrawal leaves the grant gone: it let
+/// it go, or it holds no such grant for this account any more (withdrawn
+/// already, expired, or declined by the other side), which the relay
+/// answers the same way.
+#[must_use]
+pub fn withdrawal_settled(outcome: &Result<(), GrantError>) -> bool {
+    matches!(outcome, Ok(()) | Err(GrantError::NotHeld))
+}
+
+/// The shares `typed` names among those this account holds: every one whose
+/// owner's Stream id is `typed` (as a Stream ref), or, failing that, every
+/// one whose sealed name is `typed`, ignoring case.
+#[must_use]
+pub fn held_matching<'a>(held: &'a [HeldShare], typed: &str) -> Vec<&'a HeldShare> {
+    let typed = typed.trim().trim_start_matches('#').trim();
+    if let Ok(id) = EntityRef::parse(typed, EntityKind::Stream) {
+        return held.iter().filter(|h| h.stream_id == *id.bytes()).collect();
+    }
+    let folded = typed.to_lowercase();
+    held.iter()
+        .filter(|h| h.name.to_lowercase() == folded)
+        .collect()
+}
+
+/// The owner's Stream a held share reads, as a Stream ref.
+#[must_use]
+pub fn held_stream_ref(share: &HeldShare) -> EntityRef {
+    EntityRef::new(EntityKind::Stream, share.stream_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn held(stream: u8, name: &str) -> HeldShare {
+        HeldShare {
+            granter_identity_id: [1; 16],
+            stream_id: [stream; 16],
+            epoch: 2,
+            name: name.to_owned(),
+            color: "teal".to_owned(),
+            expires_at_ms: None,
+            accepted_at_ms: 3,
+            relay_grant_ids: vec![[4; 16]],
+        }
+    }
+
+    #[test]
+    fn a_held_share_is_named_by_its_stream_id_or_its_name() {
+        let shares = [held(7, "Garden"), held(8, "Kitchen"), held(9, "garden")];
+        let by_ref = held_stream_ref(&shares[1]).to_str();
+        let named = held_matching(&shares, &by_ref);
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].name, "Kitchen");
+        assert_eq!(held_matching(&shares, &format!("#{by_ref}")).len(), 1);
+
+        let named = held_matching(&shares, " GARDEN ");
+        assert_eq!(named.len(), 2, "both Gardens, so the caller asks for an id");
+        assert!(held_matching(&shares, "Attic").is_empty());
+        let unheld = EntityRef::new(EntityKind::Stream, [5; 16]).to_str();
+        assert!(held_matching(&shares, &unheld).is_empty());
+    }
+
+    #[test]
+    fn an_identity_id_is_32_hex_digits() {
+        let id = [0xab; 16];
+        let hex = sunrise_client_core::ids::hex_id(&id);
+        assert_eq!(parse_identity_id(&hex), Some(id));
+        assert_eq!(parse_identity_id(&hex.to_uppercase()), Some(id));
+        assert_eq!(parse_identity_id(&format!(" {hex}\n")), Some(id));
+        assert_eq!(parse_identity_id(&hex[..30]), None);
+        assert_eq!(parse_identity_id(&format!("{hex}00")), None);
+        assert_eq!(parse_identity_id(&"zz".repeat(16)), None);
+        assert_eq!(parse_identity_id(&"é".repeat(16)), None);
+    }
+
+    #[test]
+    fn a_grant_the_relay_no_longer_holds_is_as_good_as_withdrawn() {
+        assert!(withdrawal_settled(&Ok(())));
+        assert!(withdrawal_settled(&Err(GrantError::NotHeld)));
+        assert!(!withdrawal_settled(&Err(GrantError::Conflict(
+            "x".to_owned()
+        ))));
+        assert!(!withdrawal_settled(&Err(GrantError::Request(
+            "x".to_owned()
+        ))));
+    }
 
     #[test]
     fn a_mismatch_says_nothing_is_accepted_only_once_declined() {

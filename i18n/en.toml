@@ -2378,9 +2378,21 @@ USAGE:
                                  whose key it is, for n days or for good, and
                                  print the sunrise://share link to send them.
                                  Needs SUNRISE_SYNC_URL and a sign-in
+    sunrise share list <stream>  list who a Stream is shared with, and the
+                                 shares that were revoked or declined
+    sunrise share revoke <stream> <identity>
+                                 end a share: rotate the Stream's key so they
+                                 read nothing new, and withdraw the relay
+                                 grant this device registered for it
+    sunrise share declined <stream> <identity>
+                                 record that they declined a share
     sunrise accept <link>        check that a sunrise://share link was made
                                  for this account, show who shared which
-                                 Stream, and claim it on the relay
+                                 Stream, claim it on the relay, and keep the
+                                 Stream's key
+    sunrise share decline <stream>
+                                 decline a share you accepted: withdraw its
+                                 relay grant and drop its key
 
   views and preferences
     sunrise views                list saved views
@@ -2534,7 +2546,9 @@ ready = "Account {identity} ({email}) ready; this device is {device}."
 paired_no_code = "this vault was paired into an existing account, so it holds no identity key and cannot produce a recovery code. The device that created the account is the one that can."
 
 [cli.share]
-usage = "usage: share key | share <stream> <share-key> [--days <n>] | accept <sunrise://share/...>"
+usage = "usage: share key | share <stream> <share-key> [--days <n>] | share list <stream> | share revoke <stream> <identity> | share declined <stream> <identity> | share decline <stream> | accept <sunrise://share/...>"
+# {raw} is what the user typed where an identity id was expected.
+bad_identity = "not an identity id: {raw}; use the 32 hex digits `sunrise share list` shows"
 # {var} is the environment variable that names the relay.
 needs_relay = "set {var} to the relay origin, and run `sunrise bootstrap` once"
 not_signed_in = "not signed in; run `sunrise login` first, or set SUNRISE_SYNC_TOKEN"
@@ -2569,7 +2583,49 @@ mismatch = "the relay's grant is for another Stream than the link's, so it was d
 # {grant} is the relay's id for the grant in hex; {error} what the relay said.
 mismatch_held = "the relay's grant is for another Stream than the link's, and declining it failed ({error}), so this account still holds relay grant {grant}; do not trust the link, and ask whoever sent it to withdraw that grant"
 not_held = "the relay holds no share under this link for this account: it was withdrawn, it expired, another account accepted it first, or it is your own"
-not_yet_read = "Reading a shared Stream is not built yet: this account holds the grant, and no Stream appears in your lists."
+not_yet_read = "Reading a shared Stream is not built yet: this account holds the grant and the Stream's key, and no Stream appears in your lists."
+# stderr, after `claimed`. {stream} is the owner's Stream id.
+decline_hint = "To decline it later: sunrise share decline {stream}"
+# The relay grant is claimed but the key could not be kept on this device.
+# {grant} is the relay's id for the grant in hex; {error} what went wrong.
+hold_failed = "this account claimed relay grant {grant}, but this device could not keep the Stream's key ({error}); run the same command again"
+# `share list`, one line per recipient on stdout. {identity} is the
+# recipient's identity id in hex; {date} an instant as YYYY-MM-DD HH:MM in
+# the reader's zone.
+list_forever = "{identity}  shared, read-only, for good"
+list_until = "{identity}  shared, read-only, until {date}"
+list_revoked = "{identity}  revoked {date}"
+list_declined = "{identity}  declined {date}"
+# stderr, when `share list` has nothing to show. {stream} is the Stream's id.
+list_none = "{stream} has never been shared on this account"
+# stderr, after a revocation. {identity} is the recipient's identity id in
+# hex, {stream} the Stream's id, {epoch} the key epoch the rotation minted.
+revoked = "Revoked {identity}'s share of {stream}. The Stream's key moved to epoch {epoch}, which they never receive; what they already read stays with them."
+# stderr, after `share declined`. {identity} and {stream} as in `revoked`.
+decline_recorded = "Recorded that {identity} declined {stream}; the share has ended."
+# The share is ended on this device, but the op has not reached the relay.
+# {error} is why the push stopped.
+end_unpublished = "the share is ended on this device, but that has not reached the relay yet ({error}), so this account's other devices may still re-seal a new key to it. Run `sunrise sync`."
+# stderr, when the share had already ended and only this device's relay
+# grants were left to withdraw.
+already_ended = "That share had already ended; withdrawing the relay grants this device registered for it."
+# stderr, one per relay grant the relay let go. {grant} is its id in hex.
+withdrawn = "Withdrew relay grant {grant}."
+# The relay did not withdraw a grant. {grant} is its id in hex; {error} what
+# the relay said.
+withdraw_failed = "the relay did not withdraw grant {grant} ({error}); the new key is what stops them reading, and running the same command again withdraws it"
+# Note, when this device registered no relay grant for the share.
+no_relay_grant = "this device registered no relay grant for that share, so none is withdrawn. The new key is what stops them reading; the device that made the share withdraws its grant with the same command."
+# `share decline`: {text} is what the user typed.
+nothing_held = "this account holds no share of \"{text}\"; give the Stream's name or the id `sunrise accept` showed"
+# {candidates} is a comma-separated list of Stream ids.
+held_ambiguous = "\"{text}\" names more than one share this account holds: {candidates}; give the Stream's id"
+# {name} is the Stream's name as the owner sealed it, {identity} the owner's
+# identity id in hex.
+declined = "Declined \"{name}\" from identity {identity}: the relay grant is withdrawn and this device dropped the Stream's key. Tell them over another channel, so their account records the decline."
+# The relay did not let go of a grant, so nothing was dropped. {grant} is
+# its id in hex; {error} what the relay said.
+decline_failed = "the relay did not withdraw grant {grant} ({error}), so the share is kept; run the same command again"
 # Why a link did not open for this account.
 other_recipient = "this link was made for another account"
 bad_signature = "this link's grant was not signed by the key it carries; do not trust it"

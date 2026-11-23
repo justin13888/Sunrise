@@ -297,8 +297,13 @@ async fn run(
     // how the account's other devices learn of the share they re-seal each
     // later epoch to, so the command pushes it before it exits
     // (sharing-with-others.md §Granting access, step 4).
-    // `share key` only prints this account's key and writes nothing.
-    let pushes_share = sub == "share" && rest.first().is_some_and(|v| v != "key");
+    // `share revoke` and `share declined` push the op that ends a share, for
+    // the same reason. `share key` and `share list` only read, and the
+    // recipient's `share decline` writes no op: neither needs the driver.
+    let pushes_share = sub == "share"
+        && rest
+            .first()
+            .is_some_and(|v| !matches!(v.as_str(), "key" | "list" | "decline"));
     if !matches!(sub, "sync" | "attachment") && !pushes_identity && !pushes_share {
         env.url = None;
     }

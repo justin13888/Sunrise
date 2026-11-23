@@ -115,3 +115,61 @@ fn accept_takes_only_a_share_link() {
         );
     }
 }
+
+/// A Stream nobody was given lists nothing, on stderr, and succeeds.
+#[test]
+fn share_list_says_when_a_stream_was_never_shared() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(run(dir.path(), &["streams", "create", "Garden"])
+        .status
+        .success());
+    let out = run(dir.path(), &["share", "list", "Garden"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("never been shared"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// Ending a share takes an identity id, and one with no share is refused
+/// with nothing written: the outbox holds what it held.
+#[test]
+fn ending_a_share_nobody_holds_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(run(dir.path(), &["streams", "create", "Garden"])
+        .status
+        .success());
+    let before = stdout(&run(dir.path(), &["sync", "status"]));
+
+    for verb in ["revoke", "declined"] {
+        let out = run(dir.path(), &["share", verb, "Garden", "not-an-id"]);
+        assert!(!out.status.success(), "{verb}: {out:?}");
+        assert!(
+            stderr(&out).contains("not an identity id"),
+            "{verb}: {}",
+            stderr(&out)
+        );
+
+        let nobody = "ab".repeat(16);
+        let out = run(dir.path(), &["share", verb, "Garden", &nobody]);
+        assert!(!out.status.success(), "{verb}: {out:?}");
+        assert!(stdout(&out).is_empty(), "{verb}: {}", stdout(&out));
+    }
+    assert_eq!(stdout(&run(dir.path(), &["sync", "status"])), before);
+}
+
+/// A recipient declines only a share it holds, and needs no relay to be
+/// told it holds none.
+#[test]
+fn declining_a_share_not_held_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run(dir.path(), &["share", "decline", "Garden"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        stderr(&out).contains("holds no share of \"Garden\""),
+        "{}",
+        stderr(&out)
+    );
+}
