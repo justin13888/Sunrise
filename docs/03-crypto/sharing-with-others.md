@@ -33,7 +33,7 @@ The only role it grants is `viewer`, the answer recorded for #133: a read-only g
 * The `persons` table `0013_baseline.sql` creates is still read and written by nothing: a share names its `Person` by ref, and the caller supplies the `Person` and the recipient's `ID_D_pub`.
 * Any client use of the relay viewer grant. The relay half is built ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md), the threat model for all of sharing): an owner registers a grant on a Stream under a claim token, one other account claims it, and that account's sessions read the owner's channel and can write nothing into it. The same grant reads the owner's pinned snapshot and blobs, and a publish wakes the accounts holding one ([#1322](https://github.com/justin13888/Sunrise/issues/1322)). No client registers, claims, subscribes or reads through one yet.
 * The `sunrise://share/<token>` deep link, the accept and decline UI, and the CLI surface.
-* The `editor` role.
+* The `editor` role. It is decided ([ADR-0075](../11-adr/0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md), [#1321](https://github.com/justin13888/Sunrise/issues/1321)) and none of it is built. Every build refuses an `editor` grant until all of that ADR's §8 is built (§Roles).
 
 ADR-0024 decision 4 — independently random per-`(stream_id, epoch)` keys distributed by HPKE — is what makes selective sharing expressible at all, and it is built.
 
@@ -42,9 +42,29 @@ ADR-0024 decision 4 — independently random per-`(stream_id, epoch)` keys distr
 | Role | Read | Propose ops | Notes |
 |---|---|---|---|
 | `viewer` | yes | no (ops emitted are dropped client-side; sync layer rejects them) | Read-only |
-| `editor` | yes | yes | Ops carry the editor's device_id and identity ID; merged by entity LWW like any other op |
+| `editor` | yes | entity ops in the shared Stream only | Decided, not built ([ADR-0075](../11-adr/0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md)). Ops carry the editor's `device_id`, chain to its identity, and merge by per-field ops like the owner's ([ADR-0044](../11-adr/0044-per-field-ops.md)) |
 
 There is no `admin` and no `commenter` role. Granting and revoking is a privilege of the Stream's **owner identity** only.
+
+**What an editor may write** (ADR-0075 §1–§2): entity ops in the shared Stream's own log, under an epoch its grant sealed, on the entities below the Stream (its Tasks, Blocks, Notes and Attachments). An editor never writes:
+
+* a control op of any family, in any stream;
+* the Stream entity itself, meaning its name, color, pause, archive, deletion or sharing;
+* any other stream;
+* an op that moves an entity out of the shared Stream or names an entity outside it.
+
+An editor is never a device of the owner's account.
+
+**Who enforces it** (ADR-0075 §3): every replica that applies the Stream, on its own. That means the owner's devices, each viewer and each editor. The relay does not enforce it, and neither does the owner's vault-meta log, which recipients cannot read. An editor's op applies only when all four hold:
+
+1. Its signing device's `DeviceCert` was signed by an identity whose `identity_id_from_pub` is an editor grant's `recipient_identity_id`.
+2. The owner identity has attested that grant inside the shared Stream.
+3. It is under an epoch the editor was sealed and inside any revocation cut.
+4. Its content stays inside the editor's authority.
+
+An op that fails any of them, though its signature verifies, is acknowledged and not applied: it is not a sync failure. An editor's authority ends at a frontier cut its `share_revoke` carries, never at a time compared with the editor's own HLC (ADR-0075 §4).
+
+**What stays enforced until then.** `share_grant.rs` decodes `editor` as `ShareGrantError::UnsupportedRole`, and nothing seals one. The ADR's §8 lists what must all be built before that changes, behind a structural feature.
 
 ## Granting access
 
@@ -112,7 +132,7 @@ When sharing a Stream, the recipient gets:
 
 ## Egress scrubbing
 
-A Note in a shared Stream may contain `{kind: "ref", ref: entity-ref}` pointing to a Task or Note in a Stream the recipient does not have. The **owner is the only origin of cross-stream references in shared content**: editors only see entity ids for entities inside the shared Stream, so an editor's UI cannot construct a ref to an entity in one of the owner's private Streams. Cross-stream refs in shared content therefore always come from the owner.
+A Note in a shared Stream may contain `{kind: "ref", ref: entity-ref}` pointing to a Task or Note in a Stream the recipient does not have. The **owner is the only origin of cross-stream references in shared content**. That does not rest on an editor's UI. An editor's op that names an entity outside the shared Stream is outside its authority, and every replica leaves it unapplied ([ADR-0075](../11-adr/0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md) §2–§3). Cross-stream refs in shared content therefore always come from the owner.
 
 On op emission, the **owner's device** runs egress scrubbing per recipient cohort as part of constructing the op:
 
@@ -122,7 +142,7 @@ On op emission, the **owner's device** runs egress scrubbing per recipient cohor
 
 A scrubbed envelope is detectable to the **owner** (they retain the original). Recipients cannot tell whether their envelope was scrubbed; this is by design (no leak of the existence of private references).
 
-There is no editor→owner re-scrubbing path: editors cannot author cross-stream refs in the first place, so there is nothing for the owner to re-scrub on inbound editor ops.
+There is no editor→owner re-scrubbing path. A cross-stream ref in an editor's op never applies anywhere, so there is nothing for the owner to re-scrub on inbound editor ops.
 
 ## Cross-relay sharing
 
@@ -133,13 +153,16 @@ no federation, and the credential question is open — lives in
 
 ## Edits by editors
 
-When an editor modifies a shared Stream:
+Decided by [ADR-0075](../11-adr/0075-an-editor-writes-a-shared-streams-contents-and-every-replica-is-the-boundary.md), not built. When an editor modifies a shared Stream:
 
-1. Their device produces ops signed by *their* device key, encrypted under the Stream key for the current epoch.
-2. Ops are published to the granter's relay (or, in the cross-relay case above, the relay both parties agree to use).
-3. Ops carry the editor's `device_id` (whose `DeviceCert` is in the editor's vault-meta log, which is fetched on first share). Authorship is preserved on every op.
+1. Their device produces entity ops signed by *their* device key and encrypted under the Stream key of an epoch their grant sealed.
+2. Ops are published into the owner's channel on the owner's relay, through a write route open only to an account holding a relay grant registered with the role `editor` (ADR-0075 §6). The relay's check is hygiene, not the boundary.
+3. Ops carry the editor's `device_id`. Its `DeviceCert` chain travels in the shared Stream, so every replica can verify it without reading the editor's vault-meta log (ADR-0075 §8 item 1). Authorship is preserved on every op.
+4. Every replica checks the op against the editor's authority before applying it (§Roles).
 
-There is no "merge request" model: an editor's op applies on arrival and merges by entity-level LWW ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)), which means two editors changing the same Note concurrently keep one version, not a union of both. A future "review mode" toggle is not designed or built.
+There is no "merge request" model. An editor's op that passes §Roles' checks applies on arrival and merges by per-field ops ([ADR-0044](../11-adr/0044-per-field-ops.md)), exactly as the owner's do. A future "review mode" toggle is not designed or built.
+
+Revoking an editor also cuts its writes: the `share_revoke` op carries the last `(seq, op_hash)` the owner accepted from each of the editor's devices. Every replica applies that chain and nothing past or beside it (ADR-0075 §4). An honest op still in flight when the cut is made is lost, and the revoke UI says so.
 
 ## Privacy implications
 
