@@ -17,7 +17,9 @@ halves are kept and the fork is surfaced as before. For that same case, §5's
 "changes nothing already folded" gives way too: the swap recomputes that
 device's `ops.chain_root` from the swapped seq up, and a `StreamDigest`
 already published over the old half stays in the log, read as a
-`chain_divergence` until its publisher's next digest agrees. §3 is unchanged.
+`chain_divergence` until its publisher's next digest agrees. The swap counts
+as one op entering the log for §5's cadence, and re-judges that device's
+recorded divergences against its recomputed roots. §3 is unchanged.
 
 **Relates to:**
 

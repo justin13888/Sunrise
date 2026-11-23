@@ -206,13 +206,29 @@ where its own `root(d, n)` differs, it records a `chain_divergence` naming the
 editor's device, the publisher and `n`. That is honest evidence, because the
 publisher did hold the other half at `n`. It clears as §5 clears any
 divergence, at the publisher's first later digest that agrees at or above it.
-The publisher recomputes its own roots when the cut and the named half both
-reach it, and the cut is an op entering the log, so §5's cadence makes a
-digest of the publisher's due within a day of its last. Until one agrees, the
-divergence stands and `Engine::chain_integrity` counts it. A replica that
-holds only the half the cut does not name keeps its root over that half,
-and disagrees with its peers until the named half reaches it, which is the
-fork it really holds.
+Two rules keep that from waiting on traffic an idle Stream may never send:
+
+- **A swap counts as one op entering the Stream's log** for §5's digest
+  cadence, on the replica that makes it. §5 counts only ops that entered the
+  log since the replica's last digest, and a swap need not add one: a
+  publisher that digested after the cut reached it, but before the named
+  half did, would otherwise have nothing new to count. With it, the
+  publisher's next digest, over its recomputed roots, is due within a day of
+  its last however idle the Stream is.
+- **The swap re-judges the divergences already recorded for that device.**
+  §5 judges a peer's root only when the peer's digest arrives, so a replica
+  that recorded a divergence before its own swap would keep it until that
+  peer digested again. In the same transaction as the recomputed roots, the
+  rebuild compares each `chain_divergence` row for the swapped device with
+  its new `root(d, n)` at the row's `n`. A row whose peer root now matches
+  is cleared, and any other keeps its peer root and takes the new held root.
+
+Until a digest agrees, the divergence stands and `Engine::chain_integrity`
+counts it. A replica that holds only the half the cut does not name keeps its
+root over that half, and disagrees with its peers until the named half
+reaches it, which is the fork it really holds. When it does, the swap's
+re-judgement clears what that disagreement recorded against peers whose
+digests already folded the named half.
 
 Expiry ends an editor's writes the same way. When a device of the owner's sees
 an editor grant expire at its own clock, it emits the same revoke with its
@@ -277,10 +293,14 @@ together:
    materialized entities from its retained log and the `fork_evidence` the
    cut covers, run when a cut lands, which un-materializes ops past it and
    swaps in the fork half the cut names, recomputing that device's
-   `ops.chain_root` from the swapped seq up. Tested by delivering one log to
-   two replicas in different orders, the cut before and after the ops past
-   it, and the two halves of a fork in either order, and asserting the two
-   Streams are equal and their stream digests at one frontier are equal.
+   `ops.chain_root` from the swapped seq up, re-judging its recorded
+   `chain_divergence` rows, and counting as one op for the digest cadence.
+   Tested by delivering one log to two replicas in different orders, the cut
+   before and after the ops past it, and the two halves of a fork in either
+   order, and asserting the two Streams are equal and their stream digests at
+   one frontier are equal. Also tested with no op after the swap: a
+   divergence recorded before it clears at the swap where the roots then
+   agree, and the swapping replica's digest is due a day after its last.
 6. **The relay's editor write route** of §6.
 7. **A structural feature** (ADR-0045 §7), named when it is built and listed
    in `vault_requires` before any device seals an editor grant. Until then, no
@@ -348,8 +368,11 @@ that, and each is read here rather than past.
   is applied. A `StreamDigest` already published over the old half stays in
   the log unchanged, and a replica that has swapped records the
   `chain_divergence` it shows until the publisher's next digest agrees (§4).
-  The root formula, the digest, the `StreamDigest` shape and every other
-  device's roots are unchanged.
+  Two additions keep that from waiting on traffic: §5's cadence counts a
+  swap as one op entering the log, and a swap re-judges the device's
+  recorded divergences against its recomputed roots, where §5 otherwise
+  judges only when a digest arrives. The root formula, the digest, the
+  `StreamDigest` shape and every other device's roots are unchanged.
 
 ## Alternatives considered
 
