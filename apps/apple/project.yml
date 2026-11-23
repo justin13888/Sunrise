@@ -331,9 +331,10 @@ targets:
       #
       # The App Group the widgets read through is granted on **both**
       # configurations, so each configuration names its own committed file:
-      # `macOS/Sunrise.entitlements` carries the group and
-      # `keychain-access-groups`, `macOS/SunriseDebug.entitlements` the group
-      # alone. The group is not restricted in the team-prefixed form a
+      # `macOS/Sunrise.entitlements` carries the group,
+      # `keychain-access-groups` and the Time Sensitive Notifications
+      # entitlement (profile-granted, like the keychain group),
+      # `macOS/SunriseDebug.entitlements` the group alone. The group is not restricted in the team-prefixed form a
       # Developer ID build carries: no profile is needed to be granted it, and
       # an ad-hoc build that carries it still launches. The app itself is not
       # sandboxed and can reach the container path without it; it is here so
@@ -545,12 +546,24 @@ targets:
     #
     # `aps-environment` is what lets `registerForRemoteNotifications` hand
     # out a token at all; without it the silent push has no address.
+    #
+    # `com.apple.developer.usernotifications.time-sensitive` is what lets
+    # wind-down's `.timeSensitive` request be delivered as one
+    # (docs/08-features/notifications.md §Wind-down); without it the system
+    # reports the setting as not supported and delivers the request as
+    # active. Like `aps-environment` it is granted by a capability on the App
+    # ID through the profile, and like it, it is on both configurations: this
+    # key cannot vary by configuration, a simulator build does not check it,
+    # and a device build of either configuration is signed with the team's
+    # profile already for the push entitlement. The macOS app carries it on
+    # Release only; see `macOS/Sunrise.entitlements`.
     entitlements:
       path: Generated/SunriseiOS.entitlements
       properties:
         com.apple.security.application-groups:
           - $(SUNRISE_APP_GROUP)
         aps-environment: $(SUNRISE_APS_ENVIRONMENT)
+        com.apple.developer.usernotifications.time-sensitive: true
     postCompileScripts:
       - name: SwiftLint
         basedOnDependencyAnalysis: false
