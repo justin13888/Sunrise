@@ -24,6 +24,7 @@ mod reminders;
 mod reports;
 mod search;
 mod settings;
+mod shift;
 mod tasks;
 #[cfg(test)]
 mod test_support;
@@ -138,6 +139,7 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
         "contexts" => organize::contexts(ctx, rest).await,
         "context" => organize::context_tasks(ctx, rest).await,
         "routines" => organize::routines(ctx, rest).await,
+        "shift" => shift::shift(ctx, rest).await,
 
         "blocks" => blocks::list(ctx, rest).await,
         "block" => blocks::block(ctx, rest).await,

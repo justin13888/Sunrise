@@ -689,6 +689,7 @@ fn vault_for_the_json_table(v: &Path) -> (String, String) {
     let file = v.join("lease.txt");
     std::fs::write(&file, b"the lease").unwrap();
     ok(v, &["attachment", "add", &first, file.to_str().unwrap()]);
+    ok(v, &["shift", "start", "Trip", "--zone", "Asia/Tokyo"]);
     (first, second)
 }
 
@@ -793,6 +794,26 @@ const JSON_OBJECTS: &[JsonObject] = &[
         &["routines"],
         "/0",
         "{id, title, rule, next_ms, paused, streak}",
+        PLAIN,
+    ),
+    (&["shift", "status"], "", "{shift, away}", PLAIN),
+    (
+        &["shift", "status"],
+        "/shift",
+        "{id, name, starts_ms, ends_ms, zone, place, primary_streams, primary_contexts}",
+        PLAIN,
+    ),
+    (
+        &["shift", "status"],
+        "/away",
+        "{window: {start_ms, end_ms}, missed: [{routine, key, at_ms}], deadlines_passed, \
+             captured}",
+        PLAIN,
+    ),
+    (
+        &["shift", "status"],
+        "/away/window",
+        "{start_ms, end_ms}",
         PLAIN,
     ),
     (&["blocks", "tomorrow"], "/0", BLOCK, PLAIN),
@@ -1303,4 +1324,113 @@ fn a_task_can_belong_to_no_stream_and_a_stream_delete_rehomes_it() {
     assert!(json_of(v, &["streams"])
         .as_array()
         .is_some_and(Vec::is_empty));
+}
+
+/// `shift start`, `shift status` and `shift end` (ADR-0073 §7), each its own
+/// process: a shift started inside another is in force until it ends, and
+/// the outer one again after it; ending one prints what it gathered; undo
+/// reverses an end; a zone the tzdb does not know and an end with nothing in
+/// force are refused.
+#[test]
+fn a_shift_is_started_shown_ended_and_undone() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    assert_eq!(ok(v, &["shift", "status"]).trim(), "No shift is in force.");
+    let none = json_of(v, &["shift", "status"]);
+    assert_eq!(
+        none,
+        serde_json::json!({ "shift": null, "away": null }),
+        "no shift, no summary"
+    );
+
+    let trip = first_id(&ok(
+        v,
+        &["shift", "start", "Travel:", "Tokyo", "--zone", "Asia/Tokyo"],
+    ));
+    assert!(trip.starts_with("shf_"), "{trip}");
+    let status = json_of(v, &["shift", "status"]);
+    assert_eq!(status["shift"]["id"], trip.as_str());
+    assert_eq!(status["shift"]["name"], "Travel: Tokyo");
+    assert_eq!(status["shift"]["zone"], "Asia/Tokyo");
+    assert_eq!(status["shift"]["ends_ms"], serde_json::Value::Null);
+
+    // A conference inside the trip takes over, and says the trip is still
+    // running underneath.
+    let out = run_in(v, &["shift", "start", "Conference"]);
+    assert!(out.status.success());
+    let conference = first_id(&String::from_utf8_lossy(&out.stdout));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("“Travel: Tokyo” is still running"),
+        "{stderr}"
+    );
+    let captured = first_id(&ok(v, &["capture", "Buy an adapter"]));
+    let text = ok(v, &["shift", "status"]);
+    assert!(
+        text.starts_with(&format!("{conference}  Conference")),
+        "{text}"
+    );
+    assert!(text.contains("until   until ended"), "{text}");
+    assert!(text.contains("While you were away"), "{text}");
+    assert!(
+        text.contains(&format!("{captured}  Buy an adapter")),
+        "{text}"
+    );
+    let away = &json_of(v, &["shift", "status"])["away"];
+    assert_eq!(away["captured"], serde_json::json!([captured]));
+
+    // Ending the conference prints its summary and leaves the trip in force.
+    let ended = ok(v, &["shift", "end"]);
+    assert!(
+        ended.starts_with(&format!("{conference}  ended “Conference”")),
+        "{ended}"
+    );
+    assert!(ended.contains(&captured), "{ended}");
+    assert_eq!(
+        json_of(v, &["shift", "status"])["shift"]["id"],
+        trip.as_str()
+    );
+
+    ok(v, &["shift", "end"]);
+    assert_eq!(ok(v, &["shift", "status"]).trim(), "No shift is in force.");
+    let undid = ok(v, &["undo"]);
+    assert!(undid.contains("end shift “Travel: Tokyo”"), "{undid}");
+    assert_eq!(
+        json_of(v, &["shift", "status"])["shift"]["id"],
+        trip.as_str()
+    );
+    ok(v, &["shift", "end"]);
+
+    let refused = run_in(v, &["shift", "end"]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("no shift is in force"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let bad_zone = run_in(v, &["shift", "start", "Mars", "--zone", "Mars/Olympus"]);
+    assert!(!bad_zone.status.success());
+    assert!(String::from_utf8_lossy(&bad_zone.stderr).contains("Mars/Olympus"));
+    for args in [
+        &["shift", "start"][..],
+        &["shift", "start", "--zone", "Asia/Tokyo"],
+        &["shift", "start", "Trip", "--zone"],
+        &[
+            "shift",
+            "start",
+            "Trip",
+            "--place",
+            "tsk_01J0000000000000000000000",
+        ],
+        &["shift"],
+        &["shift", "end", "now"],
+        &["shift", "pause"],
+    ] {
+        assert!(
+            !run_in(v, args).status.success(),
+            "`sunrise {}` is refused",
+            args.join(" ")
+        );
+    }
+    assert_eq!(ok(v, &["shift", "status"]).trim(), "No shift is in force.");
 }

@@ -2157,6 +2157,14 @@ USAGE:
     sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>
     sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]
                                  skip the next occurrence, or a named one
+    sunrise shift start <name>... [--zone <IANA>] [--place <plc_id>]
+                                 start a context shift, such as a trip; each
+                                 routine follows its shift policy until the
+                                 shift ends
+    sunrise shift end            end the shift in force, and print what was
+                                 missed, passed or captured while it ran
+    sunrise shift status         the shift in force, and what it has
+                                 gathered so far
 
   calendar
     sunrise blocks [day|week] [<when>]
@@ -2613,6 +2621,33 @@ no_such = "no such block: {id}"
 # stdout, after the merged block's id.
 merged = "merged; both originals deleted"
 
+[cli.shift]
+# `sunrise shift`: a context shift (ADR-0073), e.g. a trip. "shift" is the
+# command word and stays as typed; the prose may call it a context shift.
+usage = "usage: shift start <name>... [--zone <IANA>] [--place <plc_id>] | shift end | shift status"
+start_usage = "usage: shift start <name>... [--zone <IANA>] [--place <plc_id>]"
+# {verb} is what the user typed.
+unknown_verb = "unknown shift verb `{verb}`; use start, end or status"
+# `shift end` with no shift in force.
+none_in_force = "no shift is in force; start one with `sunrise shift start <name>`"
+# stdout of `shift status` with no shift in force.
+none = "No shift is in force."
+# stdout, after the shift's id. {name} is the shift's name.
+started = "started “{name}”"
+ended = "ended “{name}”"
+# stderr, as a note, after a shift started while another was in force: the
+# newer one is in force until it ends. {previous} and {name} are names.
+overlaps = "“{previous}” is still running; it is in force again when “{name}” ends"
+# `shift status`, the value of its `until` line for a shift with no end.
+until_ended = "until ended"
+# The heading of the summary `shift end` and `shift status` print
+# (ADR-0073 §6), then the headings of its three groups.
+away = "While you were away"
+away_missed = "Missed"
+away_deadlines = "Deadlines passed"
+away_captured = "Captured"
+away_empty = "Nothing was missed, passed or captured."
+
 [cli.review]
 # {mode} is what followed `sunrise review`.
 unknown_mode = "unknown review mode `{mode}`; use daily or save"
@@ -2728,6 +2763,8 @@ reorder = "reorder streams"
 reorder_tasks = "move “{title}”"
 bind = "bind tasks to block {name}"
 move_block = "move block {name}"
+start_shift = "start shift “{name}”"
+end_shift = "end shift “{name}”"
 
 [cli.day_schedule]
 usage = "usage: day-schedule [show [<YYYY-MM-DD>]] | day-schedule set <days>|day <1-31|last>|date <YYYY-MM-DD> <wake>-<sleep> | day-schedule set date <YYYY-MM-DD> none | day-schedule clear <days>|day <1-31|last>|date <YYYY-MM-DD>"
