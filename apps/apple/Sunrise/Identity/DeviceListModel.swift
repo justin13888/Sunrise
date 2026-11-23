@@ -111,6 +111,20 @@ final class DeviceListModel {
         let withdrawable: Bool
         /// Whether this row is the device the user is holding.
         let isThisDevice: Bool
+        /// Where the relay's reinstatement of this device stands, read on
+        /// every refresh (ADR-0056 §5). The drain records a refusal after the
+        /// withdrawal's report was shown, so this row is where a user sees it.
+        var relay: RelayReinstatementKind = .clear
+
+        /// The row's mark for ``relay``: queued for the next sync, or refused,
+        /// which names the remedy. `nil` when there is nothing to ask.
+        func relayMark(device: String) -> String? {
+            switch relay {
+            case .pending: L10n.Devices.markRelayQueued(device: device)
+            case .refused: L10n.Devices.markRelayRefused(device: device)
+            case .clear: nil
+            }
+        }
     }
 
     /// What a finished withdrawal achieved (ADR-0056 §6).
@@ -313,6 +327,12 @@ final class DeviceListModel {
                 return
             }
             let me = await bridge.deviceId()
+            var relays: [String: RelayReinstatementKind] = [:]
+            for row in devices {
+                relays[row.deviceRef] = await Self.relayOnRow {
+                    try await bridge.relayReinstatementPending(row.deviceRef)
+                }
+            }
             rows = devices.map { row in
                 DeviceRow(
                     id: row.deviceRef,
@@ -325,7 +345,8 @@ final class DeviceListModel {
                     admittedAfterRevocation: row.admittedAfterRevocation,
                     revokedByAuthority: row.revokedByAuthority,
                     withdrawable: row.withdrawable,
-                    isThisDevice: row.deviceId == me
+                    isThisDevice: row.deviceId == me,
+                    relay: relays[row.deviceRef] ?? .clear
                 )
             }
             holdsIdentityKey = await bridge.holdsIdentityKey()
@@ -413,6 +434,16 @@ final class DeviceListModel {
     ) async -> RelayReinstatementKind {
         guard outcome.withdrawal?.relayIntentCancelled == false else { return .clear }
         return (try? await read()) ?? .clear
+    }
+
+    /// Where the relay's reinstatement of a listed device stands. A failed
+    /// read is `clear`, so the list never marks a queued request or a refusal
+    /// it did not see. The core answers `clear` for a device the account calls
+    /// removed, which already carries its own mark.
+    static func relayOnRow(
+        read: () async throws -> RelayReinstatementKind
+    ) async -> RelayReinstatementKind {
+        (try? await read()) ?? .clear
     }
 
     /// The features whose gate can refuse a withdrawal: `core.revoke_withdraw`

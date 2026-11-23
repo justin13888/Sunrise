@@ -22,6 +22,7 @@ Each line names what exists; the section it points to holds the rule, and the AD
 - Sponsor-issued certs, so no paired device holds `ID_S_priv`: [`pairing-and-onboarding.md`](./pairing-and-onboarding.md) ([ADR-0032](../11-adr/0032-revocation-cannot-bound-cert-issuance.md) records the rejected countersignature).
 - Identity-signed revocation from the device that holds `ID_S_priv`: §Revocation ([ADR-0058](../11-adr/0058-the-account-identity-is-the-membership-authority.md)).
 - Withdrawing an ordinary revocation, by its author only: §Revocation ([ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md)).
+- Standing disclosure of where a withdrawal's relay reinstatement stands: `sunrise devices` and the Apple device list read `Core::relay_reinstatement_pending` for each row on every listing, and mark a queued reinstatement and a refused one, the refusal with the pair-again remedy ([#1332](https://github.com/justin13888/Sunrise/issues/1332)).
 - Republishing the account's key bundle after every new key: §Revocation ([ADR-0069](../11-adr/0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md)).
 
 **Not built:**
@@ -32,7 +33,6 @@ Each line names what exists; the section it points to holds the rule, and the AD
 - §Revocation step 4: nothing wipes the revoked device's database or explains the situation on it.
 - Peer-side refusal of a revoked device's entity writes, which is a decision rather than a gap ([ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md) §Why re-adding a peer-side refusal is not free).
 - Standing disclosure of a relay-pending revocation: `DeviceRow` carries no pending flag, and the Apple notice keeps saying the relay has not been told after a sync drained the intent ([#160](https://github.com/justin13888/Sunrise/issues/160)).
-- Standing disclosure of a refused reinstatement: `sunrise device withdraw` and the Apple withdrawal report read `Core::relay_reinstatement_pending` once, right after the withdrawal, when the answer is pending; the refusal the drain records later reaches neither `sunrise devices` nor a device row ([#1332](https://github.com/justin13888/Sunrise/issues/1332)).
 
 ## Device key rotation (cheap)
 

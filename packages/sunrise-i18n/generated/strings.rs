@@ -4239,6 +4239,22 @@ pub mod devices {
         out
     }
 
+    /// the relay may still refuse it; asking it to let it back in is queued for the next `sunrise sync`
+    #[must_use]
+    pub fn mark_relay_queued() -> String {
+        let mut out = String::new();
+        out.push_str("the relay may still refuse it; asking it to let it back in is queued for the next `sunrise sync`");
+        out
+    }
+
+    /// the relay refuses it; pair it again as a new device if it cannot sync
+    #[must_use]
+    pub fn mark_relay_refused() -> String {
+        let mut out = String::new();
+        out.push_str("the relay refuses it; pair it again as a new device if it cannot sync");
+        out
+    }
+
     /// ```text
     /// This device holds the account identity key. A sealed recovery code is
     /// its only other copy: without one, losing this vault destroys the key
