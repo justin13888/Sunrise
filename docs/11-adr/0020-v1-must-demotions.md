@@ -255,15 +255,16 @@ Stream key to a second identity's `ID_D_pub` (item 3 above), the granting
 identity's signature and its check (the cryptographic part of item 2), the
 recipient's expiry check, and the re-seal for a rotation that excludes the
 revoked and the expired (the cryptographic part of item 6). It grants `viewer`
-only and refuses any other role. Two statements in §(a) are therefore no longer
-true: `hpke` is a dependency of `sunrise-crypto`, and HPKE share grants are
-built.
+only and refuses any other role. Of the two statements in §(a) that are no longer
+true, only one is owed to this change: HPKE share grants are now built. The
+other, that no crate depends on `hpke`, was already stale before it, because
+`sunrise-crypto` depended on `hpke` already.
 
 **The deferral of everything a user reaches stands.** Items 1, 4, 5 and 7 are
 untouched, and items 2 and 6 are built only where they are cryptography: no op
 kind carries a grant, nothing emits or applies one, no rotation calls the
 re-seal, the relay cannot route a Stream to a second account, and no client
-offers sharing. #133 tracks the rest, and the `editor` role is a later decision.
+offers sharing. #133 tracks the rest, split into [#1318](https://github.com/justin13888/Sunrise/issues/1318) (ops and rotation), [#1319](https://github.com/justin13888/Sunrise/issues/1319) (relay routing and authorization), [#1320](https://github.com/justin13888/Sunrise/issues/1320) (client surface and deep link) and [#1321](https://github.com/justin13888/Sunrise/issues/1321) (the `editor` role, a later decision).
 
 ## What would force revisiting this
 
