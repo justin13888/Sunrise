@@ -6,6 +6,10 @@
 deferrals are release framing, now withdrawn: sharing and calendars are ranked
 roadmap items, and the regression rule no longer depends on a release.
 
+**Extended by:** [ADR-0074](./0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md) —
+the written threat model §"What would force revisiting this" item 1 asks for,
+and the relay half of §(a) items 4 and 5 for a viewer grant.
+
 **Amends:** [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)
 (four rows; the amendment cites this ADR from each).
 

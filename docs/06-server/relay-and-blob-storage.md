@@ -35,6 +35,32 @@ The account half of the channel key is derived server-side from the verified
 token, never taken from the client, which is what makes cross-tenant
 subscription impossible rather than merely discouraged.
 
+### A second account reads through a viewer grant (implemented)
+
+One exception, and it is still never the client's word: a session may read
+**another account's** channel through a viewer grant
+([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md),
+[`api.md`](./api.md) §Viewer grants). The owner registers the grant on one of
+its Streams under a claim token; the first other account to present the token
+is bound to it; a subscription that names the grant is routed to
+`(account_key(owner), stream_id)` — the relay reads the owner from the grant
+row, not from the request. Replay, cursors, resume ids, gap reports and live
+fan-out are the same machinery on the owner's channel (`Session::channel`).
+
+- **Reads only.** `POST /sync/ops` always appends to the caller's own channel,
+  so a viewer's op never reaches the owner's.
+- **Checked three times.** At subscribe, when `GET /sync/events` opens, and on
+  every `device_recheck_ms` tick of an open stream. A grant withdrawn by either
+  party, expired, or gone with an erased account refuses the subscribe or ends
+  the stream with `RELAY_GRANT_REVOKED`.
+- **Not the confidentiality boundary.** The relay grant decides whom the relay
+  hands ciphertext and metadata to. What keeps contents from anyone is the
+  Stream key, sealed to the recipient's identity by the owner's device, and
+  the rotation that seals the next epoch to everyone but a revoked recipient.
+- **Not yet routed:** the owner's pinned snapshot, its blobs, and a push wake
+  when the owner publishes. A viewer whose cursor falls behind retention gets
+  `SYNC_CURSOR_GAP` with nothing to resolve it.
+
 ## Storage layout (managed — design target, not implemented)
 
 | Storage | Contents | Backend |
@@ -95,7 +121,8 @@ it is under the database key at rest:
 | `account_delete_tokens.token_h` | BLAKE3 | of a pending deletion phrase; the phrase itself is never stored |
 | `blob_tombstones` | **raw ids** | blob key, stream id, publishing device and `seq` of the detaching op, as `DELETE /blobs/{blob_id}` named them |
 | `committed_blobs` | **raw ids** | per account, each readable blob's key and its ciphertext size, which `sunrise_blob_storage_bytes` sums |
-| `device_cursors` | **raw ids** | per device, stream and originating device, the `seq` it declared applied on `POST /sync/subscribe` |
+| `device_cursors` | **raw ids** | per device, stream and originating device, the `seq` it declared applied on `POST /sync/subscribe`; a Stream read through a viewer grant declares none |
+| `viewer_grants` | **raw ids**, account ids, a hash | per grant, its random id, the owning account, the owner's `stream_id`, the BLAKE3 of the claim token (never the token), the recipient account once claimed, the expiry, and when it was made and claimed: the sharing graph at account granularity (ADR-0074) |
 
 So the channel namespace is hashed and the routing ids inside it are not. The
 `id_h` truncation in `logging/mod.rs` is applied to **log output**, not to
@@ -140,6 +167,11 @@ how far along it is in `PRAGMA user_version`. On open, `Store::open`:
 | 0003 `account_and_blob_deletion` | Adds `accounts.delete_requested_at_ms` and the tables deletion keeps: `account_delete_tokens`, `blob_tombstones`, and `device_cursors` (the cursors each device declared on subscribe, which a tombstone's quorum reads). Each cascades from its account or device row. |
 | 0004 `relay_frames_n_ops` | Adds `relay_frames.n_ops`, the ops each stored frame carries, and counts them for the frames already stored by reading each frame's op list (the same depth the publish path reads; no envelope is opened). |
 | 0005 `committed_blobs` | Adds the committed-blob ledger, one row per readable blob with its size, cascading from its account. Created empty, because the blobs already committed live on the blob backend, which a migration cannot read; the maintenance pass backfills them from their manifests. |
+| 0006 `stream_snapshots` | Adds each Stream's pinned snapshot record (ADR-0068). |
+| 0007 `key_bundles` | Adds each account's pinned key bundle (ADR-0069). |
+| 0008 `recovery_across_rotation` | Adds each account's identity chain record and the checks left of its replaced recovery blobs (ADR-0070). |
+| 0009 `devices_revoked_by_key` | Adds `devices.revoked_by_key` and `devices.revoked_signed_at_ms`, who revoked a device and when they signed it (ADR-0056 §5). |
+| 0010 `viewer_grants` | Adds the relay viewer grants, cascading from both the owning and the recipient account (ADR-0074). Created empty. |
 
 A shipped migration is never edited: migration 0001 executes the tenants'
 `SCHEMA` constants, so those are frozen with it, and a test builds a database
@@ -273,8 +305,10 @@ step 3b before any commit.
 
 ## Op read path (on subscribe / catch-up — implemented)
 
-1. Receiver sends `Subscribe` with per-originating-device cursors.
-2. Server calls `Store::relay_replay_after` on the channel, which selects the retained
+1. Receiver sends `Subscribe` with per-originating-device cursors, and, for a
+   Stream it reads through a viewer grant, the grant.
+2. Server calls `Store::relay_replay_after` on the channel — the owner's, for a
+   granted Stream — which selects the retained
    frames whose heads are not already covered and reports a `CursorGap` for any
    device whose cursor sits below `relay_evicted.evicted_through`.
 3. Server streams the retained frames back verbatim; a gap becomes a typed
