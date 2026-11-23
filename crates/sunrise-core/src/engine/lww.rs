@@ -267,7 +267,10 @@ pub(super) fn materialize_member(
         | InnerOp::StreamDigest(_)
         | InnerOp::VaultRequires(_)
         | InnerOp::DeviceFeatures(_)
-        | InnerOp::ShareGrant(_) => {}
+        | InnerOp::ShareGrant(_)
+        | InnerOp::ShareRevoke(_)
+        | InnerOp::ShareDecline(_)
+        | InnerOp::ShareResealRequest(_) => {}
     }
     Ok(())
 }

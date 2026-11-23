@@ -28,8 +28,7 @@ Each line names what exists; the section it points to holds the rule, and the AD
 
 - Rotating the identity from a device that did not create the account: §Revocation, `core.identity.rotation_unavailable`.
 - §Device key rotation (`device_rotate`); a device's `D_D_pub` is set once, as that section states.
-- `share_revoke`, so no shared peer's access is revoked by a rotation: the re-seal leaves out only a peer whose grant has expired. `share_grant` and the re-seal are built ([#1318](https://github.com/justin13888/Sunrise/issues/1318), [`sharing-with-others.md`](./sharing-with-others.md)).
-- A re-seal by a device that does not hold `ID_S_priv`: its rotation reaches no shared peer (`core.share.reseal_skipped`).
+- A re-seal while no device holding `ID_S_priv` is online. A paired device's rotation reaches no shared peer (`core.share.reseal_skipped`) until a device holding `ID_S_priv` learns the epoch and backfills the re-seal. `share_grant`, `share_revoke`, `share_decline`, the re-seal that leaves out the revoked, the declined and the expired, and that backfill are built ([#1318](https://github.com/justin13888/Sunrise/issues/1318), [#1325](https://github.com/justin13888/Sunrise/issues/1325), [`sharing-with-others.md`](./sharing-with-others.md)).
 - §Revocation step 4: nothing wipes the revoked device's database or explains the situation on it.
 - Peer-side refusal of a revoked device's entity writes, which is a decision rather than a gap ([ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md) §Why re-adding a peer-side refusal is not free).
 - Standing disclosure of a relay-pending revocation: `DeviceRow` carries no pending flag, and the Apple notice keeps saying the relay has not been told after a sync drained the intent ([#160](https://github.com/justin13888/Sunrise/issues/160)).

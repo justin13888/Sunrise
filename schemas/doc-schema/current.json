@@ -1936,7 +1936,10 @@
         "RoutineCreate",
         "RoutineDelete",
         "RoutineUpdate",
+        "ShareDecline",
         "ShareGrant",
+        "ShareResealRequest",
+        "ShareRevoke",
         "StreamCreate",
         "StreamDelete",
         "StreamDigest",
@@ -1984,8 +1987,20 @@
             "variant": "Patch"
         },
         {
+            "payload": "ShareDeclinePayload",
+            "variant": "ShareDecline"
+        },
+        {
             "payload": "ShareGrantOpPayload",
             "variant": "ShareGrant"
+        },
+        {
+            "payload": "ShareResealRequestPayload",
+            "variant": "ShareResealRequest"
+        },
+        {
+            "payload": "ShareRevokePayload",
+            "variant": "ShareRevoke"
         },
         {
             "payload": "StreamDigestPayload",
@@ -2432,6 +2447,17 @@
         {
             "fields": [
                 {
+                    "name": "identity_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "ResealRecipient",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
                     "name": "completed",
                     "type": "u32"
                 },
@@ -2544,6 +2570,25 @@
         {
             "fields": [
                 {
+                    "name": "declined_at_ms",
+                    "type": "u64"
+                },
+                {
+                    "name": "recipient_identity_id",
+                    "type": "[u8;16]"
+                },
+                {
+                    "name": "stream_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "ShareDeclinePayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
                     "name": "grant",
                     "type": "Vec<u8>"
                 },
@@ -2554,10 +2599,56 @@
                 {
                     "name": "recipient_id_d_pub",
                     "type": "[u8;32]"
+                },
+                {
+                    "name": "reseal",
+                    "type": "bool"
                 }
             ],
             "keeps_unknowns": true,
             "name": "ShareGrantOpPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "epoch",
+                    "type": "u32"
+                },
+                {
+                    "name": "key_id",
+                    "type": "[u8;8]"
+                },
+                {
+                    "name": "recipients",
+                    "type": "Vec<ResealRecipient>"
+                },
+                {
+                    "name": "stream_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "ShareResealRequestPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "effective_at_ms",
+                    "type": "u64"
+                },
+                {
+                    "name": "recipient_identity_id",
+                    "type": "[u8;16]"
+                },
+                {
+                    "name": "stream_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "ShareRevokePayload",
             "shape": "record"
         },
         {

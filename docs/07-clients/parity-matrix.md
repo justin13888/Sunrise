@@ -90,8 +90,9 @@ still stands, and is kept here:
   specified in full and the underlying primitives are frozen and tested. The
   core emits and folds a viewer `share_grant` op to a `Person` and re-seals it
   on every rotation ([#1318](https://github.com/justin13888/Sunrise/issues/1318)),
-  but nothing reads or writes the `persons` table, no client offers or accepts
-  a share, and `share_revoke` is not implemented. Closing it is a
+  and ends a share by `share_revoke` or `share_decline`
+  ([#1325](https://github.com/justin13888/Sunrise/issues/1325)), but nothing
+  reads or writes the `persons` table and no client offers or accepts a share. Closing it is a
   second, security-critical epic — a sharing model that is almost right in an
   end-to-end-encrypted product is a vulnerability, not a partial feature.
 - **Calendar integration.** Only the Google client logic exists, with no

@@ -177,6 +177,8 @@ impl Keychain {
     /// Seal the epoch a Stream-key rotation just minted to every share
     /// recipient still entitled to it, signed as the account identity in
     /// force on this keychain ([`sunrise_crypto::reseal_share_grants`]).
+    /// A recipient whose identity is in `revoked` is left out, as is one
+    /// whose share has expired at `now_ms`.
     ///
     /// # Errors
     /// As [`Self::seal_share_grant`].
@@ -184,6 +186,7 @@ impl Keychain {
         &self,
         shared: sunrise_crypto::SharedEpoch<'_>,
         recipients: &[sunrise_crypto::ShareRecipient],
+        revoked: &[[u8; 16]],
         now_ms: u64,
         rng: &dyn Rng,
     ) -> Result<Vec<sunrise_crypto::ShareGrant>, KeychainError> {
@@ -193,7 +196,7 @@ impl Keychain {
             signing,
             shared,
             recipients,
-            &[],
+            revoked,
             now_ms,
             &mut RngAdapter(rng),
         )?)

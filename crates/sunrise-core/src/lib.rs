@@ -118,9 +118,9 @@ pub use core::{
 };
 pub use engine::{
     BootstrapError, BootstrapPreferences, ChainIntegrity, CompactionPolicy, CompactionReport,
-    Engine, EngineError, KeyBundleApplied, PlanCommitId, PlanError, PlanField, PlanUndoSkip,
-    RebuildReport, SearchReindex, SnapshotApplied, StreamShare, BOOTSTRAP_FILE, PLAN_UNDO_HISTORY,
-    SNAPSHOT_FORMAT_V,
+    EndedShare, Engine, EngineError, KeyBundleApplied, PlanCommitId, PlanError, PlanField,
+    PlanUndoSkip, RebuildReport, SearchReindex, ShareEnd, SnapshotApplied, StreamShare,
+    BOOTSTRAP_FILE, PLAN_UNDO_HISTORY, SNAPSHOT_FORMAT_V,
 };
 pub use events::{AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus};
 pub use feature::{
