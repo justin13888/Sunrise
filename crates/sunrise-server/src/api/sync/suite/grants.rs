@@ -565,3 +565,67 @@ async fn an_unreadable_grant_store_ends_the_stream_retryably() {
         "an unreadable grant store must close retryably, not as revoked: {body}"
     );
 }
+
+/// A fresh batch the owner publishes wakes the offline device of the account
+/// holding a grant in force on the Stream, and nobody else's; once the grant
+/// is withdrawn, the next batch wakes it no more. The window is zero, so a
+/// wake the withdrawal failed to stop would be a push at once.
+#[tokio::test]
+async fn a_publish_wakes_the_viewer_while_its_grant_is_in_force() {
+    let (tx, mut woken) = tokio::sync::mpsc::unbounded_channel();
+    let (_, state) = relay_with_state(TestClock::at(T0_MS));
+    let client = Client::from_state(state.with_push(crate::push::Dispatcher::with_tuning(
+        Arc::new(super::push_wake::Recorder(tx)),
+        crate::push::Tuning {
+            window_ms: 0,
+            ..crate::push::Tuning::default()
+        },
+    )));
+    let grant_id = granted(&client, None).await;
+    let viewer = device_of(&client, BOB, 9).await;
+    let bystander = device_of(&client, CAROL, 10).await;
+    for (bearer, device, token) in [(BOB, &viewer, "cc03"), (CAROL, &bystander, "dd04")] {
+        signed_as(
+            &client,
+            bearer,
+            device,
+            "/api/v1/devices/push-tokens",
+            &serde_json::json!({ "device_id": device.0, "platform": "apns", "token": token }),
+            None,
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    }
+
+    let writer = session_as(&client, ALICE).await;
+    assert_eq!(
+        publish_as(&client, ALICE, &writer, vec![envelope([7; 16], 1)], 1).await,
+        StatusCode::OK
+    );
+    let push = tokio::time::timeout(std::time::Duration::from_secs(5), woken.recv())
+        .await
+        .expect("the viewer's offline device is woken")
+        .unwrap();
+    assert_eq!(push.registration.device_id, viewer.0);
+    assert_eq!(push.registration.token, "cc03");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), woken.recv())
+            .await
+            .is_err(),
+        "one batch is one push, and an account with no grant is not woken"
+    );
+
+    withdraw(&client, ALICE, &grant_id)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(
+        publish_as(&client, ALICE, &writer, vec![envelope([7; 16], 2)], 2).await,
+        StatusCode::OK
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), woken.recv())
+            .await
+            .is_err(),
+        "a withdrawn grant wakes nobody"
+    );
+}

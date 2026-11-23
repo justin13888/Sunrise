@@ -708,6 +708,9 @@ the relay holds neither.
   checked before anything of the owner's is read; the snapshot read also
   requires the grant to name the path's Stream. The query is part of the
   signed target.
+- A fresh batch the owner publishes to the Stream also queues a push wake for
+  every account holding a grant in force on it, so a viewer's devices with no
+  stream open are woken as the owner's are.
 
 Account-level rate-limit group. Implemented in `api/sync/grants.rs`, over
 `store/viewer_grants.rs` (relay migration 0010, Postgres 0004). No client
