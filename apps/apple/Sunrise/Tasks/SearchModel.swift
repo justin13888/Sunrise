@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 /// What activating a search hit does.
 enum SearchOpening: Equatable {
@@ -339,5 +339,31 @@ extension HighlightedText {
         }
         if at < scalars.count { out.append(HighlightRun(text: piece(at, scalars.count), matched: false)) }
         return out
+    }
+
+    /// The text with its matched runs emphasised and tinted, for a `Text`.
+    /// The ranges are the core's; this only draws them.
+    var attributed: AttributedString {
+        runs.reduce(into: AttributedString()) { out, run in
+            var piece = AttributedString(run.text)
+            if run.matched {
+                piece.inlinePresentationIntent = .stronglyEmphasized
+                piece.backgroundColor = Color.yellow.opacity(0.3)
+            }
+            out += piece
+        }
+    }
+}
+
+private struct SearchHighlightsKey: EnvironmentKey {
+    static let defaultValue: [EntityRef: HighlightedText] = [:]
+}
+
+extension EnvironmentValues {
+    /// The highlighted titles of the tasks a search found, by task. Empty
+    /// outside search, where a row draws its plain title.
+    var searchHighlights: [EntityRef: HighlightedText] {
+        get { self[SearchHighlightsKey.self] }
+        set { self[SearchHighlightsKey.self] = newValue }
     }
 }
