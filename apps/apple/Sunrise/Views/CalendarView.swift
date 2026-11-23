@@ -300,7 +300,7 @@ private struct DayColumn: View {
                             }
                         },
                         resolve: resolveMenu(for: placed),
-                        isMoving: model.planner.moves(placed.blockId),
+                        isMoving: model.planner.moves(placed.row),
                         drag: { mode, points, ended in
                             dragBlock(placed, mode: mode, byPoints: points, ended: ended)
                         }
@@ -397,9 +397,9 @@ private struct DayColumn: View {
     /// committed exactly as drawn on release (`docs/08-features/planner.md`).
     /// Released where it started, or after Esc, it writes nothing.
     ///
-    /// One event of a repeating block is not planned: the planner reads the
-    /// series, not the event. It keeps asking how far the change reaches and
-    /// writes the edit on release.
+    /// One event of a repeating block previews as *this event*, its ghost on
+    /// that event alone, and its release asks "which events?" with the plan
+    /// still drawn (`planner.md` §Recurring blocks).
     private func dragBlock(
         _ placed: PlacedBlock,
         mode: BlockDragMode,
@@ -413,7 +413,7 @@ private struct DayColumn: View {
         let toMs = model.snap(held + deltaMs, dayOffset: dayOffset)
         let planner = model.planner
         guard ended else {
-            guard !row.recurs, !dragCancelled, toMs != dragSnapped else { return }
+            guard !dragCancelled, toMs != dragSnapped else { return }
             if dragSnapped == nil { focusedBlock = placed.id }
             dragSnapped = toMs
             Task { await planner.previewDrag(row, mode: mode, toMs: toMs, timeZone: zone) }
@@ -427,12 +427,20 @@ private struct DayColumn: View {
             Task { await planner.dropDrag(row, mode: mode, toMs: toMs, timeZone: zone) }
             return
         }
-        guard toMs != held,
-              let span = CalendarPlanner.repeatingSpan(of: row, mode: mode, toMs: toMs, timeZone: zone)
-        else { return }
-        reaching(row, .move) { reach in
-            Task { await model.moveBlock(row, toStartMs: span.startMs, toEndMs: span.endMs, reach: reach) }
+        guard toMs != held else {
+            planner.cancel()
+            return
         }
+        askPlanned { scope in
+            Task { await planner.dropDrag(row, mode: mode, toMs: toMs, timeZone: zone, scope: scope) }
+        }
+    }
+
+    /// "Which events?" for the plan on screen: dismissing it takes the plan
+    /// away.
+    private func askPlanned(_ commit: @escaping (OccurrenceScope) -> Void) {
+        let planner = model.planner
+        ask(.planned(dismissed: { planner.cancel() }, commit: commit))
     }
 
     /// A planning key pressed on a block with focus (``Keymap/planning``).
@@ -448,8 +456,14 @@ private struct DayColumn: View {
             return true
         case .commit:
             guard planner.plan != nil else { return false }
+            // A nudge of one event asks how far it reaches before it commits;
+            // a changed plan waiting on Return already carries its answer.
+            if planner.plansOccurrence, !planner.awaitingDecision {
+                askPlanned { scope in Task { await planner.commitPlan(reaching: scope) } }
+                return true
+            }
         default:
-            guard !placed.row.recurs else { return false }
+            break
         }
         let (snap, zone) = (model.snapMinutes, model.timeZone)
         Task { await planner.press(key, on: placed.row, snapMinutes: snap, timeZone: zone) }

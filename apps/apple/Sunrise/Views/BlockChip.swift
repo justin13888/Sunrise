@@ -108,12 +108,12 @@ struct BlockChip: View {
         return ListFormatter.localizedString(byJoining: [kind, L10n.Calendar.blockRepeats])
     }
 
-    /// The planning keys, where they work: on the Mac, on a block that does
-    /// not repeat (`docs/08-features/keyboard.md` Rule 1 — a bound action
-    /// shows its key wherever it appears).
+    /// The planning keys, where they work: on the Mac, on every block, one
+    /// event of a repeating block too (`docs/08-features/keyboard.md` Rule 1
+    /// — a bound action shows its key wherever it appears).
     private var planningHint: String {
         #if os(macOS)
-        placed.row.recurs ? "" : L10n.Calendar.planKeysHint(keys: Keymap.planningLabel)
+        L10n.Calendar.planKeysHint(keys: Keymap.planningLabel)
         #else
         ""
         #endif
@@ -337,25 +337,36 @@ extension View {
     /// "Which events?", asked before a change to one event of a repeating
     /// block: *this event*, *this and following events* or *all events*
     /// (`docs/02-domain/time-blocks.md` §Lifecycle). The answer runs the held
-    /// change; Cancel, or dismissing the question, drops it.
+    /// change; Cancel, or dismissing the question, drops it and runs the
+    /// request's `dismissed`. An answer clears the request before it runs,
+    /// so the dialog's closing afterwards is not read as a dismissal.
     func askingBlockReach(_ pending: Binding<PendingBlockReach?>) -> some View {
         confirmationDialog(
             pending.wrappedValue?.action.title ?? "",
             isPresented: Binding(
                 get: { pending.wrappedValue != nil },
-                set: { if !$0 { pending.wrappedValue = nil } }
+                set: { shown in
+                    guard !shown, let request = pending.wrappedValue else { return }
+                    pending.wrappedValue = nil
+                    request.dismissed()
+                }
             ),
             titleVisibility: .visible,
             presenting: pending.wrappedValue
         ) { request in
-            ForEach(BlockEditReach.allCases) { reach in
+            ForEach(request.reaches) { reach in
                 Button(reach.title, role: request.action == .delete ? .destructive : nil) {
+                    pending.wrappedValue = nil
                     request.commit(reach)
                 }
                 .accessibilityIdentifier("block-reach.\(reach.rawValue)")
             }
-            Button(L10n.Action.cancel, role: .cancel) {}
-                .accessibilityIdentifier("block-reach.cancel")
+            Button(L10n.Action.cancel, role: .cancel) {
+                guard pending.wrappedValue != nil else { return }
+                pending.wrappedValue = nil
+                request.dismissed()
+            }
+            .accessibilityIdentifier("block-reach.cancel")
         } message: { _ in
             Text(L10n.Calendar.reachMessage)
         }
