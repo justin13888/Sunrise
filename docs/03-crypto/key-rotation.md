@@ -32,7 +32,7 @@ Each line names what exists; the section it points to holds the rule, and the AD
 - §Revocation step 4: nothing wipes the revoked device's database or explains the situation on it.
 - Peer-side refusal of a revoked device's entity writes, which is a decision rather than a gap ([ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md) §Why re-adding a peer-side refusal is not free).
 - Standing disclosure of a relay-pending revocation: `DeviceRow` carries no pending flag, and the Apple notice keeps saying the relay has not been told after a sync drained the intent ([#160](https://github.com/justin13888/Sunrise/issues/160)).
-- Telling the user where a withdrawal's relay half stands: the CLI and the device list do not read `Core::relay_reinstatement_pending` yet, and their copy still says nothing asks the relay to let the device back in ([#1315](https://github.com/justin13888/Sunrise/issues/1315)).
+- Standing disclosure of a refused reinstatement: `sunrise device withdraw` and the Apple withdrawal report read `Core::relay_reinstatement_pending` once, right after the withdrawal, when the answer is pending; the refusal the drain records later reaches neither `sunrise devices` nor a device row ([#1332](https://github.com/justin13888/Sunrise/issues/1332)).
 
 ## Device key rotation (cheap)
 

@@ -34,7 +34,7 @@ enum L10n {
         }
         /// Remove this device?
         static var removeConfirmTitleUnnamed: String { L10n.tr("apple.devices.remove_confirm_title_unnamed") }
-        /// Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, a removal signed by the account identity can be withdrawn only by the device holding that identity, while it is still the one in force, and once the relay has been told, which happens on the next sync, the device must be paired again as a new device to sync.
+        /// Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, and a removal signed by the account identity can be withdrawn only by the device holding that identity, while it is still the one in force. The relay is told on the next sync; a withdrawal after that asks it to let the device back in, and if the relay refuses, the device must be paired again as a new device to sync.
         static var removeConfirmMessage: String { L10n.tr("apple.devices.remove_confirm_message") }
         /// I lost it
         static var reasonLost: String { L10n.tr("apple.devices.reason_lost") }
@@ -120,7 +120,7 @@ enum L10n {
         }
         /// If another device also removed it, it stays removed until that device withdraws its removal too.
         static var withdrawConfirmOthers: String { L10n.tr("apple.devices.withdraw_confirm_others") }
-        /// If the relay has already been told of the removal, it goes on refusing the device: Sunrise does not yet ask the relay to let it back in, so the device must be paired again as a new device to sync.
+        /// If the relay has already been told of the removal, it refuses the device until the next sync asks it to let the device back in. The relay refuses that if another device removed it there too, or if this device no longer holds the key it removed it with; then the device must be paired again as a new device to sync.
         static var withdrawConfirmRelay: String { L10n.tr("apple.devices.withdraw_confirm_relay") }
         /// Withdraw removal
         static var withdrawConfirm: String { L10n.tr("apple.devices.withdraw_confirm") }
@@ -158,9 +158,17 @@ enum L10n {
         }
         /// The relay had not been told of the removal yet, and that telling is cancelled.
         static var withdrawnRelayCancelled: String { L10n.tr("apple.devices.withdrawn_relay_cancelled") }
-        /// If the relay was already told of the removal, it still refuses {name}: Sunrise does not yet ask it to let {name} back in. If {name} cannot sync, pair it again as a new device.
+        /// If the relay was already told of the removal, it refuses {name} until Sunrise asks it to let {name} back in, which happens on a sync once no device's removal of {name} stands.
         static func withdrawnRelayTold(name: String) -> String {
             L10n.tr("apple.devices.withdrawn_relay_told", name)
+        }
+        /// If the relay was already told of the removal, it refuses {name} until the next sync asks it to let {name} back in. That request is queued.
+        static func withdrawnRelayQueued(name: String) -> String {
+            L10n.tr("apple.devices.withdrawn_relay_queued", name)
+        }
+        /// The relay refuses {name}: another device removed it there too, or this {device} no longer holds the key it removed it with. If {name} cannot sync, pair it again as a new device.
+        static func withdrawnRelayRefused(name: String, device: String) -> String {
+            L10n.tr("apple.devices.withdrawn_relay_refused", name, device)
         }
         /// {count, plural, one {NOT withdrawn: one device runs a version of Sunrise that would drop a withdrawal and keep the device removed for good. Update Sunrise on it, or remove it if you cannot, then try again.} other {NOT withdrawn: # devices run a version of Sunrise that would drop a withdrawal and keep the device removed for good. Update Sunrise on them, or remove the ones you cannot update, then try again.}}
         static func withdrawAwaitsUpdate(count: Int) -> String {

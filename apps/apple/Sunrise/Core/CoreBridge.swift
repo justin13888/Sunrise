@@ -229,6 +229,12 @@ actor CoreBridge {
         try core.relayRevocationPending(device: device)
     }
 
+    /// Where the relay's half of withdrawing `device`'s removal stands
+    /// (ADR-0056 §5); the counterpart of ``relayRevocationPending(_:)``.
+    func relayReinstatementPending(_ device: EntityRef) async throws -> RelayReinstatementKind {
+        try core.relayReinstatementPending(device: device)
+    }
+
     /// Publish this vault to the relay and come back with the recovery code.
     ///
     /// The Apple clients' `sunrise bootstrap`, and one call rather than three
