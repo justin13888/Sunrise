@@ -114,7 +114,8 @@ pub use control_op::{
     KeyEnvelopePayload, KeyShare, Recipient, RevokeReason, RosterEntry, VaultRequiresPayload,
 };
 pub use core::{
-    Core, CoreError, PlanCommitResult, PlanUndoResult, TaskPlaceStatus, PLAN_CACHE_SIZE,
+    Core, CoreError, PlanCommitResult, PlanUndoResult, ReceivedShare, TaskPlaceStatus,
+    PLAN_CACHE_SIZE,
 };
 pub use engine::{
     BootstrapError, BootstrapPreferences, ChainIntegrity, CompactionPolicy, CompactionReport,

@@ -196,6 +196,16 @@ async fn the_old_checks_refuse(core: &Core, task: EntityRef) {
     );
     refused("apply_key_bundle", core.apply_key_bundle(b"x"));
     refused("seed_identity_chain", core.seed_identity_chain(b"x"));
+    refused(
+        "share_stream",
+        core.share_stream(
+            EntityRef::new(sunrise_id::EntityKind::Stream, [7; 16]),
+            &[1; 32],
+            [2; 32],
+            None,
+        ),
+    );
+    refused("open_share_grant", core.open_share_grant(&[1; 32], b"x"));
     refused("deadline_candidates", core.deadline_candidates());
     refused("security_events", core.security_events());
     refused("oldest_unacked_ms", core.oldest_unacked_ms());

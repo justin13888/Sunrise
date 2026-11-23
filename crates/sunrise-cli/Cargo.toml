@@ -27,6 +27,8 @@ workspace = true
 test-cheap-kdf = ["sunrise-crypto/test-cheap-kdf"]
 
 [dependencies]
+# The share key `sunrise share key` prints (`src/share.rs`).
+base64 = { workspace = true }
 jiff = { workspace = true }
 # The runtime `src/i18n.rs` gives the generated string binding: CLDR plural
 # categories and locale digits for `#` and `{n, number}` (ADR-0054).

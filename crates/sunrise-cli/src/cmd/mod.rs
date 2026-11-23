@@ -24,6 +24,7 @@ mod reminders;
 mod reports;
 mod search;
 mod settings;
+mod share;
 mod shift;
 mod tasks;
 #[cfg(test)]
@@ -109,6 +110,8 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
         "devices" => devices::list(ctx).await,
         "device" => devices::device(ctx.core, rest).await,
         "identity" => devices::identity(ctx, rest).await,
+        "share" => share::share(ctx, rest).await,
+        "accept" => share::accept(ctx, rest).await,
 
         "capture" => tasks::capture(ctx, rest).await,
         "today" => tasks::today(ctx).await,

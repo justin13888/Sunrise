@@ -147,6 +147,31 @@ impl Keychain {
             .map_err(|_| KeychainError::RevocationClaim("the claim does not encode"))
     }
 
+    /// Open a share grant sealed to this account's identity, signed by
+    /// `granter_id_s_pub`, at the recipient's clock `now_ms`
+    /// (`docs/03-crypto/sharing-with-others.md` §Granting access, steps 5
+    /// and 6).
+    ///
+    /// # Errors
+    /// [`KeychainError::IdentitySecretAbsent`] on a device that holds no
+    /// `ID_D_priv` (every paired one); [`KeychainError::ShareGrant`] for a
+    /// grant to another identity, one the granter did not sign, one past its
+    /// expiry, or one that does not open.
+    pub fn open_share_grant(
+        &self,
+        grant: &sunrise_crypto::ShareGrant,
+        granter_id_s_pub: &[u8; 32],
+        now_ms: u64,
+    ) -> Result<sunrise_crypto::OpenedShareGrant, KeychainError> {
+        let state = self.identity.lock();
+        let dh = state
+            .identity
+            .dh_secret
+            .as_ref()
+            .ok_or(KeychainError::IdentitySecretAbsent)?;
+        Ok(grant.open(granter_id_s_pub, &state.identity.identity_id, dh, now_ms)?)
+    }
+
     /// Seal `key` and `metadata` to one share recipient, signed as the
     /// account identity in force on this keychain
     /// (`docs/03-crypto/sharing-with-others.md` §Granting access).

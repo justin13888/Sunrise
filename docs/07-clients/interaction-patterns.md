@@ -317,7 +317,8 @@ is resolved to a sidebar selection on macOS and to a tab plus a stack on iOS
 screen, and then the screen is only half of it: `DeepLink.reveal`
 (`DeepLink.swift`) carries the id through, and the shell reads it out of the
 vault — a Task opens its editor, a Block moves the grid onto the day it is on
-(`CalendarModel.reveal(_:)`). One row below is unparsed on both platforms.
+(`CalendarModel.reveal(_:)`). One row below, the share link, is taken by the
+CLI and refused by both Apple apps.
 
 | Link | Status | Notes |
 |---|---|---|
@@ -327,14 +328,14 @@ vault — a Task opens its editor, a Block moves the grid onto the day it is on
 | `sunrise://entity/<EntityRef>` | **live** | Opens the screen the entity lives on **and the entity on it** — a Block routes to the calendar, moved onto the block's own day; a Task routes to Today and opens its editor, which shows the task whether or not Today happens to hold it. This is the link a block reminder carries and the one "Copy permalink" writes ([`../02-domain/identifiers.md`](../02-domain/identifiers.md)). An id this vault does not hold opens the screen and reveals nothing. |
 | `sunrise://task/<id>?action=…` | **live** | `complete`, `open`, or a snooze span. This is what a notification action button fires. |
 | `sunrise://focus/<TaskId>` | **live** | Starts a one-pomodoro session on that task and opens Focus — the same write `F` on a row makes. It declines while another session is running rather than opening a second one the screen cannot show; you land on Focus either way, so what is running is the first thing you see. Also reachable by `F` on a row and from the sidebar. |
-| `sunrise://share/<token>` | **parsed, not routed** | See below. |
+| `sunrise://share/<token>` | **CLI only** | `sunrise accept <link>`; the Apple app refuses it. See below. |
 
 All deep links are validated; unknown shapes are ignored (no shell injection).
 A link naming an entity that does not exist resolves to the nearest sensible
 screen rather than an error dialog, because a notification tapped after its task
 was deleted elsewhere is an ordinary event, not a failure.
 
-### `sunrise://share/<token>` — parsed, not routed
+### `sunrise://share/<token>` — accepted by the CLI, refused by the Apple app
 
 The link an owner hands the person a Stream is shared with
 ([`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
@@ -356,13 +357,30 @@ viewer grant is refused like any other unknown shape. Nothing is verified at
 parse time: the signature covers the recipient's `ID_D_pub`, which only the
 recipient holds.
 
-> **Not routed.** No client acts on the link yet, and the Apple app's parser
-> still refuses the shape. Claiming the relay grant, opening the grant and
-> holding the Stream key it seals are not built, and a route that accepted the
-> link with nowhere to take it would be the one failure this section rules out:
-> a link that goes somewhere plausible and wrong. The accept sheet, the CLI's
-> `share` and `accept`, and the route are
-> [#1333](https://github.com/justin13888/Sunrise/issues/1333).
+The CLI makes and takes the link
+([#1333](https://github.com/justin13888/Sunrise/issues/1333)):
+
+* `sunrise share <stream> <share-key> [--days <n>]` writes the grant
+  (`Core::share_stream`), registers the relay viewer grant under a fresh
+  32-byte claim token, and prints the link. The share key is what
+  `sunrise share key` prints on the recipient's side: base64url, unpadded, of
+  its `ID_S_pub || ID_D_pub`, handed over out of band.
+* `sunrise accept <link>` opens the grant first (`Core::open_share_grant`):
+  it must name this account's identity, verify under the link's
+  `granter_id_s_pub` over this account's `ID_D_pub`, and not have expired.
+  Only then does it show the Stream's name and the granter's identity id and
+  claim the relay grant, so a link made for someone else claims nothing.
+  Opening needs `ID_D_priv`, which only the device that created the account
+  holds.
+
+> **Not routed on Apple, and not read anywhere.** Accepting claims the relay
+> grant and stops there: no client holds the Stream key the grant seals or
+> reads the Stream through the grant, so an accepted Stream appears in no
+> list. The Apple app's parser still refuses the shape, because a sheet that
+> accepted the link with nowhere to take it would be the one failure this
+> section rules out: a link that goes somewhere plausible and wrong. Holding
+> the key, reading through the grant and the Apple accept sheet are
+> [#1334](https://github.com/justin13888/Sunrise/issues/1334).
 
 ## Conflict-of-shortcut handling
 

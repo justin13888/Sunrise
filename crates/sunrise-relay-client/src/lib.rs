@@ -76,6 +76,7 @@ pub mod api {
 pub mod account;
 mod bootstrap;
 pub mod bounded;
+pub mod grants;
 mod push;
 mod recovery;
 

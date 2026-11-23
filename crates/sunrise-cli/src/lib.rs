@@ -39,6 +39,7 @@ pub mod pair;
 pub mod pair_relay;
 pub mod prefs_text;
 pub mod recover;
+pub mod share;
 pub mod undo_file;
 pub mod vault;
 pub mod watch;

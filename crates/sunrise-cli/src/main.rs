@@ -293,7 +293,13 @@ async fn run(
         && rest
             .first()
             .is_some_and(|v| v == "rotate" || v == "new-code");
-    if !matches!(sub, "sync" | "attachment") && !pushes_identity {
+    // `share <stream> <key>` is the fourth: the share_grant op it writes is
+    // how the account's other devices learn of the share they re-seal each
+    // later epoch to, so the command pushes it before it exits
+    // (sharing-with-others.md §Granting access, step 4).
+    // `share key` only prints this account's key and writes nothing.
+    let pushes_share = sub == "share" && rest.first().is_some_and(|v| v != "key");
+    if !matches!(sub, "sync" | "attachment") && !pushes_identity && !pushes_share {
         env.url = None;
     }
     let plan = livesync::plan_from_env(

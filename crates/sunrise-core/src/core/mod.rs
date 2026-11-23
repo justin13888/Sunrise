@@ -1678,7 +1678,10 @@ mod place;
 mod planner;
 mod published;
 mod repair;
+mod share;
 mod snapshot;
+
+pub use share::ReceivedShare;
 
 pub use place::TaskPlaceStatus;
 pub use planner::{PlanCommitResult, PlanUndoResult, PLAN_CACHE_SIZE};
