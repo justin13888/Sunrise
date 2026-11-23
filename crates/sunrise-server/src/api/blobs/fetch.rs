@@ -1,7 +1,7 @@
 //! `GET /api/v1/blobs/{blob_id}`: the read, streamed one committed chunk at a
 //! time.
 
-use super::{account, not_found, BlobIdPath};
+use super::{not_found, reader_account, BlobIdPath, GrantQuery};
 use crate::api::error::ApiError;
 use crate::api::ids::parse_blob_id;
 use crate::api::ratelimit::policy::Budget;
@@ -11,6 +11,7 @@ use crate::blob::{AccountKey, BlobBackend, Manifest};
 use crate::state::ServerState;
 use kynos::di::inject::Inject;
 use kynos::extract::params::path::Path;
+use kynos::extract::params::query::Query;
 use kynos::http::media::OctetStream;
 use kynos::response::stream::binary::BinaryStream;
 use std::sync::Arc;
@@ -24,14 +25,24 @@ use sunrise_telemetry::{Attr, Count};
 /// pinned 100 MB of the relay's memory for as long as the client took to read
 /// it — and a handful of concurrent fetches was an availability problem rather
 /// than a slow response.
+///
+/// With `?grant=`, the blob is read from the account that registered the
+/// viewer grant (ADR-0074), once the grant is in force for the caller. The
+/// relay files a blob by account and content address and never by Stream, so
+/// a grant reaches the owner's blobs by id rather than only its Stream's: the
+/// viewer still needs the id, which travels inside the Stream's sealed ops,
+/// and the ciphertext of any other Stream is under a key it was never sealed.
+/// The download is charged to the caller.
 #[kynos::get("/api/v1/blobs/{blob_id}", operation_id = "fetchBlob")]
 pub async fn fetch(
     Inject(state): Inject<ServerState>,
     Path(path): Path<BlobIdPath>,
+    Query(query): Query<GrantQuery>,
     SignedParts(caller): SignedParts,
 ) -> Result<BinaryStream<ChunkStream, OctetStream>, Throttled> {
     let blob = parse_blob_id(&path.blob_id.0)?;
-    let account = account(&caller);
+    let owner = reader_account(&state, &caller, query.grant.as_ref(), None).await?;
+    let account = crate::account_ns::account_key(&owner);
     let Manifest {
         chunk_count,
         size_bytes,

@@ -701,6 +701,13 @@ the relay holds neither.
   stream with `RELAY_GRANT_REVOKED` once the grant is gone. Publishing is
   unchanged and always lands in the caller's own channel, so a viewer cannot
   write.
+- The owner's pinned snapshot and blobs are read with the same grant as a
+  query: `GET /api/v1/snapshots/{stream_id}?grant=…` answers the owner's pin
+  for that Stream, and `GET /api/v1/blobs/{blob_id}?grant=…` the owner's blob.
+  A grant not in force for the caller is `403 RELAY_GRANT_REVOKED` on either,
+  checked before anything of the owner's is read; the snapshot read also
+  requires the grant to name the path's Stream. The query is part of the
+  signed target.
 
 Account-level rate-limit group. Implemented in `api/sync/grants.rs`, over
 `store/viewer_grants.rs` (relay migration 0010, Postgres 0004). No client
@@ -790,9 +797,10 @@ stays `200` while the server drains: a draining process is alive.
 Readiness is the same route with `?deep=1`, not a separate `/api/v1/ready`.
 The query was already specified here, so a probe configuration written against
 it needs no change, and one route keeps the two probes from drifting apart.
-`deep` is the only query parameter on the surface; the route is unsigned, so
-the signed operations' canonical target (`api/signed.rs`) is untouched. A
-`deep` that is not an integer from 0 to 255 is a `400`.
+The route is unsigned, so `deep` is no part of any signature; the one other
+query on the surface, a viewer grant's `?grant=` (§Viewer grants), is on
+signed reads, whose canonical target is the path and query together
+(`api/signed.rs`). A `deep` that is not an integer from 0 to 255 is a `400`.
 
 `?deep=1` answers `200` only if all of these pass, and `503` otherwise:
 

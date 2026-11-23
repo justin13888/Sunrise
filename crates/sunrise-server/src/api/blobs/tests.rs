@@ -2,8 +2,12 @@
 //! refusals.
 
 use crate::api::error::codes;
-use crate::api::testing::{Client, Res, SECOND_BEARER};
+use crate::api::testing::{Client, Res, BEARER, SECOND_BEARER};
+use crate::state::{Clock, ServerState};
+use crate::ServerConfig;
 use kynos::http::{Method, StatusCode};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// The ciphertext a test uploads. Opaque to the server by construction —
 /// what matters is only that the hashes agree.
@@ -546,4 +550,224 @@ async fn every_blob_route_requires_a_bearer() {
             "{method} {path} must refuse an unauthenticated caller"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Reads through a viewer grant (ADR-0074), shared with the snapshot tests
+// ---------------------------------------------------------------------------
+
+/// A third account: neither the owner nor the viewer a grant names.
+pub(crate) const THIRD_BEARER: &str = "Bearer third";
+
+/// The Stream the owner grants, 32 lowercase hex characters.
+pub(crate) const SHARED_STREAM: &str = "0123456789abcdef0123456789abcdef";
+
+/// When every sharing test starts, by the relay's clock.
+pub(crate) const T0_MS: u64 = 1_704_067_200_000;
+
+/// A clock a test moves by hand, so a grant's expiry is a value, not a wait.
+#[derive(Debug)]
+pub(crate) struct HandClock(AtomicU64);
+
+impl Clock for HandClock {
+    fn now_ms(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+impl HandClock {
+    pub(crate) fn set(&self, ms: u64) {
+        self.0.store(ms, Ordering::SeqCst);
+    }
+}
+
+/// A relay on a temp blob root with three accounts: [`BEARER`] (alice) owns,
+/// [`SECOND_BEARER`] (bob) views, [`THIRD_BEARER`] (carol) holds no grant.
+pub(crate) fn sharing_relay() -> (Client, Arc<HandClock>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let clock = Arc::new(HandClock(AtomicU64::new(T0_MS)));
+    let state = ServerState::with_clock(
+        ServerConfig {
+            blob_root: Some(dir.path().to_path_buf()),
+            ..ServerConfig::default()
+        },
+        clock.clone(),
+    )
+    .with_verifier(Arc::new(
+        crate::StaticVerifier::default()
+            .with("test", crate::Subject::new("https://idp.example", "alice"))
+            .with("second", crate::Subject::new("https://idp.example", "bob"))
+            .with("third", crate::Subject::new("https://idp.example", "carol")),
+    ));
+    (Client::from_state(state), clock, dir)
+}
+
+/// Alice registers a grant on `stream` under claim token `tag`; its id.
+pub(crate) async fn register_grant(
+    client: &Client,
+    stream: &str,
+    tag: u8,
+    expires_at_ms: Option<u64>,
+) -> String {
+    let res = client
+        .send_as(
+            Method::POST,
+            "/api/v1/sync/grants",
+            Some(BEARER),
+            Some(&serde_json::json!({
+                "stream_id": stream,
+                "claim": hex::encode([tag; 32]),
+                "expires_at_ms": expires_at_ms,
+            })),
+        )
+        .await;
+    res.assert_status(StatusCode::CREATED);
+    res.json()["grant_id"].as_str().unwrap().to_owned()
+}
+
+/// [`register_grant`], then bob claims it; its id.
+pub(crate) async fn grant_to_bob(
+    client: &Client,
+    stream: &str,
+    tag: u8,
+    expires_at_ms: Option<u64>,
+) -> String {
+    let grant_id = register_grant(client, stream, tag, expires_at_ms).await;
+    client
+        .send_as(
+            Method::POST,
+            "/api/v1/sync/grants/claim",
+            Some(SECOND_BEARER),
+            Some(&serde_json::json!({ "claim": hex::encode([tag; 32]) })),
+        )
+        .await
+        .assert_status(StatusCode::OK);
+    grant_id
+}
+
+/// `bearer` withdraws `grant_id`.
+pub(crate) async fn withdraw_grant(client: &Client, bearer: &str, grant_id: &str) {
+    client
+        .send_as(
+            Method::DELETE,
+            &format!("/api/v1/sync/grants/{grant_id}"),
+            Some(bearer),
+            None,
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+/// `GET path`, as `bearer`.
+pub(crate) async fn get_as(client: &Client, bearer: &str, path: &str) -> Res {
+    client.send_as(Method::GET, path, Some(bearer), None).await
+}
+
+/// The one refusal a read through a grant not in force gets, whatever the
+/// case: asserted on status, code and the whole body, so no case can be told
+/// from another.
+pub(crate) fn assert_not_in_force(res: &Res, reference: &Res, case: &str) {
+    res.assert_status(StatusCode::FORBIDDEN);
+    assert_eq!(res.json()["code"], codes::RELAY_GRANT_REVOKED, "{case}");
+    assert_eq!(res.bytes, reference.bytes, "{case} must not be told apart");
+}
+
+/// The route the issue asked for: an attachment in a shared Stream is read
+/// by the viewer, from the owner's account, through the grant it claimed.
+#[tokio::test]
+async fn a_viewer_fetches_the_owners_blob_through_a_grant() {
+    let (client, _clock, _guard) = sharing_relay();
+    let blob_id = upload(&client, &CHUNKS).await;
+    let grant_id = grant_to_bob(&client, SHARED_STREAM, 1, None).await;
+
+    let res = get_as(
+        &client,
+        SECOND_BEARER,
+        &format!("/api/v1/blobs/{blob_id}?grant={grant_id}"),
+    )
+    .await;
+    res.assert_status(StatusCode::OK);
+    assert_eq!(res.bytes, CHUNKS.concat());
+
+    // Without the grant bob reads his own account, which holds nothing.
+    let own = get_as(&client, SECOND_BEARER, &format!("/api/v1/blobs/{blob_id}")).await;
+    own.assert_status(StatusCode::NOT_FOUND);
+    assert_eq!(own.json()["code"], codes::BLOB_NOT_FOUND);
+
+    // Through the grant, a blob the owner does not hold is the ordinary 404.
+    let missing = get_as(
+        &client,
+        SECOND_BEARER,
+        &format!("/api/v1/blobs/blb_{}?grant={grant_id}", "0".repeat(32)),
+    )
+    .await;
+    missing.assert_status(StatusCode::NOT_FOUND);
+    assert_eq!(missing.json()["code"], codes::BLOB_NOT_FOUND);
+}
+
+/// Every grant not in force for the caller is the same `403`: unknown,
+/// unclaimed, someone else's, the owner's own, withdrawn and expired alike,
+/// and decided before the blob is looked up, so a refused read says nothing
+/// about which blobs the owner holds either.
+#[tokio::test]
+async fn a_blob_read_through_a_grant_not_in_force_is_refused_alike() {
+    let (client, clock, _guard) = sharing_relay();
+    let blob_id = upload(&client, &CHUNKS).await;
+    let held = grant_to_bob(&client, SHARED_STREAM, 1, Some(T0_MS + 60_000)).await;
+    let unclaimed = register_grant(&client, SHARED_STREAM, 2, None).await;
+    let fetch = |grant: &str| format!("/api/v1/blobs/{blob_id}?grant={grant}");
+
+    let unknown = get_as(&client, SECOND_BEARER, &fetch(&"0".repeat(32))).await;
+    assert_not_in_force(&unknown, &unknown, "an unknown grant");
+    let nothing = get_as(
+        &client,
+        SECOND_BEARER,
+        &format!(
+            "/api/v1/blobs/blb_{}?grant={}",
+            "0".repeat(32),
+            "0".repeat(32)
+        ),
+    )
+    .await;
+    assert_not_in_force(&nothing, &unknown, "an unknown grant on a missing blob");
+    for (bearer, grant, case) in [
+        (SECOND_BEARER, unclaimed.as_str(), "an unclaimed grant"),
+        (THIRD_BEARER, held.as_str(), "another account's grant"),
+        (BEARER, held.as_str(), "the owner naming her own grant"),
+    ] {
+        let res = get_as(&client, bearer, &fetch(grant)).await;
+        assert_not_in_force(&res, &unknown, case);
+    }
+
+    let withdrawn = grant_to_bob(&client, SHARED_STREAM, 3, None).await;
+    get_as(&client, SECOND_BEARER, &fetch(&withdrawn))
+        .await
+        .assert_status(StatusCode::OK);
+    withdraw_grant(&client, BEARER, &withdrawn).await;
+    let res = get_as(&client, SECOND_BEARER, &fetch(&withdrawn)).await;
+    assert_not_in_force(&res, &unknown, "a withdrawn grant");
+
+    get_as(&client, SECOND_BEARER, &fetch(&held))
+        .await
+        .assert_status(StatusCode::OK);
+    clock.set(T0_MS + 60_000);
+    let expired = get_as(&client, SECOND_BEARER, &fetch(&held)).await;
+    assert_not_in_force(&expired, &unknown, "an expired grant");
+}
+
+/// A grant id with a second spelling would be a second grant.
+#[tokio::test]
+async fn a_malformed_grant_is_a_validation_error() {
+    let (client, _clock, _guard) = sharing_relay();
+    let res = get_as(
+        &client,
+        SECOND_BEARER,
+        &format!(
+            "/api/v1/blobs/blb_{}?grant={}",
+            "0".repeat(32),
+            "AB".repeat(16)
+        ),
+    )
+    .await;
+    res.assert_status(StatusCode::BAD_REQUEST);
 }

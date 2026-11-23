@@ -130,9 +130,9 @@ fn not_held() -> ApiError {
     )
 }
 
-/// The `403` a subscription naming a grant not in force for the caller gets,
-/// whichever case it was.
-pub(super) fn not_in_force() -> ApiError {
+/// The `403` a subscription, a snapshot read or a blob read naming a grant
+/// not in force for the caller gets, whichever case it was.
+pub(crate) fn not_in_force() -> ApiError {
     ApiError::forbidden(
         codes::RELAY_GRANT_REVOKED,
         "no viewer grant in force for this account and stream",
