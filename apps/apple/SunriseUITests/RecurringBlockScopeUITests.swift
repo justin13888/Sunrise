@@ -38,22 +38,22 @@ final class RecurringBlockScopeUITests: SunriseUITestCase {
     /// before it began: stepped back to its first week and forward past
     /// today, through the grid's own Previous and Next.
     func testTheWeeklyBlockAppearsInEveryWeekOfItsSeries() {
-        XCTAssertEqual(settledBlocks().count, 1, "this week holds one event")
+        expectBlocks(1, "this week holds one event")
         XCTAssertTrue(
             app.staticTexts[Self.title].firstMatch.exists,
             "the event is the seeded block, by its title"
         )
         for back in 1...Self.weeksBefore {
             step("Previous")
-            XCTAssertEqual(settledBlocks().count, 1, "\(back) week(s) back holds one event")
+            expectBlocks(1, "\(back) week(s) back holds one event")
         }
         step("Previous")
-        XCTAssertEqual(settledBlocks().count, 0, "the week before the series began holds none")
+        expectBlocks(0, "the week before the series began holds none")
 
         for _ in 0...Self.weeksBefore { step("Next") }
         for ahead in 1...Self.weeksBefore {
             step("Next")
-            XCTAssertEqual(settledBlocks().count, 1, "\(ahead) week(s) ahead holds one event")
+            expectBlocks(1, "\(ahead) week(s) ahead holds one event")
         }
     }
 
@@ -167,14 +167,15 @@ final class RecurringBlockScopeUITests: SunriseUITestCase {
         return last
     }
 
-    /// The top of the one event in the week on screen.
-    private func eventTop(_ week: String, file: StaticString = #filePath, line: UInt = #line) -> CGFloat? {
-        let frames = settledBlocks()
-        XCTAssertEqual(frames.count, 1, "\(week) holds one event", file: file, line: line)
-        guard let frame = frames.first else { return nil }
-        // The event is an hour long, so the chip is an hour tall. A frame of
-        // any other height is not the chip (iOS reports the whole day column
-        // for this identifier), and its top would not move with the event.
+    /// The event is an hour long, so the chip is an hour tall. A frame of
+    /// any other height is not the chip (iOS reports the whole day column
+    /// for this identifier), and its top would not move with the event.
+    private func assertHourTall(
+        _ frame: CGRect,
+        in week: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
         XCTAssertEqual(
             frame.height,
             Self.hourHeight,
@@ -183,6 +184,26 @@ final class RecurringBlockScopeUITests: SunriseUITestCase {
             file: file,
             line: line
         )
+    }
+
+    /// The week on screen holds `count` events, each the chip's own frame.
+    private func expectBlocks(
+        _ count: Int,
+        _ week: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let frames = settledBlocks()
+        XCTAssertEqual(frames.count, count, week, file: file, line: line)
+        for frame in frames { assertHourTall(frame, in: week, file: file, line: line) }
+    }
+
+    /// The top of the one event in the week on screen.
+    private func eventTop(_ week: String, file: StaticString = #filePath, line: UInt = #line) -> CGFloat? {
+        let frames = settledBlocks()
+        XCTAssertEqual(frames.count, 1, "\(week) holds one event", file: file, line: line)
+        guard let frame = frames.first else { return nil }
+        assertHourTall(frame, in: week, file: file, line: line)
         return frame.minY
     }
 
