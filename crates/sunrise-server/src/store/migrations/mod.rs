@@ -105,6 +105,11 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         name: "devices_revoked_by_key",
         apply: devices_revoked_by_key,
     },
+    Migration {
+        id: 10,
+        name: "viewer_grants",
+        apply: viewer_grants,
+    },
 ];
 
 /// The version this binary migrates to, and the newest it will open.
@@ -228,6 +233,12 @@ fn devices_revoked_by_key(conn: &Connection) -> rusqlite::Result<()> {
         "ALTER TABLE devices ADD COLUMN revoked_by_key TEXT;
          ALTER TABLE devices ADD COLUMN revoked_signed_at_ms INTEGER;",
     )
+}
+
+/// 0010: the relay viewer grants `store::viewer_grants` declares (ADR-0074).
+/// Created empty: no relay routed a Stream to a second account before it.
+fn viewer_grants(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(super::viewer_grants::SCHEMA)
 }
 
 /// The database's `user_version`.

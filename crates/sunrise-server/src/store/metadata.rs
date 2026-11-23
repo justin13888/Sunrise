@@ -2,7 +2,8 @@
 //!
 //! [`MetadataStore`] covers accounts, devices, push tokens, cursors, blob
 //! tombstones, the committed-blob ledger, the pinned stream snapshots and key
-//! bundles, deletion tokens and the durable relay log. Each method is one
+//! bundles, the relay viewer grants, deletion tokens and the durable relay
+//! log. Each method is one
 //! unit of work that commits or rolls back whole, which is the shape [`Store`]
 //! already had: revocation, account erasure and a relay append each touch
 //! several tables, and keeping each inside one method keeps its atomicity
@@ -27,9 +28,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::{
-    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, IdentityChainPinned,
-    KeyBundlePinned, NewDevice, NewTombstone, PinnedIdentityChain, PinnedKeyBundle, PinnedSnapshot,
-    Reinstatement, RetiredRecoveryBlob, SignedBy, Store, StoreError, StoreStats,
+    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, GrantCreated,
+    IdentityChainPinned, KeyBundlePinned, NewDevice, NewTombstone, PinnedIdentityChain,
+    PinnedKeyBundle, PinnedSnapshot, Reinstatement, RetiredRecoveryBlob, SignedBy, Store,
+    StoreError, StoreStats, ViewerGrant,
 };
 use crate::auth::Subject;
 use crate::relay::{FrameHead, StreamKey};
@@ -304,6 +306,31 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         &self,
         account_id: &str,
     ) -> Result<Option<PinnedKeyBundle>, MetadataError>;
+    /// [`Store::create_viewer_grant`].
+    async fn create_viewer_grant(
+        &self,
+        grant: &ViewerGrant,
+        claim_h: &[u8; 32],
+        now_ms: u64,
+    ) -> Result<GrantCreated, MetadataError>;
+    /// [`Store::claim_viewer_grant`].
+    async fn claim_viewer_grant(
+        &self,
+        claim_h: &[u8; 32],
+        account_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<ViewerGrant>, MetadataError>;
+    /// [`Store::viewer_grant`].
+    async fn viewer_grant(&self, grant_id: &[u8; 16])
+        -> Result<Option<ViewerGrant>, MetadataError>;
+    /// [`Store::viewer_grants`].
+    async fn viewer_grants(&self, account_id: &str) -> Result<Vec<ViewerGrant>, MetadataError>;
+    /// [`Store::withdraw_viewer_grant`].
+    async fn withdraw_viewer_grant(
+        &self,
+        grant_id: &[u8; 16],
+        account_id: &str,
+    ) -> Result<bool, MetadataError>;
     /// [`Store::collectable_blobs`].
     async fn collectable_blobs(
         &self,
@@ -683,6 +710,38 @@ impl MetadataStore for Store {
         account_id: &str,
     ) -> Result<Option<PinnedKeyBundle>, MetadataError> {
         Ok(Self::pinned_key_bundle(self, account_id)?)
+    }
+    async fn create_viewer_grant(
+        &self,
+        grant: &ViewerGrant,
+        claim_h: &[u8; 32],
+        now_ms: u64,
+    ) -> Result<GrantCreated, MetadataError> {
+        Ok(Self::create_viewer_grant(self, grant, claim_h, now_ms)?)
+    }
+    async fn claim_viewer_grant(
+        &self,
+        claim_h: &[u8; 32],
+        account_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<ViewerGrant>, MetadataError> {
+        Ok(Self::claim_viewer_grant(self, claim_h, account_id, now_ms)?)
+    }
+    async fn viewer_grant(
+        &self,
+        grant_id: &[u8; 16],
+    ) -> Result<Option<ViewerGrant>, MetadataError> {
+        Ok(Self::viewer_grant(self, grant_id)?)
+    }
+    async fn viewer_grants(&self, account_id: &str) -> Result<Vec<ViewerGrant>, MetadataError> {
+        Ok(Self::viewer_grants(self, account_id)?)
+    }
+    async fn withdraw_viewer_grant(
+        &self,
+        grant_id: &[u8; 16],
+        account_id: &str,
+    ) -> Result<bool, MetadataError> {
+        Ok(Self::withdraw_viewer_grant(self, grant_id, account_id)?)
     }
     async fn collectable_blobs(
         &self,

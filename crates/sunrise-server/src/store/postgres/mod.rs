@@ -37,6 +37,7 @@ mod pairing;
 mod relay_log;
 mod sessions;
 mod tls;
+mod viewer_grants;
 
 pub(crate) use tls::client_config_from_ca_file;
 
