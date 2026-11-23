@@ -107,7 +107,7 @@ pub use client::{
 };
 pub use command::CoreCommand;
 pub use dto::{CapturePreview, CommandOutcome, TaskItem};
-pub use error::BindingError;
+pub use error::{feature_refusal, BindingError, FeatureRefusal};
 pub use ical::{IcalImportReport, IcalImportedBlock, IcalNotice};
 pub use login::{LoginCredentials, SunriseLogin};
 pub use notes::{
@@ -221,6 +221,9 @@ impl SunriseCore {
     ///
     /// [`BindingError::FeatureMissing`] when the vault requires a feature this
     /// build lacks and the command would edit what it covers.
+    /// [`BindingError::FeatureUnsupportedByDevices`] when the command needs
+    /// the vault to require a feature that devices not yet updated lack, as a
+    /// `withdrawRevocation` does (ADR-0056 §7).
     /// [`BindingError::BadFixedBytes`] for an `AttachFile` whose key or digest
     /// is the wrong width or not hex. [`BindingError::Core`] when the command
     /// does not validate, the vault refuses the write, or a `ResolveConflict`
