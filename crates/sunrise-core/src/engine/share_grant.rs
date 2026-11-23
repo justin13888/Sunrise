@@ -357,7 +357,7 @@ impl Engine {
     /// later rotation on every replica that holds the op. A device without
     /// `ID_S_priv` can revoke: its rotation re-seals to nobody, and a device
     /// that holds `ID_S_priv` re-seals the epoch to the shares still in force
-    /// once it learns it ([`Self::backfill_share_grants`]). Returns the
+    /// once it learns it (`Engine::backfill_share_grants`). Returns the
     /// epoch the rotation minted.
     ///
     /// Withdrawing the relay viewer grant (step 3) is the caller's.
