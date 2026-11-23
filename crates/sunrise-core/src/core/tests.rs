@@ -1746,3 +1746,7 @@ mod place;
 /// The planner's preview cache (#343).
 #[cfg(test)]
 mod planner;
+
+/// Sharing a Stream with another account, and opening what it sent.
+#[cfg(test)]
+mod share;
