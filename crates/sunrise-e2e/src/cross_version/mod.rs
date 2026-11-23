@@ -51,7 +51,7 @@ use sunrise_id::{EntityKind, EntityRef};
 use self::baseline::BaselineReplica;
 use self::delivery::Delivery;
 use self::events::{take_head_events, LoggedEvent};
-use self::future::FutureWriter;
+use self::future::{FutureWriter, STAMP_LEAD_MS};
 use self::model::Model;
 use self::projection::project;
 pub use self::replica::Applied;
@@ -127,6 +127,22 @@ struct Run {
 /// not open, a driver that does not start. Those are not findings about the
 /// invariant and are not reported as violations.
 pub async fn run(mode: &Mode, steps: &[Step]) -> Report {
+    run_with_stamp_lead(mode, steps, STAMP_LEAD_MS).await
+}
+
+/// [`run`], with every newer op stamped `lead_ms` past the wall clock rather
+/// than [`STAMP_LEAD_MS`].
+///
+/// A lead longer than the steps after a newer op take puts each of them inside
+/// the op's stamp, which a one-millisecond lead does only by chance. A test
+/// uses it to show that a later write orders after the op whatever its timing
+/// (#1327).
+///
+/// # Panics
+/// As [`run`] does, and when `lead_ms` is 0: an op stamped at the wall clock
+/// need not order after everything the settle before it saw.
+pub async fn run_with_stamp_lead(mode: &Mode, steps: &[Step], lead_ms: u64) -> Report {
+    assert!(lead_ms > 0, "a newer op is stamped past the wall clock");
     let dir = tempfile::tempdir().expect("tempdir");
     let (addr, relay) = crate::spawn_relay().await;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
@@ -153,7 +169,7 @@ pub async fn run(mode: &Mode, steps: &[Step]) -> Report {
         }
     };
     let device_b = b.device_id();
-    let (c, future) = open_future_writer(&b, &dir.path().join("c"), addr, &clock).await;
+    let (c, future) = open_future_writer(&b, &dir.path().join("c"), addr, &clock, lead_ms).await;
 
     let mut run = Run {
         a,
@@ -299,6 +315,7 @@ async fn open_future_writer(
     dir: &Path,
     addr: SocketAddr,
     clock: &Arc<dyn Clock>,
+    lead_ms: u64,
 ) -> (Arc<Core>, FutureWriter) {
     let payload = crate::pair_with(b);
     let signing_seed = payload.d_s_priv;
@@ -316,7 +333,14 @@ async fn open_future_writer(
         .get(&INBOX_STREAM_BYTES)
         .and_then(|epochs| epochs.iter().next_back().map(|(e, k)| (*e, *k)))
         .expect("B holds the Inbox key");
-    let writer = FutureWriter::new(c.device_id(), signing_seed, INBOX_STREAM_BYTES, epoch, key);
+    let writer = FutureWriter::new(
+        c.device_id(),
+        signing_seed,
+        INBOX_STREAM_BYTES,
+        epoch,
+        key,
+        lead_ms,
+    );
     (c, writer)
 }
 

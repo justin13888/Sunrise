@@ -52,9 +52,17 @@ impl Run {
             return;
         };
         self.future_count += 1;
-        let envelope = self
-            .future
-            .seal(write, &current, self.c.now_ms(), self.future_count);
+        let now_ms = self.c.now_ms();
+        let envelope = self.future.seal(write, &current, now_ms, self.future_count);
+        // Every later write must order after this op whatever its timing, so
+        // the wall clock every replica stamps from passes the op's stamp
+        // before the scenario goes on. Then the op's other fields, which
+        // carry what this settle left, never win over a later write, and the
+        // model needs to record only the field the op changes.
+        let stamped = self.future.stamp_ms(now_ms);
+        while self.c.now_ms() <= stamped {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
         let value = project_future(write, self.future_count);
         let fields: Vec<(Field, Option<String>)> = write
             .field()

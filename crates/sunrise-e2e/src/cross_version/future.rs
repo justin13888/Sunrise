@@ -68,11 +68,14 @@ pub(crate) struct FutureWriter {
     key: [u8; 32],
     next_seq: u64,
     rng: ChaCha20Rng,
+    /// How far past the wall clock each op is stamped.
+    lead_ms: u64,
 }
 
 impl FutureWriter {
     /// `device_id` and `signing_seed` are the paired device's; `epoch` and
-    /// `key` its current key for `stream_id`.
+    /// `key` its current key for `stream_id`. Each op is stamped `lead_ms`
+    /// past the wall clock it is sealed at, [`STAMP_LEAD_MS`] in a normal run.
     ///
     /// The device must never write to `stream_id` itself: this writer owns
     /// that `(stream, device)` sequence from 1. A paired device that issues no
@@ -85,6 +88,7 @@ impl FutureWriter {
         stream_id: [u8; 16],
         epoch: u32,
         key: [u8; 32],
+        lead_ms: u64,
     ) -> Self {
         Self {
             device_id,
@@ -96,6 +100,7 @@ impl FutureWriter {
             rng: ChaCha20Rng::seed_from_u64(u64::from_le_bytes(
                 device_id[..8].try_into().expect("8 bytes"),
             )),
+            lead_ms,
         }
     }
 
@@ -161,10 +166,8 @@ impl FutureWriter {
             stream_id: self.stream_id,
             device_id: self.device_id,
             seq,
-            // One past the wall clock: a newer write the scenario issues after
-            // a settle must order after everything that settle saw.
             hlc: Hlc {
-                physical_ms: now_ms + 1,
+                physical_ms: self.stamp_ms(now_ms),
                 logical: 0,
             },
             aead_alg: AeadAlgId::XChaCha20Poly1305,
@@ -186,7 +189,25 @@ impl FutureWriter {
         )
         .expect("a well-formed envelope seals")
     }
+
+    /// The HLC physical time an op sealed at wall time `now_ms` carries.
+    pub(crate) const fn stamp_ms(&self, now_ms: u64) -> u64 {
+        now_ms + self.lead_ms
+    }
 }
+
+/// How far past the wall clock a newer op is stamped in a normal run.
+///
+/// One past it: a newer write the scenario issues after a settle must order
+/// after everything that settle saw. It must also order before every write
+/// the scenario issues after it, or which of the two wins is decided by how
+/// many milliseconds the steps between them took, which no seed fixes
+/// (#1327). Every shape but `OpKind` is a whole `Task`, so a concurrent
+/// rename on the side still owed the op would race the title it carries. The
+/// harness waits out the stamp before the next step (`Run::future`), which
+/// makes every later write, on either side and with or without the op, order
+/// after it.
+pub const STAMP_LEAD_MS: u64 = 1;
 
 /// A `task.update` op carrying `t`, in the externally tagged form every
 /// build's inner-op codec reads.
