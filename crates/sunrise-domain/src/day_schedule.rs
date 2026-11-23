@@ -264,16 +264,38 @@ impl DaySchedule {
     }
 }
 
-/// A date at the edge of the calendar, whose bounds have no instant.
+/// A date at the start of the calendar, whose bounds have no instant. The end
+/// of the calendar never refuses: a bound past the timestamp range's last
+/// instant saturates at [`Timestamp::MAX`] (`day-schedule.md` §Planner day).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the planner day {0} has no instant in the timestamp range")]
 pub struct OutOfCalendar(pub Date);
 
-/// `time` on `date` in `tz`, by the one DST rule (`time.md` §3).
+/// `time` on `date` in `tz`, by the one DST rule (`time.md` §3). A civil time
+/// after the range's last instant in `tz` saturates at [`Timestamp::MAX`]; one
+/// before its first is [`OutOfCalendar`].
 fn at(tz: &TimeZone, date: Date, time: civil::Time) -> Result<Timestamp, OutOfCalendar> {
-    tz.to_zoned(date.to_datetime(time))
-        .map(|z| z.timestamp())
-        .map_err(|_| OutOfCalendar(date))
+    let civil = date.to_datetime(time);
+    match tz.to_zoned(civil) {
+        Ok(z) => Ok(z.timestamp()),
+        Err(_) if civil > Timestamp::MAX.to_zoned(tz.clone()).datetime() => Ok(Timestamp::MAX),
+        Err(_) => Err(OutOfCalendar(date)),
+    }
+}
+
+/// `time` on the date after `date` in `tz`: [`Timestamp::MAX`] after the
+/// calendar's last date, as [`at`] saturates.
+fn at_next(tz: &TimeZone, date: Date, time: civil::Time) -> Result<Timestamp, OutOfCalendar> {
+    match date.tomorrow() {
+        Ok(d) => at(tz, d, time),
+        Err(_) => Ok(Timestamp::MAX),
+    }
+}
+
+/// The last civil date that has an instant in `tz`: the date of
+/// [`Timestamp::MAX`] there.
+fn last_date(tz: &TimeZone) -> Date {
+    Timestamp::MAX.to_zoned(tz.clone()).date()
 }
 
 fn next(date: Date) -> Result<Date, OutOfCalendar> {
@@ -302,9 +324,9 @@ fn nominal_start(s: &DaySchedule, tz: &TimeZone, date: Date) -> Result<Timestamp
 /// when it crosses midnight), else the next midnight.
 fn end(s: &DaySchedule, tz: &TimeZone, date: Date) -> Result<Timestamp, OutOfCalendar> {
     match s.window_for(date) {
-        Some(w) if w.crosses_midnight() => at(tz, next(date)?, w.sleep),
+        Some(w) if w.crosses_midnight() => at_next(tz, date, w.sleep),
         Some(w) => at(tz, date, w.sleep),
-        None => at(tz, next(date)?, civil::Time::midnight()),
+        None => at_next(tz, date, civil::Time::midnight()),
     }
 }
 
@@ -323,8 +345,13 @@ fn prev_existing(tz: &TimeZone, date: Date) -> Result<Date, OutOfCalendar> {
 
 /// The instant planner day `date` starts at: the later of its nominal start
 /// and the end of the day before it. A date the zone skips starts where the
-/// next one does, so its planner day is empty.
+/// next one does, so its planner day is empty. A date after the last one with
+/// an instant in `tz` starts at [`Timestamp::MAX`], so its planner day is
+/// empty too.
 fn boundary(s: &DaySchedule, tz: &TimeZone, date: Date) -> Result<Timestamp, OutOfCalendar> {
+    if date > last_date(tz) {
+        return Ok(Timestamp::MAX);
+    }
     let mut d = date;
     for _ in 0..2 {
         if exists(tz, d)? {
@@ -340,24 +367,31 @@ fn boundary(s: &DaySchedule, tz: &TimeZone, date: Date) -> Result<Timestamp, Out
 /// (`day-schedule.md` §Planner day). With an empty schedule it is the civil
 /// day; a date the zone skips is empty.
 ///
+/// At the end of the timestamp range a bound saturates: the last planner day
+/// that holds an instant ends at [`Timestamp::MAX`], and a date after it is
+/// `(MAX, MAX)`, empty. Every millisecond of the range is inside its planner
+/// day; only the range's last nanosecond, `MAX` itself, is that day's end.
+///
 /// # Errors
-/// [`OutOfCalendar`] for a date at the edge of the calendar.
+/// [`OutOfCalendar`] for a date at the start of the calendar.
 pub fn day_bounds(
     schedule: &DaySchedule,
     date: Date,
     tz: &TimeZone,
 ) -> Result<(Timestamp, Timestamp), OutOfCalendar> {
-    Ok((
-        boundary(schedule, tz, date)?,
-        boundary(schedule, tz, next(date)?)?,
-    ))
+    let end = match date.tomorrow() {
+        Ok(d) => boundary(schedule, tz, d)?,
+        Err(_) => Timestamp::MAX,
+    };
+    Ok((boundary(schedule, tz, date)?, end))
 }
 
 /// The plannable window of `date`, wake to sleep, in `tz`, or `None` when
 /// the date has no schedule (the planner then uses the whole planner day).
 ///
 /// # Errors
-/// [`OutOfCalendar`] for a date at the edge of the calendar.
+/// [`OutOfCalendar`] for a date at the start of the calendar; a bound past
+/// the range's end saturates at [`Timestamp::MAX`].
 pub fn plannable(
     schedule: &DaySchedule,
     date: Date,
@@ -378,7 +412,8 @@ pub fn plannable(
 /// by someone who sleeps at 01:00 lands on the day they were living.
 ///
 /// # Errors
-/// [`OutOfCalendar`] for an instant at the edge of the calendar.
+/// [`OutOfCalendar`] for an instant at the start of the calendar. Every
+/// instant up to [`Timestamp::MAX`] has a planner date.
 pub fn planner_date(
     schedule: &DaySchedule,
     instant: Timestamp,
@@ -461,7 +496,8 @@ pub fn deadline_at(
 /// schedule, so no wind-down fires that night.
 ///
 /// # Errors
-/// [`OutOfCalendar`] for a date at the edge of the calendar.
+/// [`OutOfCalendar`] for a date at the start of the calendar; a sleep time
+/// past the range's end saturates at [`Timestamp::MAX`].
 pub fn wind_down_at(
     schedule: &DaySchedule,
     date: Date,

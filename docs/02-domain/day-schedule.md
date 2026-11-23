@@ -102,6 +102,12 @@ Properties, each pinned by a table test:
   the civil day.
 - **A missing date is empty.** In a zone that skips a civil date
   (`Pacific/Apia`, 2011-12-30), that date's planner day has zero length.
+- **The range's end saturates.** A wake, sleep or midnight after the
+  timestamp range's last instant resolves to that instant, `Timestamp::MAX`
+  (9999-12-30T22:00:00.999999999Z). The last planner day holding an instant
+  ends there, every later date is empty at `MAX`, and every millisecond of the
+  range has a planner day. The range's start does not saturate: a date there
+  is refused as `OutOfCalendar`.
 - **Plannable is a subset.** The planner
   ([ADR-0048](../11-adr/0048-interactive-planner.md)) places work only inside
   `plannable(d)`; views and lateness use `planner_day(d)`.
