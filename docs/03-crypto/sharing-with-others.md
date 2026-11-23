@@ -6,7 +6,7 @@ status: accepted
 
 A user shares a **Stream** (and all its descendant entities) with one or more other identities. The Stream is the unit; there is no per-Task ACL.
 
-## Implementation status: the viewer grant's cryptography and its relay route are built; no client uses them
+## Implementation status: the viewer grant, its op, its re-seal and its relay route are built; no client uses them
 
 The "accept invite" and "view shared stream as editor" rows are MUST in the [parity matrix](../07-clients/parity-matrix.md), not built, and ranked on the roadmap ([`../roadmap.md`](../roadmap.md)) as [#133](https://github.com/justin13888/Sunrise/issues/133), which tracks the whole of sharing.
 
@@ -20,10 +20,17 @@ The "accept invite" and "view shared stream as editor" rows are MUST in the [par
 
 The only role it grants is `viewer`, the answer recorded for #133: a read-only grant per Stream, with expiry, revocable by key rotation ([ADR-0020](../11-adr/0020-v1-must-demotions.md) §Addendum). A grant whose role is anything else is refused rather than read as a viewer.
 
+**Built** ([#1318](https://github.com/justin13888/Sunrise/issues/1318), `crates/sunrise-core/src/engine/share_grant.rs`): the grant as an op, at `DOC_SCHEMA_V = 32`.
+
+* `Engine::share_stream` seals the Stream's live epoch, name and color to a `Person`'s identity, signed by the account identity in force, and logs it as a `ShareGrant` control op on the vault-meta stream ([`data-encryption-format.md`](./data-encryption-format.md) §Control op payloads). Only a device holding `ID_S_priv` can share. It returns the encoded grant, which is what reaches the recipient.
+* Applying the op stores nothing beside it. `Engine::stream_shares` folds the op log into one share per recipient: the latest grant, by envelope stamp, that names a Person, decodes as a viewer grant, and verifies under the head of the identity chain, or under a retired identity from a sender whose reads are not bounded.
+* Every Stream-key rotation re-seals its new epoch to the Stream's shares through `reseal_share_grants`, beside the account's own key envelopes (§Revoking access, step 2).
+
 **Not built:**
 
-* `share_grant`, `share_revoke` and `share_decline` as ops. None is among the `InnerOp` variants in `crates/sunrise-core/src/inner_op.rs`, so nothing emits, stores or applies a grant, and no rotation calls the re-seal.
-* `crates/sunrise-domain/src/person.rs` defines `struct Person` and `0013_baseline.sql` creates a `persons` table that nothing reads or writes.
+* `share_revoke` and `share_decline` as ops, so a re-seal leaves out only the expired, and nothing revokes a share.
+* A re-seal by a device without `ID_S_priv`. Such a device's rotation reaches no share recipient, and says so (`core.share.reseal_skipped`).
+* The `persons` table `0013_baseline.sql` creates is still read and written by nothing: a share names its `Person` by ref, and the caller supplies the `Person` and the recipient's `ID_D_pub`.
 * Any client use of the relay viewer grant. The relay half is built ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md), the threat model for all of sharing): an owner registers a grant on a Stream under a claim token, one other account claims it, and that account's sessions read the owner's channel and can write nothing into it. No client registers, claims or subscribes through one yet, and a viewer's snapshot, blob and push routes are not built ([#1322](https://github.com/justin13888/Sunrise/issues/1322)).
 * The `sunrise://share/<token>` deep link, the accept and decline UI, and the CLI surface.
 * The `editor` role.
@@ -61,6 +68,8 @@ There is no `admin` and no `commenter` role. Granting and revoking is a privileg
    ```
    `stream_metadata` is `{1: name (tstr), 2: color (tstr)}`, the Stream's name and its color's wire spelling (so the recipient sees a meaningful entry before a full sync). Each is at most 1024 bytes, and an encoded grant at most 8 KiB.
 
+   The op that carries it is the account's own record, sealed on the vault-meta stream like every control op: `{ "ShareGrant": { "person", "recipient_id_d_pub", "grant" } }`, where `grant` is the payload above in its canonical encoding, `person` the `per_` ref of the Person shared with, and `recipient_id_d_pub` the key every later re-seal is sealed to, which the grant itself does not carry ([`data-encryption-format.md`](./data-encryption-format.md) §Control op payloads). The recipient never reads this op; it receives the encoded grant in step 4.
+
    **Why the granter is in the AAD.** HPKE Base authenticates no sender, and `identity_sig` alone does not stop a third identity re-signing the owner's `hpke_ct` as its own grant: the recipient would then hold the owner's Stream key under the impostor's name. `granter_identity_id` is `identity_id_from_pub` of the `ID_S_pub` the recipient verifies `identity_sig` under, so a ciphertext opens only beside the signature of the identity that sealed it. It is not a field: the recipient derives it from the key it already checked.
 4. **Owner publishes the `share_grant` op and registers a relay viewer grant** ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md)): `POST /api/v1/sync/grants` on the Stream, under a claim token of 32 random bytes and the grant's `expires_at`. The recipient receives the claim token beside the sealed grant, claims it from its own account, and from then on reads the owner's channel by naming the grant in its subscription. The relay learns which account reads the Stream; it never learns the recipient's identity, and never holds the key.
 5. **Recipient receives** the envelope on next sync. UI shows "Stream X shared with you by Y. Accept?" The recipient's client verifies `identity_sig` against the granting identity's published `ID_S_pub`.
@@ -79,7 +88,7 @@ Owner triggers revoke. This is implemented as:
        3: uint               ; effective_at_ms
    }
    ```
-2. Perform a Stream key rotation (see [`key-rotation.md`](./key-rotation.md)). The rotation re-wraps the new epoch for all sibling devices and remaining peers, **excluding** the revoked recipient. A peer whose grant has expired at the rotating device's clock is excluded too: its grant has ended, and a grant of a new epoch would extend it. Each remaining peer's grant of the new epoch carries its `expires_at` unchanged. `reseal_share_grants` in `sunrise-crypto` is this step's peer half.
+2. Perform a Stream key rotation (see [`key-rotation.md`](./key-rotation.md)). The rotation re-wraps the new epoch for all sibling devices and remaining peers, **excluding** the revoked recipient. A peer whose grant has expired at the rotating device's clock is excluded too: its grant has ended, and a grant of a new epoch would extend it. Each remaining peer's grant of the new epoch carries its `expires_at` unchanged. `reseal_share_grants` in `sunrise-crypto` is this step's peer half, and every rotation calls it: `emit_key_envelopes`, which each rotation distributes its epoch through, re-seals the epoch to the Stream's shares as `ShareGrant` ops, sealed under the same vault-meta epoch as the key envelopes. Until `share_revoke` exists, the revoked list it passes is empty.
 3. Withdraw the relay viewer grant (`DELETE /api/v1/sync/grants/{grant_id}`, [ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md)): the relay refuses the recipient's next subscribe and ends a stream it holds open within one re-check, with `RELAY_GRANT_REVOKED`. That saves the owner's metadata and the relay's bandwidth, and it is **not** the guarantee. A revoked recipient stops receiving *readable* content because the epoch has rotated and no envelope is sealed to it under the new key. A relay that ignores the withdrawal keeps forwarding, so a revoked recipient may still receive post-cutoff ciphertext it cannot open, and discards it locally on applying the `share_revoke`.
 
 The revoked recipient retains historical decryption ability for ops that were created under the previous epoch (the same property this document's target state assumes for revoked sibling devices — note that *that* is also target state: revocation as implemented stops nothing, see [`key-rotation.md`](./key-rotation.md) §Revocation). UI states this explicitly: "Y will no longer receive new updates. Y still has the copy of the data they had at revocation time." Already-decrypted local copies persist; revocation is **not** a guarantee of forgetting, only of stopping new data flow.

@@ -21,7 +21,9 @@ pub struct Person {
     /// Display name (UI; treat as plaintext).
     pub display_name: String,
     /// Optional reference to the Person's identity public key set; absent
-    /// means we only hold a label, no identity link.
+    /// means we only hold a label, no identity link. A Stream is shared only
+    /// with a Person that has one: the share grant is sealed to the identity
+    /// it names (`docs/03-crypto/sharing-with-others.md`).
     #[serde(default)]
     pub identity_id: Option<EntityRef>,
     /// Tombstone.

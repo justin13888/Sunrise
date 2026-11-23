@@ -10,10 +10,16 @@ status: proposed
 > [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a). This document is the
 > design of record for that work, not a description of anything that ships.
 >
-> **What exists in the tree:** nothing. No `shares` table, no `share_grant` /
-> `share_revoke` / `share_decline` op kind, no `api/shares.rs`, and no
-> implementor of the key distribution the design needs — ADR-0020 §(a)
-> enumerates the gap in detail.
+> **What exists in the tree:** the viewer half of the key distribution. The
+> `share_grant` op kind is built ([#1318](https://github.com/justin13888/Sunrise/issues/1318)):
+> the owner's account records each share as a sealed grant on its vault-meta
+> stream, folds its shares from the op log rather than a `shares` table, and
+> re-seals every Stream-key rotation to them
+> ([`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)).
+> The relay viewer grant is built too
+> ([ADR-0074](../11-adr/0074-a-viewer-reads-a-shared-stream-through-a-relay-grant.md)).
+> There is no `share_revoke` / `share_decline` op kind, no `api/shares.rs`,
+> no `editor` role, and no client that offers, accepts or reads a share.
 >
 > **Why it is not built:** beyond ADR-0020's security-review argument, two things
 > in this file are structurally at odds with the relay as built. The relay
