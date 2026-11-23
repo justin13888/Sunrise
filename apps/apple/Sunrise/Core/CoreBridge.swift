@@ -230,12 +230,7 @@ actor CoreBridge {
     }
 
     /// Where the relay's half of withdrawing `device`'s removal stands
-    /// (ADR-0056 §5): queued for the next sync, refused, or nothing owed.
-    ///
-    /// The counterpart of ``relayRevocationPending(_:)``: the withdrawal's
-    /// vault half is committed when the command returns, while a relay that
-    /// was already told refuses the device until a session sends the
-    /// reinstatement, and for good if the relay refuses it.
+    /// (ADR-0056 §5); the counterpart of ``relayRevocationPending(_:)``.
     func relayReinstatementPending(_ device: EntityRef) async throws -> RelayReinstatementKind {
         try core.relayReinstatementPending(device: device)
     }
