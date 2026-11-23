@@ -142,17 +142,19 @@ cell stays **No** for the reason *Task → Calendar block* is No there: no
 screen shows the grid beside a task list. The grip is left off iOS rather than
 shipped unreachable.
 
-**Moving and resizing a block is planned.** Every drag of a block that does
-not repeat is sent to the core's planner (`plan_preview`,
+**Moving and resizing a block is planned.** Every drag of a block is sent to
+the core's planner (`plan_preview`,
 [`../08-features/planner.md`](../08-features/planner.md)) on each snapped
 position; the grid draws the diff it returns — a ghost where each item goes,
 a dashed outline where it was, tinted by the worst rule it breaks — and a
 summary line names the consequence. The drop commits exactly that diff as one
 undo step; dropped back where it started, or after Esc, it commits nothing.
 The keyboard path is the planning keys on a block with focus (Mac): ⌥↑/⌥↓,
-⇧⌥↑/⇧⌥↓, ⌥←/⌥→, Return and Esc (`Keymap.planning`). One event of a repeating
-block is not planned, because the planner reads the series and not the event:
-its drag asks how far the change reaches and writes the edit, as before.
+⇧⌥↑/⇧⌥↓, ⌥←/⌥→, Return and Esc (`Keymap.planning`). A drag of one event of a
+repeating block names that event, previews it alone, and on its drop (or
+Return) asks how far it reaches, *this event* or *all events*, and commits the
+plan for the answer; *this and following* is the block editor's
+([#1324](https://github.com/justin13888/Sunrise/issues/1324)).
 
 **A task dropped on the grid is planned there; it does not become a block.**
 The grid draws every open task planned for a time of day, in a track of its

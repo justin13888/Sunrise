@@ -186,7 +186,9 @@ the keyboard path of every drag ([`planner.md`](./planner.md) §Client
 contract). Each previews the plan the same drag would, and nothing is written
 until Return. They are `Keymap.planning`, not `AppAction`s: each acts on one
 block and the plan in progress, so none runs from the palette. The block's
-tooltip and spoken hint list them. A repeating block does not take them.
+tooltip and spoken hint list them. One event of a repeating block takes them
+too: they preview that event alone, and Return asks "which events?" before
+it commits.
 
 | Action | macOS |
 |---|---|
