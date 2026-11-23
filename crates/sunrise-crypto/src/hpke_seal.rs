@@ -48,6 +48,9 @@ pub const HPKE_TAG_LEN: usize = 16;
 /// Domain-separation prefix for a `key_envelope` info string.
 const KEY_ENVELOPE_INFO_PREFIX: &[u8] = b"sunrise.hpke.key_envelope.v1";
 
+/// Domain-separation prefix for a `share_grant` info string.
+const SHARE_GRANT_INFO_PREFIX: &[u8] = b"sunrise.hpke.share_grant.v1";
+
 /// Domain-separation prefix for an `identity_transition` per-device share.
 const IDENTITY_SHARE_INFO_PREFIX: &[u8] = b"sunrise.identity_share.v1";
 
@@ -85,6 +88,30 @@ pub fn key_envelope_info(stream_id: &[u8; 16], epoch: u32) -> Vec<u8> {
     info.extend_from_slice(KEY_ENVELOPE_INFO_PREFIX);
     info.extend_from_slice(stream_id);
     info.extend_from_slice(&epoch.to_be_bytes());
+    info
+}
+
+/// The `info` string binding a `share_grant` to its `(stream_id, epoch)` and
+/// to the identity it is granted to.
+///
+/// `"sunrise.hpke.share_grant.v1" || stream_id || u32_be(epoch) ||
+/// recipient_identity_id`.
+///
+/// The recipient's identity id is what [`key_envelope_info`] lacks and this
+/// needs: a share grant is sealed to another account's `ID_D_pub`, and without
+/// the id a grant addressed to one identity could be re-labelled as a grant to
+/// another whose `ID_D_pub` the attacker swapped in beside it.
+#[must_use]
+pub fn share_grant_info(
+    stream_id: &[u8; 16],
+    epoch: u32,
+    recipient_identity_id: &[u8; 16],
+) -> Vec<u8> {
+    let mut info = Vec::with_capacity(SHARE_GRANT_INFO_PREFIX.len() + 16 + 4 + 16);
+    info.extend_from_slice(SHARE_GRANT_INFO_PREFIX);
+    info.extend_from_slice(stream_id);
+    info.extend_from_slice(&epoch.to_be_bytes());
+    info.extend_from_slice(recipient_identity_id);
     info
 }
 
@@ -286,7 +313,20 @@ mod tests {
         assert_eq!(&carry[IDENTITY_CARRY_INFO_PREFIX.len()..], &[0x11u8; 16]);
     }
 
-    /// The three `info` families must be mutually exclusive: a blob sealed
+    #[test]
+    fn the_share_grant_info_is_the_documented_concatenation() {
+        let info = share_grant_info(&[0xaa; 16], 3, &[0xbb; 16]);
+        assert_eq!(
+            &info[..SHARE_GRANT_INFO_PREFIX.len()],
+            b"sunrise.hpke.share_grant.v1"
+        );
+        assert_eq!(
+            &info[SHARE_GRANT_INFO_PREFIX.len()..],
+            [&[0xaau8; 16][..], &3u32.to_be_bytes(), &[0xbbu8; 16]].concat()
+        );
+    }
+
+    /// The four `info` families must be mutually exclusive: a blob sealed
     /// under one must not open under another, whatever the recipient key.
     #[test]
     fn the_info_families_do_not_collide() {
@@ -305,6 +345,7 @@ mod tests {
         for other in [
             identity_carry_info(&to_identity),
             key_envelope_info(&to_identity, 1),
+            share_grant_info(&to_identity, 1, &device),
             identity_share_info(&to_identity, &[0x23u8; 16]),
             identity_share_info(&[0x12u8; 16], &device),
         ] {
