@@ -143,7 +143,11 @@ and the machine has to be told that is allowed; it is compiled on every build
 but only executed by `mise run macos-uitest`, which has a scheme of its own so that
 the skip can be bypassed, on a developer machine. Two separate grants are
 needed: `sudo DevToolsSecurity -enable`, and accepting the automation prompt the
-runner raises the first time it launches. That target is the one that proves a
+runner raises the first time it launches. Both are by hand and neither is
+automated. The target itself turns the hardened runtime off for `SunriseUITests`
+alone, because the ad-hoc-signed runner otherwise refuses to load the ad-hoc-signed
+bundle ("Failed to load the test bundle", different Team IDs); the shipped app
+keeps it on. That target is the one that proves a
 click reaches the core through the real window, so the automated coverage is
 view-model-level. Worth knowing when reading a
 green CI run: it proves the app builds, lints and its models behave — not that

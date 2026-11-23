@@ -723,6 +723,14 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseUITests
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Sunrise
+        # The runner dlopens this bundle, and both are signed ad-hoc (the
+        # `macos-uitest` task cannot sign with a team), so under the hardened
+        # runtime library validation refuses the load: "mapping process and
+        # mapped file (non-platform) have different Team IDs", reported as
+        # "Failed to load the test bundle" (#1284). Off for this target only;
+        # the shipped `Sunrise` target keeps the base `YES`, so a release is
+        # signed as before. This bundle is never shipped.
+        ENABLE_HARDENED_RUNTIME: NO
 
   SunriseTests:
     type: bundle.unit-test
