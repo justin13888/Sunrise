@@ -239,6 +239,32 @@ reminder, so issue #4 is now the sole record. Note also that the
 `IntegrationProvider` trait §(b) describes has no implementor even for the live
 iCal path, so wiring #4 does not have a working example to follow.
 
+## Addendum — the viewer grant's cryptography is built
+
+Recorded after the fact, for the same reason as the addendum above.
+
+The answer recorded for [#133](https://github.com/justin13888/Sunrise/issues/133)
+scopes the first sharing model: **a read-only grant per Stream, with expiry,
+revocable by key rotation.** It is not the rejected "read-only and unrevocable"
+alternative: revocation is part of it from the start, as a rotation that seals
+the new epoch to every remaining recipient and not to the revoked one.
+
+Its cryptographic half now exists in `crates/sunrise-crypto/src/share_grant.rs`,
+with a frozen vector: the `ShareGrantPayload` codec, the HPKE Base seal of a
+Stream key to a second identity's `ID_D_pub` (item 3 above), the granting
+identity's signature and its check (the cryptographic part of item 2), the
+recipient's expiry check, and the re-seal for a rotation that excludes the
+revoked and the expired (the cryptographic part of item 6). It grants `viewer`
+only and refuses any other role. Two statements in §(a) are therefore no longer
+true: `hpke` is a dependency of `sunrise-crypto`, and HPKE share grants are
+built.
+
+**The deferral of everything a user reaches stands.** Items 1, 4, 5 and 7 are
+untouched, and items 2 and 6 are built only where they are cryptography: no op
+kind carries a grant, nothing emits or applies one, no rotation calls the
+re-seal, the relay cannot route a Stream to a second account, and no client
+offers sharing. #133 tracks the rest, and the `editor` role is a later decision.
+
 ## What would force revisiting this
 
 1. **Sharing becoming the reason someone cannot adopt Sunrise.** It is the most

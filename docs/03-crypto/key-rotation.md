@@ -429,6 +429,7 @@ Two things are deliberately not done:
 | `sunrise.identity_transition.v1`, `…succ.v1`, `sunrise.identity_roster.v1`, `sunrise.identity_shares.v1` | one canonical transition — frozen body CBOR, body hash and signature pair — plus the two digests as their own literals |
 | `sunrise.identity_share.v1`, `sunrise.identity_carry.v1` | the two HPKE `info` strings, byte for byte |
 | `sunrise.hpke.key_envelope.v1` | `key_envelope::INFO` and a frozen seal |
+| `sunrise.hpke.share_grant.v1`, `sunrise.share_grant.v1` | `share_grant::INFO` and a whole frozen viewer grant, which also pins the AAD binding the granter and the payload's CBOR field numbering |
 | `sunrise.stream_root.init.v1`, `sunrise.stream_root.step.v1` | the frozen merkle chain |
 | `sunrise.op_envelope.v1` | the two whole-envelope vectors |
 | `sunrise.blob_chunk_nonce.v2` | the nonce vectors and a frozen sealed chunk |
