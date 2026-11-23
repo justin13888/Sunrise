@@ -7,11 +7,16 @@
 //! user to accept, which verifies the granter's signature over this account's
 //! own `ID_D_pub` and opens the sealed key and metadata.
 //!
+//! Ending a share is the owner's too: [`Core::revoke_share`] and
+//! [`Core::record_share_decline`], beside the listings a client shows them
+//! from, [`Core::stream_shares`] and [`Core::ended_stream_shares`].
+//!
 //! The relay viewer grant the link's claim token names is the caller's, over
 //! `sunrise-relay-client`: this crate never calls the relay outside the sync
 //! driver.
 
 use super::{Core, CoreError};
+use crate::engine::{EndedShare, StreamShare};
 use crate::keychain::KeychainError;
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -73,11 +78,91 @@ impl Core {
                 expires_at_ms,
             )?
         };
-        // The op is in the outbox; drain it now rather than at the next frame.
+        self.poke_outbox();
+        Ok(grant)
+    }
+
+    /// Revoke `stream`'s share with `recipient_identity_id`, and rotate the
+    /// Stream key so nothing written from now on reaches the recipient
+    /// (`docs/03-crypto/sharing-with-others.md` §Revoking access, steps 1
+    /// and 2). Returns the epoch the rotation minted.
+    ///
+    /// Withdrawing the relay viewer grant (step 3) is the caller's, over
+    /// `sunrise-relay-client`: the relay knows the grant by its id, which the
+    /// share op does not carry.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; what `Engine::revoke_share`
+    /// refuses otherwise, writing nothing: a ref that is not a shareable
+    /// Stream, a revoked device, or a recipient with no share of the Stream
+    /// in force on this replica.
+    pub fn revoke_share(
+        &self,
+        stream: EntityRef,
+        recipient_identity_id: [u8; 16],
+    ) -> Result<u32, CoreError> {
+        self.ensure_open()?;
+        let epoch = {
+            let mut db = self.db.lock();
+            self.engine
+                .revoke_share(&mut db, stream, recipient_identity_id)?
+        };
+        self.poke_outbox();
+        Ok(epoch)
+    }
+
+    /// Record that `recipient_identity_id` declined `stream`'s share
+    /// (`docs/03-crypto/sharing-with-others.md` §Granting access step 7):
+    /// the owner's record of a decline that reached it out of band. It ends
+    /// the share as a revocation does, and rotates nothing.
+    ///
+    /// # Errors
+    /// As [`Self::revoke_share`].
+    pub fn record_share_decline(
+        &self,
+        stream: EntityRef,
+        recipient_identity_id: [u8; 16],
+    ) -> Result<(), CoreError> {
+        self.ensure_open()?;
+        {
+            let mut db = self.db.lock();
+            self.engine
+                .record_share_decline(&mut db, stream, recipient_identity_id)?;
+        }
+        self.poke_outbox();
+        Ok(())
+    }
+
+    /// Every share of `stream` in force on this replica, one per recipient,
+    /// ordered by recipient identity. An expired share is listed until the
+    /// next rotation leaves it out: expiry is the recipient's check.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures.
+    pub fn stream_shares(&self, stream: EntityRef) -> Result<Vec<StreamShare>, CoreError> {
+        self.ensure_open()?;
+        let db = self.db.lock();
+        Ok(self.engine.stream_shares(&db, stream)?)
+    }
+
+    /// Every share of `stream` a revocation or a decline ended on this
+    /// replica and that was not shared again since, ordered by recipient
+    /// identity.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures.
+    pub fn ended_stream_shares(&self, stream: EntityRef) -> Result<Vec<EndedShare>, CoreError> {
+        self.ensure_open()?;
+        let db = self.db.lock();
+        Ok(self.engine.ended_stream_shares(&db, stream)?)
+    }
+
+    /// The op just written is in the outbox; drain it now rather than at the
+    /// next frame.
+    fn poke_outbox(&self) {
         if self.sync_shared.is_active() {
             self.sync_shared.poke_submit();
         }
-        Ok(grant)
     }
 
     /// Verify and open `grant`, signed by `granter_id_s_pub`, as this

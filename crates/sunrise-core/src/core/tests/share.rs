@@ -128,3 +128,78 @@ async fn sharing_with_ones_own_identity_is_refused() {
     );
     assert_eq!(vault_footprint(&owner), before);
 }
+
+/// Shares `owner`'s Stream `s` with `recipient`, for good.
+fn share_with(owner: &Core, s: sunrise_id::EntityRef, recipient: &Core) {
+    owner
+        .share_stream(
+            s,
+            &recipient.identity_signing_pub(),
+            recipient.identity_dh_pub(),
+            None,
+        )
+        .unwrap();
+}
+
+/// A revocation through `Core` ends the share, lists it as revoked, and
+/// rotates the Stream past the epoch the recipient was sealed.
+#[tokio::test]
+async fn revoking_a_share_ends_it_and_rotates_the_stream() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (owner, recipient) = (account(da.path()).await, account(db.path()).await);
+    let s = stream(&owner, "Garden").await;
+    share_with(&owner, s, &recipient);
+    let sealed = owner.stream_shares(s).unwrap()[0].epoch;
+
+    let minted = owner.revoke_share(s, recipient.identity_id()).unwrap();
+
+    assert!(minted > sealed, "{minted} after {sealed}");
+    assert!(owner.stream_shares(s).unwrap().is_empty());
+    let ended = owner.ended_stream_shares(s).unwrap();
+    assert_eq!(ended.len(), 1);
+    assert_eq!(ended[0].recipient_identity_id, recipient.identity_id());
+    assert_eq!(ended[0].end, crate::ShareEnd::Revoked);
+}
+
+/// A decline through `Core` ends the share as declined, and rotates nothing.
+#[tokio::test]
+async fn recording_a_decline_ends_the_share_without_a_rotation() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (owner, recipient) = (account(da.path()).await, account(db.path()).await);
+    let s = stream(&owner, "Garden").await;
+    share_with(&owner, s, &recipient);
+    let keys_before = vault_footprint(&owner).2;
+
+    owner
+        .record_share_decline(s, recipient.identity_id())
+        .unwrap();
+
+    assert!(owner.stream_shares(s).unwrap().is_empty());
+    let ended = owner.ended_stream_shares(s).unwrap();
+    assert_eq!(ended.len(), 1);
+    assert_eq!(ended[0].recipient_identity_id, recipient.identity_id());
+    assert_eq!(ended[0].end, crate::ShareEnd::Declined);
+    assert_eq!(vault_footprint(&owner).2, keys_before, "no epoch minted");
+}
+
+/// Ending a share nobody holds is refused, and nothing is written.
+#[tokio::test]
+async fn ending_a_share_not_in_force_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let owner = account(dir.path()).await;
+    let s = stream(&owner, "Garden").await;
+    let before = vault_footprint(&owner);
+
+    let revoked = owner.revoke_share(s, [9; 16]);
+    assert!(
+        matches!(revoked, Err(CoreError::Engine(EngineError::Invalid(_)))),
+        "{revoked:?}"
+    );
+    let declined = owner.record_share_decline(s, [9; 16]);
+    assert!(
+        matches!(declined, Err(CoreError::Engine(EngineError::Invalid(_)))),
+        "{declined:?}"
+    );
+    assert_eq!(vault_footprint(&owner), before);
+    assert!(owner.ended_stream_shares(s).unwrap().is_empty());
+}
