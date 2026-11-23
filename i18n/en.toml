@@ -122,11 +122,12 @@ remove_confirm_title = "Remove {name}?"
 remove_confirm_title_unnamed = "Remove this device?"
 # Confirmation dialog body. "Stream" is a product term (a list of tasks).
 # Must keep that only the removing device can take it back, that a removal
-# from the device holding the account identity cannot be taken back (it is
+# from the device holding the account identity can be taken back only by that
+# device, and only while its key is the identity in force (it is
 # identity-signed, ADR-0058, or rotates the identity, ADR-0056 §4), and that the relay
 # being told (on the next sync) or the identity rotating makes re-pairing the
 # only way back (ADR-0056 §1, §4, §5).
-remove_confirm_message = "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, a removal from the device holding the account identity cannot be withdrawn at all, and once the relay has been told, which happens on the next sync, the device must be paired again as a new device to sync."
+remove_confirm_message = "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. Treat it as final: only the device that removes it can withdraw the removal, a removal signed by the account identity can be withdrawn only by the device holding that identity, while it is still the one in force, and once the relay has been told, which happens on the next sync, the device must be paired again as a new device to sync."
 # The four removal reasons, as confirmation dialog buttons.
 reason_lost = "I lost it"
 reason_stolen = "It was stolen"
@@ -139,9 +140,10 @@ done = "Done"
 # A mark under the row for the device the user is holding. {device} is the
 # platform's word for it ("Mac", "iPhone").
 mark_this_device = "This {device}."
-# A removal signed by the account identity (ADR-0058). Must keep that nothing
-# can take it back, beside `mark_removed`, which a later change can.
-mark_removed_by_authority = "Removed by the account identity. It reads nothing written since, and nothing can take this removal back."
+# A removal signed by the account identity (ADR-0058). Must keep that only the
+# device holding that identity, while it is in force, can take it back, beside
+# `mark_removed`, which a later change on the account can.
+mark_removed_by_authority = "Removed by the account identity. It reads nothing written since. Only the device holding the account identity can take this removal back."
 # A removal made by a device without the account identity's signature. Must
 # keep that a later change can take it off the list, and that the device still
 # receives no keys when it does.
@@ -163,7 +165,7 @@ removed_some_unrotated = "{count, plural, one {The account identity rotated, and
 relay_pending = "The relay has NOT been told yet. That is queued and goes out on the next sync."
 relay_told = "The relay has been told."
 # Under a removal that went through, saying which kind it was (ADR-0058).
-authority_signed = "The account identity signed this removal, so nothing can take it back."
+authority_signed = "The account identity signed this removal, so only the device holding that identity can take it back."
 authority_ordinary = "This removal comes from this {device}, not the account identity, so a later change on the account can take it back off the list. The device would still receive no keys."
 # {count} devices run a version too old to read a signed removal; their ids
 # are listed below it.
@@ -196,7 +198,7 @@ withdrawn_still_claimed = "Another device removed it too. It stays removed until
 withdrawn_repair_title = "{name} is NOT back."
 withdrawn_repair = "Your removal is withdrawn, but it rotated the account identity away from {name}, and a withdrawal cannot certify it again. Pair it again as a new device."
 withdraw_not_author_title = "Nothing was withdrawn."
-withdraw_not_author = "This {device} holds no removal of {name} it can withdraw. A removal another device made is withdrawn from that device, and one signed by the account identity cannot be withdrawn; otherwise pair {name} again as a new device."
+withdraw_not_author = "This {device} holds no removal of {name} it can withdraw. A removal another device made is withdrawn from that device, and one signed by the account identity is withdrawn only from the device holding that identity; otherwise pair {name} again as a new device."
 # {count} keys this device sealed to the reinstated device.
 withdrawn_keys = "{count, plural, one {This {device} sent it one key, including any made while it was removed: it can read what was written while it was out.} other {This {device} sent it # keys, including those made while it was removed: it can read what was written while it was out.}}"
 withdrawn_still_bounded = "This {device} still sends it no keys: the account does not count this {device}'s word on it, because this {device} has itself been removed."
@@ -2923,8 +2925,9 @@ ambiguous = "{count, plural, one {`{prefix}` matches # device; use more characte
 mark_this_device = "this device"
 mark_revoked = "revoked"
 # Replaces `mark_revoked` for a revocation signed by the account identity
-# (ADR-0058). Must keep that nothing can undo it.
-mark_revoked_by_authority = "revoked by the account identity; nothing can undo it"
+# (ADR-0058). Must keep that only the device holding the account identity can
+# undo it, and only while that identity is in force.
+mark_revoked_by_authority = "revoked by the account identity; only the device holding it can undo it"
 mark_read_bounded = "removed earlier; the account no longer records that, but it still receives no keys -- remove it again from a device you trust"
 mark_not_current = "not active on this account"
 mark_admitted_after_revocation = "joined after a device was removed"
@@ -2956,7 +2959,7 @@ irreversible = "this cannot be undone: to use that device again, pair it as a ne
 # device's id.
 withdrawable = "only this device can withdraw this revocation, with `sunrise device withdraw {id}`; if the account identity rotated with it, or the relay has been told, the device must be paired again instead"
 # The report of `sunrise device withdraw`. {id} is the device's id.
-withdraw_not_author = "Nothing withdrawn: this device holds no revocation of {id} it can withdraw. A revocation another device made is withdrawn from that device, and one signed by the account identity cannot be withdrawn; otherwise pair {id} again as a new device."
+withdraw_not_author = "Nothing withdrawn: this device holds no revocation of {id} it can withdraw. A revocation another device made is withdrawn from that device, and one signed by the account identity is withdrawn only from the device holding that identity; otherwise pair {id} again as a new device."
 # Followed by the ids of the devices to update, one per line.
 withdraw_awaits_update = "NOT withdrawn: these devices run a build that would drop a withdrawal and keep the device revoked for good. Update Sunrise on them, or revoke them first, then run this again:"
 withdraw_title = "Withdrew this device's revocation of {id}."
@@ -2970,7 +2973,7 @@ withdraw_relay_cancelled = "the relay had not been told yet; that telling is can
 withdraw_relay_told = "if the relay was already told, it still refuses that device, and nothing can tell it otherwise yet: pair it again as a new device if it cannot sync"
 # A bullet under a revocation that went through, saying which kind it was
 # (ADR-0058).
-authority_signed = "signed by the account identity: no op from any device can undo this revocation"
+authority_signed = "signed by the account identity: only the device holding that identity can undo this revocation"
 authority_ordinary = "an ordinary revocation: this device does not hold the account's signing key, so a later op can take it back off the list (the device would still receive no keys)"
 # Followed by the ids of the devices to update, one per line.
 authority_awaits_update = "NOT signed by the account identity, because these devices run a build that cannot read a signed revocation:"

@@ -40,9 +40,10 @@ fn print_revocation_unwound(unwound: &[String]) {
 
 /// Say which kind of revocation `devices revoke` made (ADR-0058 §7).
 ///
-/// One signed by the account identity is the only kind nothing can unwind;
-/// every other kind is ordinary, and a later op can take it back off the list
-/// (ADR-0041). Printed on the effective branch only: an authority revocation
+/// One signed by the account identity is the only kind no later op can
+/// unwind; only the device holding that identity can withdraw it, while it is
+/// in force. Every other kind is ordinary, and a later op can take it back off
+/// the list (ADR-0041). Printed on the effective branch only: an authority revocation
 /// is never gated, so a gated one is ordinary and already says that nothing
 /// was revoked. When the holder could not sign only because some devices'
 /// builds cannot read a signed revocation, those devices are named, since
@@ -579,7 +580,8 @@ mod tests {
     }
 
     /// The three kinds ADR-0058 §7 asks a user to be able to tell apart each
-    /// print their own line, and only the signed one says nothing can undo it.
+    /// print their own line, and only the signed one says that just the device
+    /// holding the account identity can undo it.
     #[test]
     fn a_revocation_says_whether_it_carries_the_accounts_authority() {
         let signed = revocation_authority_lines(&revocation(true, Vec::new()));
