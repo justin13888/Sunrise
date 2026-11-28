@@ -11,7 +11,7 @@ name: Docker image
 # `paths:` filter only works on a whole workflow.
 #
 # The filter is the image's build context, which `.dockerignore` fixes as an
-# allowlist: the three workspace manifests and `crates/**`. `crates/**` rather
+# allowlist: the two workspace manifests and `crates/**`. `crates/**` rather
 # than `crates/sunrise-server/**`, because the server links ten other
 # workspace crates (`sunrise-log` writes the very `srv.stop` line asserted
 # below) and a list of them would go stale the day it gains an eleventh, with
@@ -29,7 +29,6 @@ on:
       - .dockerignore
       - Cargo.toml
       - Cargo.lock
-      - rust-toolchain.toml
       - "crates/**"
       - .github/workflows/docker-image.yml
   workflow_dispatch:

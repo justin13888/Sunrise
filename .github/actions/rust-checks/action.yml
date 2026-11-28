@@ -1,6 +1,6 @@
 # The Rust gate: formatting, clippy and rustdoc over both cargo workspaces,
-# the workspace test suite, and the assertion that the toolchain pin agrees
-# with itself.
+# the workspace test suite, and the assertion that the toolchain floats on
+# stable above the `rust-version` floor.
 #
 # This is a composite action rather than a two-leg matrix in ci.yml because
 # `Rust (macos-latest)` is a required status check on `master`, and the two
@@ -21,7 +21,7 @@
 # ~18 minutes. ci.yml passes `false` on a pull request, so one job, under one
 # check name, is the fast gate there and the whole gate on `master`.
 name: Rust checks
-description: Format, lint, test and document both cargo workspaces on the pinned toolchain.
+description: Format, lint, test and document both cargo workspaces on the toolchain file's stable.
 
 inputs:
   full:
@@ -43,30 +43,25 @@ runs:
     #
     # Installing `stable` above is deliberately not what gets asserted: every
     # `rustc` below runs inside the checkout, where rust-toolchain.toml
-    # overrides the directory and rustup installs the pinned toolchain on
-    # first use. That override is the mechanism this action and the
-    # `apple-xcframework` job both depend on and neither used to test. It
-    # lives in this action rather than in a job of its own so it runs for
-    # **both** callers — the override is per-directory and per-machine, so
-    # Linux and macOS each have to resolve it themselves — and so it costs no
-    # second toolchain download.
-    - name: The four places that name the toolchain all name one version
-      # `rust-toolchain.toml` decides what CI and developers compile with;
-      # `rust-version` decides which MSRV-gated lints clippy applies and what
-      # a reader takes as the floor; the `Dockerfile`'s `ARG RUST_VERSION` is
-      # the compiler for every published server image, because
-      # `release.yml`'s image job passes only `VERSION` and `VCS_REF` as
-      # build-args and so takes that default. Drift between any two of them
-      # is silent, and it is the state this repository was in before
-      # ADR-0026, where five files disagreed about why 1.88 was pinned.
-      # ADR-0026 requires the three file literals byte-identical and the
-      # `rustc` a checkout resolves to match them, so equality is the whole
-      # check — there is nothing to parse loosely. Fail closed: an
-      # unreadable value is a failure, not a skipped comparison. The
-      # Dockerfile pattern excludes space, `#` and `"` deliberately: a value
-      # carrying a trailing comment or quotes then matches nothing and is
-      # reported as unreadable, rather than being captured verbatim and
-      # reported as a version disagreement it is not.
+    # overrides the directory and rustup resolves its channel on first use.
+    # That override is the mechanism this action and the `apple-xcframework`
+    # job both depend on. It lives in this action rather than in a job of its
+    # own so it runs for **both** callers — the override is per-directory and
+    # per-machine, so Linux and macOS each have to resolve it themselves — and
+    # so it costs no second toolchain download.
+    - name: The toolchain floats on stable and stays above the floor
+      # ADR-0077: `rust-toolchain.toml` names `stable`, so CI and developers
+      # compile with the latest release; the `Dockerfile`'s `ARG RUST_VERSION`
+      # is `1`, so every published server image does too (`release.yml`'s
+      # image job passes only `VERSION` and `VCS_REF` as build-args and takes
+      # that default); and `rust-version` is the floor, deciding which
+      # MSRV-gated lints clippy applies. A literal version reappearing in
+      # either file is the drift this step exists to catch, and a `rustc`
+      # below `rust-version` means the override did not take effect. Fail
+      # closed: an unreadable value is a failure, not a skipped comparison.
+      # The Dockerfile pattern excludes space, `#` and `"` deliberately: a
+      # value carrying a trailing comment or quotes then matches nothing and
+      # is reported as unreadable rather than captured verbatim.
       shell: bash
       run: |
         set -euo pipefail
@@ -80,12 +75,17 @@ runs:
         echo "rustc in the checkout         : ${actual:-<none>}"
         for pair in "rust-toolchain.toml:$channel" "Cargo.toml:$rust_version" "Dockerfile:$docker_version" "rustc:$actual"; do
           if [ -z "${pair#*:}" ]; then
-            echo "::error::msrv: could not read the pinned version from ${pair%%:*}"
+            echo "::error::toolchain: could not read the toolchain value from ${pair%%:*}"
             exit 1
           fi
         done
-        if [ "$channel" != "$rust_version" ] || [ "$channel" != "$docker_version" ] || [ "$channel" != "$actual" ]; then
-          echo "::error::msrv: the toolchain pin disagrees with itself — rust-toolchain.toml=${channel}, Cargo.toml=${rust_version}, Dockerfile=${docker_version}, rustc=${actual}; ADR-0026 requires one version in all four"
+        if [ "$channel" != "stable" ] || [ "$docker_version" != "1" ]; then
+          echo "::error::toolchain: rust-toolchain.toml=${channel}, Dockerfile ARG RUST_VERSION=${docker_version}; ADR-0077 requires stable and 1, which both float on the latest release"
+          exit 1
+        fi
+        lowest=$(printf '%s\n%s\n' "$rust_version" "$actual" | sort -V | head -n1)
+        if [ "$lowest" != "$rust_version" ]; then
+          echo "::error::toolchain: rustc ${actual} in the checkout is below rust-version ${rust_version}; the rust-toolchain.toml override did not take effect"
           exit 1
         fi
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -141,7 +141,7 @@ runs:
     # fuzzer explores, which is what makes an unused branch or a `let _ =`
     # swallowing a result worth catching here rather than in review.
     #
-    # This runs on the pinned stable, not the nightly the `fuzz` job installs:
+    # This runs on the toolchain file's stable, not the nightly the `fuzz` job installs:
     # nightly is needed for `-Zsanitizer=address` under `cargo fuzz run`, and
     # for nothing else. The root `clippy.toml` still applies — its lookup
     # walks up out of `fuzz/` — so the determinism deny-list binds here too.

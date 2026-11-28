@@ -2,6 +2,9 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0077](./0077-the-toolchain-floats-on-stable.md) — `fuzz-pr`
+uses the floating nightly, so §Consequences' "pinned nightly" no longer ages.
+
 **Built by** [#365](https://github.com/justin13888/Sunrise/issues/365).
 
 **Depends on** the threat model of record,

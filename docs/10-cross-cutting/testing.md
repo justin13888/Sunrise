@@ -1130,8 +1130,7 @@ document and a JWKS from a remote issuer — and that is what the target drives.
 #### Running them
 
 `cargo-fuzz` needs a **nightly** toolchain for `-Zsanitizer=address`, and this
-workspace pins 1.91.1 (ADR-0026) with CI asserting that four files agree about
-it. `fuzz/` is therefore its own cargo workspace, excluded from the root one
+workspace builds on stable (ADR-0077). `fuzz/` is therefore its own cargo workspace, excluded from the root one
 for the same class of reason `tools/uniffi-bindgen` is; `fuzz/Cargo.toml`
 carries the argument. Nothing in `fuzz/` enters the root `Cargo.lock` and
 nothing there is built by an ordinary workspace command.
@@ -1154,7 +1153,7 @@ it, and three now do. `mise run rust-fmt-check`, `mise run rust-clippy` and
 `mise run rust-doc` each run twice — once over the workspace, once over
 `fuzz/Cargo.toml` — so the harnesses are formatted, linted and
 rustdoc-checked on the same terms as everything else. CI's `rust` job carries
-the clippy and rustdoc halves as steps of their own, on the pinned stable: only
+the clippy and rustdoc halves as steps of their own, on stable: only
 `cargo fuzz run` needs the nightly, for `-Zsanitizer=address`. The root
 `clippy.toml` applies to `fuzz/` too, its lookup walking up out of that
 directory. Formatting is the one of the three CI does not repeat for `fuzz/`;
@@ -1266,12 +1265,12 @@ wires a narrower version of it:
   all. A finding uploads its reproducer, and the reproducer joins
   `fuzz/seeds/<target>/` in the commit that fixes it.
 - **The two objections the earlier text raised, and what answers them.** A
-  nightly rustc on a pull request's critical path: `fuzz-pr` pins one
-  (`RUSTUP_TOOLCHAIN` in the job), and a toolchain that will not install, will
-  not build `cargo-fuzz`, or will not build the target turns into a warning
-  annotation naming the pin to move, not a red check. A harness that does not
-  compile is still red, in the `rust` job's clippy step over `fuzz/` on the
-  pinned stable. And a short budget explores little: true, which is why the
+  nightly rustc on a pull request's critical path: `fuzz-pr` uses the
+  floating nightly (`RUSTUP_TOOLCHAIN` in the job, ADR-0077), and a toolchain
+  that will not install, will not build `cargo-fuzz`, or will not build the
+  target turns into a warning annotation, not a red check. A harness that does not
+  compile is still red, in the `rust` job's clippy step over `fuzz/` on
+  stable. And a short budget explores little: true, which is why the
   budget is spent only where the diff is, and the corpus-building search stays
   in the nightly job.
 - **Every pull request — still not wired.** The path filter is the point:

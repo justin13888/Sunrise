@@ -586,16 +586,15 @@ run = "bun run packages/sunrise-i18n/plurals.ts"
 # force that and neither is negotiable:
 #
 # 1. `cargo-fuzz` compiles a target with `-Zsanitizer=address` and the `sancov`
-#    coverage passes, which are **nightly** rustc flags. This workspace pins
-#    1.91.1 in `rust-toolchain.toml` under ADR-0026, and CI asserts that four
-#    separate files agree about that number.
+#    coverage passes, which are **nightly** rustc flags. This workspace builds
+#    on stable (`rust-toolchain.toml`, ADR-0077).
 # 2. `libfuzzer-sys` and its C++ runtime would otherwise land in the root
 #    `Cargo.lock` and be resolved on every ordinary workspace build.
 #
 # So the toolchain is selected per invocation with `+`, defaulting to whatever
 # `nightly` currently resolves to. `SUNRISE_FUZZ_TOOLCHAIN` pins it to a dated
 # nightly when a run has to be reproducible:
-# `SUNRISE_FUZZ_TOOLCHAIN=nightly-2026-06-10 mise run fuzz-build`. There is no
+# `SUNRISE_FUZZ_TOOLCHAIN=nightly-YYYY-MM-DD mise run fuzz-build`. There is no
 # pin in this file because a pinned nightly nobody refreshes rots into "install
 # this exact 400 MB toolchain to run one gate", and the harnesses use no
 # nightly *language* feature — only the sanitizer flags, which every nightly

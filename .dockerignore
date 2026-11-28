@@ -11,7 +11,6 @@
 
 !Cargo.toml
 !Cargo.lock
-!rust-toolchain.toml
 
 # Both forms per directory. `!crates` re-admits the directory so the walk
 # descends into it at all; `!crates/**` re-admits what is inside. Relying on

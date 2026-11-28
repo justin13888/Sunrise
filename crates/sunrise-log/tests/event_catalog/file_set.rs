@@ -37,8 +37,8 @@ pub(crate) const BUILD_TOOLS: &[BuildTool] = &[
         why: "six `cargo-fuzz` harnesses, one file per target, each of which decodes \
               attacker bytes through a workspace crate's public API and asserts an \
               invariant. Quarantined from the workspace because `cargo-fuzz` needs a \
-              nightly rustc for `-Zsanitizer=address` and this one is pinned to \
-              1.91.1 (ADR-0026). Its output is a libFuzzer corpus and, on a finding, \
+              nightly rustc for `-Zsanitizer=address` and this one builds on stable \
+              (ADR-0077). Its output is a libFuzzer corpus and, on a finding, \
               a reproducer file — never operator logs. Each of the six files is read \
               by the guard, and the code they *drive* is workspace source, scanned \
               from dep-info like everything else.",
