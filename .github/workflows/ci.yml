@@ -315,7 +315,7 @@ jobs:
       RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      # The toolchain file pins 1.91.1, which rustup installs on first use.
+      # The toolchain file names `stable`, which rustup resolves on first use.
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
         with:
           toolchain: stable
@@ -347,8 +347,10 @@ jobs:
       # This is a step rather than the action's `targets:` input, and the
       # difference is the whole bug it fixes: `targets:` is passed to
       # `rustup toolchain install stable`, so the slices land on *stable*, while
-      # rust-toolchain.toml overrides the working directory to 1.91.1 — which
-      # then has no iOS std and fails with `E0463: can't find crate for core`.
+      # rust-toolchain.toml overrides the working directory, and while it
+      # pinned a version (1.91.1) that toolchain then had no iOS std and failed
+      # with `E0463: can't find crate for core`. It names `stable` now, but the
+      # step stays: it adds the slices to whatever the override resolves to.
       # Run bare and in the repo, `rustup target add` obeys that same override,
       # so the slices land on the toolchain that actually does the build.
       - name: Add the iOS slices to the pinned toolchain
@@ -2675,8 +2677,8 @@ jobs:
       targets: ${{ steps.plan.outputs.targets }}
     env:
       # The runner's preinstalled stable, which is enough to read a manifest.
-      # Without it `rust-toolchain.toml` would have rustup install 1.91.1 and
-      # its components first.
+      # Without it `rust-toolchain.toml` would have rustup bring the runner's
+      # stable up to date and add its components first.
       RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -2711,9 +2713,9 @@ jobs:
     # touches a decoder gets the short, path-filtered `fuzz-pr` job below
     # instead (ADR-0061, moved off the pull request by #1117).
     #
-    # This job keeps the floating `nightly` while `fuzz-pr` pins one. That is
-    # deliberate: a nightly rustc regression reds this job, where nobody's
-    # change is under review, before anyone moves the pin `fuzz-pr` reads.
+    # This job and `fuzz-pr` both use the floating `nightly` (ADR-0077). A
+    # nightly rustc regression reds this job, where nobody's change is under
+    # review; in `fuzz-pr` the same regression is only a warning annotation.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       # Not fail-fast: a finding in one parser must not hide whether the
@@ -2734,7 +2736,7 @@ jobs:
       # warning there goes red (#167).
       RUSTFLAGS: ""
       # `rust-toolchain.toml` overrides the toolchain for the whole checkout,
-      # and it names 1.91.1. `RUSTUP_TOOLCHAIN` takes precedence over a
+      # and it names stable. `RUSTUP_TOOLCHAIN` takes precedence over a
       # directory override, which is what makes the nightly installed below the
       # one `cargo fuzz` actually uses.
       RUSTUP_TOOLCHAIN: nightly
@@ -2885,12 +2887,13 @@ jobs:
     env:
       # As in the nightly job: `cargo-fuzz` composes its own flags.
       RUSTFLAGS: ""
-      # The pinned nightly. A floating `nightly` would let a rustc regression
-      # red a merge that changed nothing about it. Moving the pin is a
-      # one-line edit here; the nightly `fuzz` job, on the floating toolchain,
-      # is what shows whether the next date builds. `RUSTUP_TOOLCHAIN`
-      # overrides `rust-toolchain.toml`'s 1.91.1 for every step.
-      RUSTUP_TOOLCHAIN: nightly-2026-10-01
+      # The floating nightly, as in the nightly `fuzz` job (ADR-0077). A dated
+      # one rots: nobody moves it, and it falls behind the stable the rest of
+      # the tree uses. A rustc regression cannot red a merge here, because a
+      # toolchain that will not install or build turns into a warning below.
+      # `RUSTUP_TOOLCHAIN` overrides `rust-toolchain.toml`'s stable for every
+      # step.
+      RUSTUP_TOOLCHAIN: nightly
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -2901,7 +2904,7 @@ jobs:
       # turns any such failure into a warning annotation rather than a red
       # check. A harness that genuinely does not compile is still caught: the
       # `rust` job lints `fuzz/` with clippy on the pinned stable.
-      - name: Install the pinned nightly
+      - name: Install the nightly
         id: toolchain
         continue-on-error: true
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-src
@@ -2918,7 +2921,7 @@ jobs:
       - name: Record why the target did not run
         if: steps.build.outcome != 'success'
         run: |
-          echo "::warning title=Fuzz pull request ($TARGET) did not run::The pinned toolchain $RUSTUP_TOOLCHAIN could not install, install cargo-fuzz, or build this target (toolchain: ${{ steps.toolchain.outcome }}, cargo-fuzz: ${{ steps.cargo-fuzz.outcome }}, build: ${{ steps.build.outcome }}). That is a toolchain fact, not a finding, so this check is not red. Move RUSTUP_TOOLCHAIN in the fuzz-pr job of ci.yml."
+          echo "::warning title=Fuzz pull request ($TARGET) did not run::The toolchain $RUSTUP_TOOLCHAIN could not install, install cargo-fuzz, or build this target (toolchain: ${{ steps.toolchain.outcome }}, cargo-fuzz: ${{ steps.cargo-fuzz.outcome }}, build: ${{ steps.build.outcome }}). That is a toolchain fact, not a finding, so this check is not red. It clears when a later nightly fixes it, or set a dated RUSTUP_TOOLCHAIN in the fuzz-pr job of ci.yml until then."
       - name: Fuzz ${{ matrix.target }} for 120 seconds
         # The committed seeds are the second, read-only corpus, as in the
         # nightly job. A finding's reproducer is uploaded below, and it joins

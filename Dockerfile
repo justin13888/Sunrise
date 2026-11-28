@@ -28,9 +28,11 @@
 # it with a baked-in config, because a default config file would be exactly the
 # "server nobody asked for" that self-hosting.md refuses to start.
 
-# Must match `rust-toolchain.toml`. The pin there is a reproducibility floor,
-# and an image that silently built on something else would defeat it.
-ARG RUST_VERSION=1.91.1
+# `1` is the floating tag for the latest stable 1.x release, the same channel
+# `rust-toolchain.toml` names (ADR-0077). CI's Rust gate asserts it stays `1`,
+# so a literal version cannot creep back in here alone. Pass
+# `--build-arg RUST_VERSION=1.x.y` to build one image on an exact release.
+ARG RUST_VERSION=1
 ARG DEBIAN_SUITE=bookworm
 
 # ---------------------------------------------------------------------------
@@ -63,10 +65,15 @@ WORKDIR /src
 # `.cargo/config.toml` is *not* copied. Everything in it is an empty
 # `[target.*]` placeholder except `[net] git-fetch-with-cli = true`, which needs
 # a `git` binary the slim image does not carry — and needs it for nothing: the
-# lock file has no git dependencies and cargo 1.91 reads the crates.io index
-# over sparse HTTP. Copying it would mean installing git to satisfy a setting
-# that changes no behaviour here.
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+# lock file has no git dependencies and cargo reads the crates.io index over
+# sparse HTTP. Copying it would mean installing git to satisfy a setting that
+# changes no behaviour here.
+#
+# `rust-toolchain.toml` is not copied either. It names `stable`, which the
+# image's rustup does not have under that name (the image installs a numbered
+# toolchain), so copying it would make the first `cargo` download a second
+# stable and its components. The base tag already is the latest stable.
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
 # `--locked` because the image must build the dependency set the lockfile

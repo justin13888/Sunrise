@@ -247,7 +247,7 @@ The core's public API is semver-versioned. Breaking changes require a coordinate
 
 - `cargo test --workspace --all-targets` — unit and integration tests, multi-device sync simulation (`sunrise-e2e`) and real SQLCipher included; there is no feature flag to turn on.
 - The targets CI builds are its jobs in `.github/workflows/ci.yml`: Linux, macOS and Windows test runs (`rust`, `rust-macos`, `rust-windows`), the macOS, iOS device and iOS simulator slices (`apple-xcframework`), and a check-only `wasm32-unknown-unknown` lint of the web core (`wasm-core`). No Android target is built; `kotlin-smoke` compiles the Kotlin bindings on the host.
-- Reproducible builds: pinned toolchain (`rust-toolchain.toml`), vendored deps for releases.
+- Reproducible builds: toolchain selected by `rust-toolchain.toml` (latest stable, ADR-0077), vendored deps for releases.
 
 ## What the core does *not* do
 

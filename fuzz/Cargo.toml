@@ -4,8 +4,8 @@
 # NOT a member of the root workspace, for the same class of reason
 # `tools/uniffi-bindgen` is not (see that manifest): a `cargo-fuzz` target is
 # built by a **nightly** rustc with `-Zsanitizer=address` and
-# `-Cpassess=sancov-*`, and the workspace pins 1.91.1 in `rust-toolchain.toml`
-# with an ADR guarding the pin. Folding this in would either break every
+# `-Cpassess=sancov-*`, and the workspace builds on stable via
+# `rust-toolchain.toml` (ADR-0077). Folding this in would either break every
 # workspace command on a stable toolchain or force the whole tree onto nightly
 # for the sake of a handful of harnesses.
 #

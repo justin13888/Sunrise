@@ -2,6 +2,10 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0077](./0077-the-toolchain-floats-on-stable.md) — the
+toolchain file now names `stable` and the Dockerfile `rust:1`; 1.91.1 remains
+the `rust-version` floor, and CI asserts that rather than four equal strings.
+
 **Amends:** [ADR-0012](./0012-web-wasm-deferred.md) (its revisit trigger has
 fired), [ADR-0019](./0019-swiftui-macos-client.md) (the stated reason for the
 `uniffi-bindgen` quarantine), [ADR-0021](./0021-kynos-openapi-server.md) (one

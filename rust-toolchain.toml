@@ -1,25 +1,17 @@
 [toolchain]
-# Pinned for reproducible builds. Raised from 1.88.0 to 1.91.1 by ADR-0026
-# (`docs/11-adr/0026-msrv-bump.md`); 1.91 is the lowest release that discharges
-# all three of the floors this workspace had accumulated:
+# Floats on the latest stable release (ADR-0077, which amends ADR-0026's exact
+# pin). Rust 1.x is forward-compatible, so a new release costs at most a few new
+# lints, and those are fixed in-repo when they land rather than held off by a
+# pin nobody moves. Holding the pin back blocks new syntax, new std APIs, new
+# lints and compiler-performance work for no compatibility gain.
 #
-# - `cargo-platform` 0.3.3 requires rustc 1.91. It is what forced
-#   `tools/uniffi-bindgen` to carry a lockfile pinning 0.3.2 — ADR-0019's
-#   quarantine. The version pin is gone; the quarantine stays, on
-#   feature-unification grounds (see that tool's manifest).
-# - `libsqlite3-sys` 0.38.1 uses `cfg_select!`, stable since 1.91. That was
-#   ADR-0012's stated blocker on the `rusqlite` 0.40 swap the WASM core needs;
-#   the trigger has now fired and the swap itself is tracked as #52.
-# - `std::fs::File::try_lock` is stable since 1.89. `crates/sunrise-core`'s
-#   vault lock used the `fs4` crate purely to stand in for it; that dependency
-#   is now gone.
-#
-# The patch level is pinned exactly. `rust-version` in the root `Cargo.toml` and
-# `ARG RUST_VERSION` in the `Dockerfile` are kept byte-identical to `channel`,
-# and the first step of CI's `rust` job asserts all four: the toolchain file,
-# `rust-version`, the Dockerfile's `ARG RUST_VERSION`, and the `rustc` a
-# checkout actually resolves to. Any further bump requires an ADR and a CI
-# update.
-channel = "1.91.1"
+# The floor is `rust-version` in the root `Cargo.toml` (1.91.1, ADR-0026's
+# reasons still hold); it decides which MSRV-gated clippy lints apply and is
+# not raised by a new stable. The `Dockerfile` builds on `rust:1-…`, the same
+# floating stable. The first step of the Rust gate
+# (`.github/actions/rust-checks/action.yml`) asserts all three: `channel` here
+# is `stable`, the Dockerfile's `ARG RUST_VERSION` is `1`, and the `rustc` a
+# checkout resolves to is not below `rust-version`.
+channel = "stable"
 components = ["rustfmt", "clippy", "rust-src"]
 profile = "default"

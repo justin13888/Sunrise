@@ -93,7 +93,7 @@ Crypto-typed equality MUST go through `subtle::ConstantTimeEq`. An earlier revis
 
 Tagged releases are to be reproducible:
 
-- `rustc` pinned via `rust-toolchain.toml`. **Implemented** — the file exists and pins 1.91.1 ([ADR-0026](../11-adr/0026-msrv-bump.md)), byte-identical to `rust-version` in the root `Cargo.toml` and to `ARG RUST_VERSION` in the `Dockerfile`. The first step of CI's `rust` job asserts all four — the toolchain file, `rust-version`, the Dockerfile's `ARG RUST_VERSION`, and the `rustc` a checkout actually resolves to — so the match is enforced rather than observed.
+- `rustc` selected via `rust-toolchain.toml`. **Implemented, floating** — the file names `stable` and the `Dockerfile` builds on `rust:1` ([ADR-0077](../11-adr/0077-the-toolchain-floats-on-stable.md)), so a tag is built on the stable current that day; reproducing it means building with that release (`RUSTUP_TOOLCHAIN=1.x.y`, `--build-arg RUST_VERSION=1.x.y`). `rust-version` in the root `Cargo.toml` is the floor, 1.91.1 ([ADR-0026](../11-adr/0026-msrv-bump.md)). The first step of CI's `rust` job asserts the channel is `stable`, the Dockerfile's `ARG RUST_VERSION` is `1`, and the `rustc` a checkout resolves to is not below the floor.
 - `Cargo.lock` committed. **Implemented.**
 - `RUSTFLAGS="-C codegen-units=1 -C link-arg=-Wl,--build-id=none"`. **Not implemented.** `[profile.release]` sets `codegen-units = 1`, but no workflow sets `RUSTFLAGS`.
 - `SOURCE_DATE_EPOCH` set to the release-commit timestamp. **Not implemented** — the string appears in neither `.github/workflows/ci.yml` nor `release.yml`.

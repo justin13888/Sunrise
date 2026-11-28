@@ -97,7 +97,7 @@ and never committed, so it has no drift gate to protect and no formatter reaches
 ### Prerequisites
 
 - [Bun](https://bun.sh) — JS/TS package manager and runtime
-- [Rust](https://rustup.rs) — toolchain version is pinned in `rust-toolchain.toml`
+- [Rust](https://rustup.rs) — `rust-toolchain.toml` selects the latest stable; `rustup update` keeps it current
 - [mise](https://mise.jdx.dev) — task runner; all project tasks live in `mise.toml`
 - [lefthook](https://github.com/evilmartians/lefthook) — git hooks manager
 
